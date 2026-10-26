@@ -42,8 +42,10 @@ jobs:
         run: |
           echo "ANDROID_HOME=${ANDROID_HOME}"
           test -n "${ANDROID_HOME:-}"
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -1)
+          test -x "$SDKMANAGER" || { echo "sdkmanager missing" >&2; exit 1; }
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
       - name: Build installable Android debug APK
         run: gradle :apps:layerforge:assembleDebug --no-daemon --stacktrace
       - name: Verify debug APK exists
