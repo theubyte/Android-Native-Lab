@@ -7,15 +7,17 @@ Reference: official Creality Print 7.3 release notes and Creality interface/quic
 | Platforms | Standalone Android app | **Source implemented**, Android build not yet executed | Build+install on real arm64 Android device |
 | Files | Binary/ASCII STL | **Implemented**, native host tests only | Golden corpus, malformed-file fuzz tests |
 | Files | 3MF / CXPRJ projects | Not implemented | Save/reopen full project without loss |
-| Files | OBJ+color; STEP/STP CAD | Not implemented | Reliable import with units/color/material |
+| Files | OBJ geometry | **Basic OBJ triangulation implemented; host tests only** | Validate on Android and include colors/materials |
+| Files | STEP/STP CAD | Not implemented | Reliable CAD import with units |
 | Workbench | Interactive 3D viewport | Sampled wireframe implemented | Depth shading, model picking, gesture/multiplate |
 | Workbench | Move/rotate/scale/mirror/clone/arrange | Not implemented | Correct transform persisted in projects |
 | Workbench | Cut/split/multiple plates/text/emboss | Not implemented | UI and mesh edit tests |
-| Profiles | Editable speed, infill, shell, temperatures | Basic parameters implemented | Full searchable profiles, import/export, validation |
+| Profiles | Editable speed, infill, shell, temperatures | Basic parameters and persistent save implemented | Full searchable profiles, import/export, validation |
 | Profiles | Official model/printer/nozzle/filament presets | Not implemented | Versioned K1C and other verified presets |
 | Engine | Cross section, basic walls, linear infill | **Implemented**, simple watertight models | Automated G-code geometry comparisons |
 | Engine | Robust polygon clipping, thin walls, Arachne-like variable widths | Not implemented | Complex geometry stress corpus and quality measures |
 | Engine | Top/bottom, bridges, cooling, support/towers | Basic top/bottom only | Manufacturable bridging/support structures |
+| Engine | Basic retraction and layer fan controls | **Implemented in G-code, native tests only** | Validate actual hardware and profiles |
 | Engine | Adaptive layers, ironing, seams, fuzzy skin | Not implemented | Tests for visual/functional print outcomes |
 | Engine | Organic/tree/paint-on supports | Not implemented | Toolpath review on overhang test prints |
 | Engine | Gyroid, honeycomb, cubic, TPMS/adaptive infill | Not implemented | Pattern geometry suite |

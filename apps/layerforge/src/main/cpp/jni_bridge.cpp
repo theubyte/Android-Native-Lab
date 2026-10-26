@@ -19,7 +19,7 @@ Mesh load(JNIEnv* env,jbyteArray bytes){
  std::vector<std::uint8_t> buffer(static_cast<std::size_t>(size));
  env->GetByteArrayRegion(bytes,0,size,reinterpret_cast<jbyte*>(buffer.data()));
  if(env->ExceptionCheck())throw std::runtime_error("Could not read STL bytes");
- return parseStl(buffer.data(),buffer.size());
+ return parseMesh(buffer.data(),buffer.size());
 }
 }
 extern "C" JNIEXPORT jfloatArray JNICALL

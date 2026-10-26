@@ -30,7 +30,7 @@ fun ModelPreview(model: LoadedModel?, modifier: Modifier = Modifier) {
         Box(Modifier.fillMaxWidth().height(265.dp).background(Color(0xFF111D2A))) {
             if (model == null) {
                 Text(
-                    "STL importieren, um das 3D-Modell anzuzeigen",
+                    "STL oder OBJ importieren, um das 3D-Modell anzuzeigen",
                     modifier = Modifier.fillMaxWidth().padding(36.dp),
                     color = Color(0xFF91A8BD), textAlign = TextAlign.Center
                 )

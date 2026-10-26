@@ -23,10 +23,24 @@ std::string cube(double extent){
 int main(){
  auto stl=cube(10.0);auto mesh=parseStl((const std::uint8_t*)stl.data(),stl.size());
  assert(mesh.triangles.size()==12);
+ const std::string obj =
+   "# cube in millimeters\n"
+   "v 0 0 0\nv 10 0 0\nv 10 10 0\nv 0 10 0\n"
+   "v 0 0 10\nv 10 0 10\nv 10 10 10\nv 0 10 10\n"
+   "f 1 4 3 2\nf 5 6 7 8\nf 1 2 6 5\n"
+   "f 2 3 7 6\nf 3 4 8 7\nf 4 1 5 8\n";
+ auto objMesh=parseMesh((const std::uint8_t*)obj.data(),obj.size());
+ assert(objMesh.triangles.size()==12);
+ assert(std::abs(objMesh.max.x-10.0)<1e-6);
+ const std::string badObj="v 0 0 0\nv 1 0 0\nv 1 1 0\nf 1 2 9\n";
+ try{(void)parseMesh((const std::uint8_t*)badObj.data(),badObj.size());assert(false);}catch(const std::runtime_error&){}
+ auto importedStl=parseMesh((const std::uint8_t*)stl.data(),stl.size());
+ assert(importedStl.triangles.size()==12);
  assert(std::abs(mesh.max.x-mesh.min.x-10.0)<1e-6);
  auto pp=preview(mesh);assert(pp.size()==4+12*9);
  Settings cfg;cfg.layerHeight=0.2;cfg.walls=2;cfg.infillPercent=20;
  auto result=slice(mesh,cfg);
+ assert(slice(objMesh,cfg).ok);
  if(!result.ok)std::cerr<<result.message<<"\n";
  assert(result.ok);assert(result.layers==50);assert(result.extrusionMoves>100);
  assert(result.gcode.find(";LAYER:49")!=std::string::npos);

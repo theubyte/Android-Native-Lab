@@ -27,6 +27,7 @@ struct Result {
     std::size_t extrusionMoves=0;
 };
 Mesh parseStl(const std::uint8_t* data, std::size_t size);
+Mesh parseMesh(const std::uint8_t* data, std::size_t size); // STL or Wavefront OBJ
 Result slice(const Mesh& mesh, const Settings& settings);
 std::vector<float> preview(const Mesh& mesh, std::size_t triangleLimit=2000);
 }

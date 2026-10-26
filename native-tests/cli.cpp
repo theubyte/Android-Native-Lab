@@ -5,12 +5,12 @@
 #include <vector>
 using namespace layerforge;
 int main(int argc,char** argv){
- if(argc!=3){std::cerr<<"Usage: layerforge-cli input.stl output.gcode\n";return 2;}
+ if(argc!=3){std::cerr<<"Usage: layerforge-cli input.stl|input.obj output.gcode\n";return 2;}
  std::ifstream in(argv[1],std::ios::binary);
- if(!in){std::cerr<<"Failed to open STL\n";return 2;}
+ if(!in){std::cerr<<"Failed to open model\n";return 2;}
  std::vector<std::uint8_t> data((std::istreambuf_iterator<char>(in)),{});
  try{
-    auto r=slice(parseStl(data.data(),data.size()),Settings{});
+    auto r=slice(parseMesh(data.data(),data.size()),Settings{});
     if(!r.ok){std::cerr<<r.message<<"\n";return 1;}
     std::ofstream out(argv[2],std::ios::binary);
     if(!out){std::cerr<<"Failed to write output\n";return 1;}

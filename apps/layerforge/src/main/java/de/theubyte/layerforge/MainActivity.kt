@@ -63,16 +63,16 @@ fun LayerForgeApp() {
                         while (true) {
                             val length = stream.read(buffer)
                             if (length < 0) break
-                            if (output.size() + length > 60 * 1024 * 1024) throw IOException("STL größer als 60 MB")
+                            if (output.size() + length > 60 * 1024 * 1024) throw IOException("Modell größer als 60 MB")
                             output.write(buffer, 0, length)
                         }
                         output.toByteArray()
                     } ?: throw IOException("Datei konnte nicht geöffnet werden")
                     val info = NativeSlicer.inspect(data)
-                    if (info.size < 13) throw IOException("Kein gültiges STL oder keine Dreiecke")
+                    if (info.size < 13) throw IOException("Kein gültiges STL/OBJ oder keine Dreiecke")
                     val displayName = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
                         if(cursor.moveToFirst()) cursor.getString(0) else null
-                    } ?: "Modell.stl"
+                    } ?: "Modell"
                     LoadedModel(displayName, data, info[0].toInt(), info[1], info[2], info[3], info.copyOfRange(4, info.size))
                 }
             }
@@ -120,7 +120,7 @@ fun LayerForgeApp() {
                             ModelPreview(model)
                             Spacer(Modifier.height(18.dp))
                             OutlinedButton(onClick={importFile.launch(arrayOf("*/*"))}, enabled=!busy, modifier=Modifier.fillMaxWidth()) {
-                                Icon(Icons.Default.FileOpen, null); Spacer(Modifier.width(10.dp)); Text("STL-Modell importieren")
+                                Icon(Icons.Default.FileOpen, null); Spacer(Modifier.width(10.dp)); Text("STL-/OBJ-Modell importieren")
                             }
                             Spacer(Modifier.height(10.dp))
                             Text("Druckraum: ${profile.bedX.toInt()} × ${profile.bedY.toInt()} × ${profile.bedZ.toInt()} mm · Generisches FDM-Profil", style=MaterialTheme.typography.bodyMedium)
