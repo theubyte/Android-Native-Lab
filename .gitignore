@@ -1,0 +1,15 @@
+.gradle/
+.idea/
+**/build/
+local.properties
+*.iml
+*.apk
+*.aab
+*.gcode
+*.exe
+*.nupkg
+*.dmg
+.DS_Store
+*.log
+.externalNativeBuild/
+.cxx/
