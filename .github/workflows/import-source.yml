@@ -1,0 +1,39 @@
+name: Import prepared LayerForge source
+on:
+  push:
+    paths:
+      - "bootstrap/source-manifest.xz.b64"
+      - ".github/workflows/import-source.yml"
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand the prepared source tree
+        run: |
+          python3 - <<'PY'
+          import base64, json, lzma, pathlib
+          payload = pathlib.Path("bootstrap/source-manifest.xz.b64")
+          if not payload.is_file():
+              raise SystemExit("Waiting for the source manifest.")
+          files = json.loads(lzma.decompress(base64.b64decode(payload.read_text())).decode("utf-8"))
+          for name, content in files.items():
+              rel = pathlib.PurePosixPath(name)
+              if rel.is_absolute() or ".." in rel.parts or not rel.parts:
+                  raise ValueError("Invalid file path in package")
+              out = pathlib.Path(*rel.parts)
+              out.parent.mkdir(parents=True, exist_ok=True)
+              out.write_text(content, encoding="utf-8")
+          payload.unlink()
+          pathlib.Path(".github/workflows/import-source.yml").unlink()
+          print(f"Unpacked {len(files)} source files.")
+          PY
+      - name: Commit source files to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "Import complete LayerForge Android alpha source"
+          git push
