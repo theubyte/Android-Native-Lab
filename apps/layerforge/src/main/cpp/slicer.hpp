@@ -15,6 +15,8 @@ struct Mesh {
 struct Settings {
     double layerHeight=0.20, lineWidth=0.45, printSpeed=50.0, travelSpeed=150.0;
     double bedWidth=220, bedDepth=220, bedHeight=250, filamentDiameter=1.75;
+    double retractionMm=0.8, retractMinTravelMm=2.0;
+    int fanPercent=80;
     int walls=2, infillPercent=15, topBottomLayers=4, nozzleC=210, bedC=60;
 };
 struct Result {

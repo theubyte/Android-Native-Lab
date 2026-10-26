@@ -9,7 +9,8 @@ object NativeSlicer {
     external fun slice(
         stl: ByteArray, outputPath: String, layerHeight: Double, lineWidth: Double,
         walls: Int, infill: Int, speed: Double, travel: Double, nozzleC: Int, bedC: Int,
-        filament: Double, topBottom: Int, bedX: Double, bedY: Double, bedZ: Double
+        filament: Double, topBottom: Int, bedX: Double, bedY: Double, bedZ: Double,
+        retractionMm: Double, retractMinTravelMm: Double, fanPercent: Int
     ): String
 }
 
@@ -23,6 +24,9 @@ data class SliceProfile(
     val nozzleC: Int = 210,
     val bedC: Int = 60,
     val topBottomLayers: Int = 4,
+    val retractionMm: Float = 0.8f,
+    val retractMinTravelMm: Float = 2f,
+    val fanPercent: Int = 80,
     val filamentDiameter: Double = 1.75,
     val bedX: Double = 220.0,
     val bedY: Double = 220.0,

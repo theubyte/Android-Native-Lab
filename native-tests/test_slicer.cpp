@@ -32,6 +32,16 @@ int main(){
  assert(result.gcode.find(";LAYER:49")!=std::string::npos);
  assert(result.gcode.find("G1 X")!=std::string::npos);
  assert(result.gcode.find("M83")!=std::string::npos);
+ // Retraction must be paired with unretraction on longer travel paths.
+ assert(result.gcode.find("G1 E-0.8000 F1500")!=std::string::npos);
+ assert(result.gcode.find("G1 E0.8000 F1500")!=std::string::npos);
+ assert(result.gcode.find("M106 S204")!=std::string::npos);
+ Settings noRetract=cfg;noRetract.retractionMm=0;
+ auto noRetractGcode=slice(mesh,noRetract);
+ assert(noRetractGcode.ok);
+ assert(noRetractGcode.gcode.find("G1 E-")==std::string::npos);
+ Settings invalidFan=cfg;invalidFan.fanPercent=120;
+ assert(!slice(mesh,invalidFan).ok);
  Settings tooSmall=cfg;tooSmall.bedWidth=20; // should fit 10 mm cube with 1 mm edge margin
  assert(slice(mesh,tooSmall).ok);
  tooSmall.bedWidth=21;auto giant=cube(22);

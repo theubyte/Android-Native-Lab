@@ -34,7 +34,8 @@ Java_de_theubyte_layerforge_NativeSlicer_inspect(JNIEnv* env,jobject,jbyteArray 
 extern "C" JNIEXPORT jstring JNICALL
 Java_de_theubyte_layerforge_NativeSlicer_slice(JNIEnv* env,jobject,jbyteArray bytes,jstring target,
  jdouble layerHeight,jdouble lineWidth,jint walls,jint infill,jdouble speed,jdouble travel,
- jint nozzleC,jint bedC,jdouble filament,jint topBottom,jdouble bedX,jdouble bedY,jdouble bedZ){
+ jint nozzleC,jint bedC,jdouble filament,jint topBottom,jdouble bedX,jdouble bedY,jdouble bedZ,
+ jdouble retractionMm,jdouble retractMinTravelMm,jint fanPercent){
  try{
    UtfString path(env,target);
    if(!path.get())throw std::runtime_error("Missing output path");
@@ -42,6 +43,7 @@ Java_de_theubyte_layerforge_NativeSlicer_slice(JNIEnv* env,jobject,jbyteArray by
    cfg.walls=walls;cfg.infillPercent=infill;cfg.printSpeed=speed;cfg.travelSpeed=travel;
    cfg.nozzleC=nozzleC;cfg.bedC=bedC;cfg.filamentDiameter=filament;
    cfg.topBottomLayers=topBottom;cfg.bedWidth=bedX;cfg.bedDepth=bedY;cfg.bedHeight=bedZ;
+   cfg.retractionMm=retractionMm;cfg.retractMinTravelMm=retractMinTravelMm;cfg.fanPercent=fanPercent;
    auto result=layerforge::slice(load(env,bytes),cfg);
    if(!result.ok) return env->NewStringUTF(("ERROR: "+result.message).c_str());
    std::ofstream f(path.get(),std::ios::binary|std::ios::trunc);

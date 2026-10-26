@@ -155,7 +155,10 @@ public:
         stream<<"M140 S"<<cfg.bedC<<"\nM104 S"<<cfg.nozzleC<<"\n";
         stream<<"M190 S"<<cfg.bedC<<"\nM109 S"<<cfg.nozzleC<<"\nG28\nG92 E0\n";
     }
-    void setLayer(int n,double z){stream<<";LAYER:"<<n<<"\nG0 Z"<<z<<" F"<<cfg.travelSpeed*60<<"\n";}
+    void setLayer(int n,double z){
+        if(n==1)stream<<"M106 S"<<(cfg.fanPercent*255/100)<<"\n";
+        stream<<";LAYER:"<<n<<"\nG0 Z"<<z<<" F"<<cfg.travelSpeed*60<<"\n";
+    }
     void path(const Path& p,bool closed){
         if(p.size()<2)return;
         travel(p[0]);
@@ -165,6 +168,7 @@ public:
             if(distance>EPS){
                 stream<<"G1 X"<<now.x<<" Y"<<now.y<<" E"<<extrusion(distance)
                       <<" F"<<cfg.printSpeed*60<<"\n";++moves;
+                position=now; extruded=true;
             }
             last=now;
         }
@@ -174,7 +178,17 @@ public:
     std::size_t moves=0;
 private:
     Settings cfg;std::ostringstream stream;
-    void travel(Vec2 q){stream<<"G0 X"<<q.x<<" Y"<<q.y<<" F"<<cfg.travelSpeed*60<<"\n";}
+    Vec2 position{};
+    bool positioned=false,extruded=false;
+    void travel(Vec2 q){
+        double length=positioned?norm(q-position):0;
+        bool retract=extruded && cfg.retractionMm>0 && length>=cfg.retractMinTravelMm;
+        if(retract) stream<<"G1 E-"<<cfg.retractionMm<<" F1500\n";
+        if(!positioned || length>EPS)
+            stream<<"G0 X"<<q.x<<" Y"<<q.y<<" F"<<cfg.travelSpeed*60<<"\n";
+        if(retract) stream<<"G1 E"<<cfg.retractionMm<<" F1500\n";
+        position=q;positioned=true;
+    }
     double extrusion(double length)const{
         double filamentArea=PI*std::pow(cfg.filamentDiameter*0.5,2);
         return length*cfg.layerHeight*cfg.lineWidth/filamentArea;
@@ -214,7 +228,10 @@ void checkSettings(const Settings& s){
      ||s.printSpeed<5||s.printSpeed>300||s.travelSpeed<10||s.travelSpeed>600
      ||s.filamentDiameter<1.0||s.filamentDiameter>3.2||s.bedWidth<20||s.bedDepth<20
      ||s.bedHeight<20||s.topBottomLayers<0||s.topBottomLayers>20
-     ||s.nozzleC<0||s.nozzleC>350||s.bedC<0||s.bedC>150)
+     ||s.nozzleC<0||s.nozzleC>350||s.bedC<0||s.bedC>150
+     ||!std::isfinite(s.retractionMm)||s.retractionMm<0||s.retractionMm>5
+     ||!std::isfinite(s.retractMinTravelMm)||s.retractMinTravelMm<0.1||s.retractMinTravelMm>50
+     ||s.fanPercent<0||s.fanPercent>100)
        throw std::runtime_error("Slicing parameters are out of supported range");
 }
 }

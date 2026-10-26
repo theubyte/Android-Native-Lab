@@ -46,7 +46,7 @@ fun LayerForgeApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var page by remember { mutableIntStateOf(0) }
-    var profile by remember { mutableStateOf(SliceProfile()) }
+    var profile by remember { mutableStateOf(ProfileStore.load(context)) }
     var model by remember { mutableStateOf<LoadedModel?>(null) }
     var gcodeFile by remember { mutableStateOf<File?>(null) }
     var toolpath by remember { mutableStateOf<Toolpath?>(null) }
@@ -96,13 +96,13 @@ fun LayerForgeApp() {
             busy = false
         }
     }
-    fun changeProfile(value: SliceProfile) { profile = value; gcodeFile = null; toolpath = null; status = "Parameter geändert – erneut slicen" }
+    fun changeProfile(value: SliceProfile) { profile = value; ProfileStore.save(context, value); gcodeFile = null; toolpath = null; status = "Parameter gespeichert – erneut slicen" }
     MaterialTheme(colorScheme = dark) {
         Scaffold(containerColor = dark.background, topBar = {
             TopAppBar(title = {
                 Column {
                     Text("LAYERFORGE", fontWeight=FontWeight.Bold)
-                    Text("Native Android Slicer · Alpha 0.1", style=MaterialTheme.typography.labelSmall)
+                    Text("Native Android Slicer · Alpha 0.2", style=MaterialTheme.typography.labelSmall)
                 }
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor=dark.background))
         }) { inset ->
@@ -139,6 +139,11 @@ fun LayerForgeApp() {
                             ParameterSlider("Düsentemperatur",profile.nozzleC.toFloat(),180f,260f,"°C",0,{ changeProfile(profile.copy(nozzleC=it.toInt())) })
                             ParameterSlider("Betttemperatur",profile.bedC.toFloat(),0f,110f,"°C",0,{ changeProfile(profile.copy(bedC=it.toInt())) })
                             ParameterSlider("Top-/Bottom-Schichten",profile.topBottomLayers.toFloat(),0f,10f,"",0,{changeProfile(profile.copy(topBottomLayers=it.toInt()))})
+                            ParameterSlider("Retraktion",profile.retractionMm,0f,3f,"mm",2,{changeProfile(profile.copy(retractionMm=it))})
+                            ParameterSlider("Retraktionsweg",profile.retractMinTravelMm,1f,15f,"mm",1,{changeProfile(profile.copy(retractMinTravelMm=it))})
+                            ParameterSlider("Bauteillüfter ab Schicht 2",profile.fanPercent.toFloat(),0f,100f,"%",0,{changeProfile(profile.copy(fanPercent=it.toInt()))})
+                            OutlinedButton(onClick={changeProfile(SliceProfile())}, modifier=Modifier.fillMaxWidth()) { Text("Generische Standardwerte wiederherstellen") }
+                            Text("Gespeicherte Werte sind generisch und nicht für einen bestimmten Drucker validiert.",style=MaterialTheme.typography.bodySmall)
                         }
                         else -> {
                             Text("G-Code erzeugen", style=MaterialTheme.typography.headlineSmall, fontWeight=FontWeight.Bold)
@@ -165,7 +170,8 @@ fun LayerForgeApp() {
                                                     current.walls,current.infill,current.printSpeed.toDouble(),
                                                     current.travelSpeed.toDouble(),current.nozzleC,current.bedC,
                                                     current.filamentDiameter,current.topBottomLayers,
-                                                    current.bedX,current.bedY,current.bedZ)
+                                                    current.bedX,current.bedY,current.bedZ,
+                                                    current.retractionMm.toDouble(), current.retractMinTravelMm.toDouble(),current.fanPercent)
                                                 if(!message.startsWith("OK:"))throw IOException(message)
                                                 Triple(file, message, parseToolpath(file))
                                             }
@@ -197,7 +203,7 @@ fun LayerForgeApp() {
 private fun ParameterSlider(
     name:String,value:Float,min:Float,max:Float,unit:String,decimals:Int,onChange:(Float)->Unit
 ){
-    val format = if(decimals==2) "%.2f" else "%.0f"
+    val format = when(decimals) { 2 -> "%.2f"; 1 -> "%.1f"; else -> "%.0f" }
     Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){
         Text(name, style=MaterialTheme.typography.bodyMedium)
         Text(String.format(Locale.US,format,value)+" "+unit, color=accent, fontWeight=FontWeight.SemiBold)
