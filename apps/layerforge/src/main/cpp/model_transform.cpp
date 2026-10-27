@@ -36,5 +36,14 @@ Mesh transformMesh(const Mesh& input,const ModelTransform& t){
  bounds(m);
  return m;
 }
-std::vector<float> previewTransformed(const Mesh& m,const ModelTransform& t,std::size_t n){return preview(transformMesh(m,t),n);}
+std::vector<float> previewTransformed(const Mesh& m,const ModelTransform& t,std::size_t n){
+ auto out=preview(transformMesh(m,t),n);
+ // preview() recentres its mesh to improve camera controls; reapply XY user
+ // translation so moving a model is visible, not just used in exported G-code.
+ for(std::size_t i=4;i+2<out.size();i+=3){
+  out[i]+=static_cast<float>(t.offsetX);
+  out[i+1]+=static_cast<float>(t.offsetY);
+ }
+ return out;
+}
 }
