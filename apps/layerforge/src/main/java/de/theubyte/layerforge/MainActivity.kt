@@ -98,6 +98,40 @@ fun LayerForgeApp() {
             busy = false
         }
     }
+
+    val openProject = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if(uri!=null) scope.launch {
+            busy=true
+            val result=withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { ProjectArchive.read(it) }
+                        ?: throw IOException("Projektdatei konnte nicht geöffnet werden")
+                }
+            }
+            result.onSuccess { snapshot ->
+                model=snapshot.model; transform=snapshot.transform
+                profile=snapshot.profile;ProfileStore.save(context,snapshot.profile)
+                transformedPreview=null;gcodeFile=null;toolpath=null;page=0
+                status="Projekt geladen: ${snapshot.model.name}"
+            }.onFailure { status="Projektfehler: ${it.message}" }
+            busy=false
+        }
+    }
+    val saveProject = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val original=model
+        val snapshot=if(original!=null) ProjectArchive.Snapshot(original,profile,transform) else null
+        if(uri!=null && snapshot!=null) scope.launch {
+            busy=true
+            val result=withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri,"wt")?.use { ProjectArchive.write(it,snapshot) }
+                        ?: throw IOException("Projektdatei konnte nicht gespeichert werden")
+                }
+            }
+            status=result.fold({"Projekt gespeichert"},{"Speicherfehler: ${it.message}"})
+            busy=false
+        }
+    }
     val exportFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         val source = gcodeFile
         if (uri != null && source != null) scope.launch {
@@ -120,7 +154,7 @@ fun LayerForgeApp() {
             TopAppBar(title = {
                 Column {
                     Text("LAYERFORGE", fontWeight=FontWeight.Bold)
-                    Text("Native Android Slicer · Alpha 0.3", style=MaterialTheme.typography.labelSmall)
+                    Text("Native Android Slicer · Alpha 0.4", style=MaterialTheme.typography.labelSmall)
                 }
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor=dark.background))
         }) { inset ->
@@ -152,6 +186,11 @@ fun LayerForgeApp() {
                             Spacer(Modifier.height(18.dp))
                             OutlinedButton(onClick={importFile.launch(arrayOf("*/*"))}, enabled=!busy, modifier=Modifier.fillMaxWidth()) {
                                 Icon(Icons.Default.FileOpen, null); Spacer(Modifier.width(10.dp)); Text("STL-/OBJ-Modell importieren")
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                                OutlinedButton(onClick={openProject.launch(arrayOf("*/*"))},enabled=!busy,modifier=Modifier.weight(1f)){Text("Projekt öffnen")}
+                                OutlinedButton(onClick={saveProject.launch("LayerForge.lfproj")},enabled=!busy && model!=null,modifier=Modifier.weight(1f)){Text("Projekt speichern")}
                             }
                             Spacer(Modifier.height(10.dp))
                             Text("Druckraum: ${profile.bedX.toInt()} × ${profile.bedY.toInt()} × ${profile.bedZ.toInt()} mm · Generisches FDM-Profil", style=MaterialTheme.typography.bodyMedium)

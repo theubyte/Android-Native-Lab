@@ -6,7 +6,8 @@ Reference: official Creality Print 7.3 release notes and Creality interface/quic
 |---|---|---|---|
 | Platforms | Standalone Android app | **Source implemented**, Android build not yet executed | Build+install on real arm64 Android device |
 | Files | Binary/ASCII STL | **Implemented**, native host tests only | Golden corpus, malformed-file fuzz tests |
-| Files | 3MF / CXPRJ projects | Not implemented | Save/reopen full project without loss |
+| Files | LayerForge .lfproj project save/open | **Implemented in Android Kotlin, build verification pending** | Device test and round-trip sample |
+| Files | 3MF / CXPRJ projects | Not implemented | Save/reopen interoperable 3MF projects without loss |
 | Files | OBJ geometry | **Basic OBJ triangulation implemented; host tests only** | Validate on Android and include colors/materials |
 | Files | STEP/STP CAD | Not implemented | Reliable CAD import with units |
 | Workbench | Interactive 3D viewport | Sampled wireframe implemented | Depth shading, model picking, gesture/multiplate |
