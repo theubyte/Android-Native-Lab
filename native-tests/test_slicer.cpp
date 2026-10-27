@@ -37,6 +37,18 @@ int main(){
  auto importedStl=parseMesh((const std::uint8_t*)stl.data(),stl.size());
  assert(importedStl.triangles.size()==12);
  assert(std::abs(mesh.max.x-mesh.min.x-10.0)<1e-6);
+ ModelTransform doubleSize;doubleSize.scale=2;
+ auto transformed=transformMesh(mesh,doubleSize);
+ assert(std::abs(transformed.max.x-transformed.min.x-20.0)<1e-6);
+ assert(std::abs(previewTransformed(mesh,doubleSize)[1]-20.0)<1e-6);
+ ModelTransform turned;turned.rotationZ=45;
+ assert(transformMesh(mesh,turned).max.x-transformMesh(mesh,turned).min.x>14.1);
+ ModelTransform moved;moved.offsetX=20;
+ assert(std::abs((transformMesh(mesh,moved).max.x+transformMesh(mesh,moved).min.x)/2-20.0)<1e-6);
+ ModelTransform bad;bad.scale=0;
+ try{transformMesh(mesh,bad);assert(false);}catch(const std::runtime_error&){}
+ ModelTransform outside;outside.offsetX=200;
+ assert(!slice(mesh,Settings{},outside).ok);
  auto pp=preview(mesh);assert(pp.size()==4+12*9);
  Settings cfg;cfg.layerHeight=0.2;cfg.walls=2;cfg.infillPercent=20;
  auto result=slice(mesh,cfg);
@@ -44,6 +56,8 @@ int main(){
  if(!result.ok)std::cerr<<result.message<<"\n";
  assert(result.ok);assert(result.layers==50);assert(result.extrusionMoves>100);
  assert(result.gcode.find(";LAYER:49")!=std::string::npos);
+ assert(slice(mesh,cfg,doubleSize).layers==100);
+ assert(slice(mesh,cfg,moved).gcode!=result.gcode);
  assert(result.gcode.find("G1 X")!=std::string::npos);
  assert(result.gcode.find("M83")!=std::string::npos);
  // Retraction must be paired with unretraction on longer travel paths.

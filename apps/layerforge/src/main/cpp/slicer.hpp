@@ -12,6 +12,11 @@ struct Mesh {
     std::vector<Triangle> triangles;
     Vec3 min, max;
 };
+struct ModelTransform {
+    double scale=1.0, rotationX=0, rotationY=0, rotationZ=0;
+    double offsetX=0, offsetY=0;
+};
+Mesh transformMesh(const Mesh&,const ModelTransform&);
 struct Settings {
     double layerHeight=0.20, lineWidth=0.45, printSpeed=50.0, travelSpeed=150.0;
     double bedWidth=220, bedDepth=220, bedHeight=250, filamentDiameter=1.75;
@@ -28,6 +33,8 @@ struct Result {
 };
 Mesh parseStl(const std::uint8_t* data, std::size_t size);
 Mesh parseMesh(const std::uint8_t* data, std::size_t size); // STL or Wavefront OBJ
-Result slice(const Mesh& mesh, const Settings& settings);
+Result slice(const Mesh& mesh, const Settings& settings, const ModelTransform& transform={});
 std::vector<float> preview(const Mesh& mesh, std::size_t triangleLimit=2000);
 }
+
+namespace layerforge { std::vector<float> previewTransformed(const Mesh&, const ModelTransform&, std::size_t triangleLimit=2000); }

@@ -10,7 +10,8 @@ Reference: official Creality Print 7.3 release notes and Creality interface/quic
 | Files | OBJ geometry | **Basic OBJ triangulation implemented; host tests only** | Validate on Android and include colors/materials |
 | Files | STEP/STP CAD | Not implemented | Reliable CAD import with units |
 | Workbench | Interactive 3D viewport | Sampled wireframe implemented | Depth shading, model picking, gesture/multiplate |
-| Workbench | Move/rotate/scale/mirror/clone/arrange | Not implemented | Correct transform persisted in projects |
+| Workbench | Scale/rotate XYZ/move XY | **Implemented in original native geometry and Compose UI, host tests** | Android device test and project persistence |
+| Workbench | Mirror/clone/arrange | Not implemented | Correct transform persisted in projects |
 | Workbench | Cut/split/multiple plates/text/emboss | Not implemented | UI and mesh edit tests |
 | Profiles | Editable speed, infill, shell, temperatures | Basic parameters and persistent save implemented | Full searchable profiles, import/export, validation |
 | Profiles | Official model/printer/nozzle/filament presets | Not implemented | Versioned K1C and other verified presets |

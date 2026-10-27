@@ -267,19 +267,20 @@ Mesh parseStl(const std::uint8_t* data,std::size_t size){
     }
     bounds(mesh);return mesh;
 }
-Result slice(const Mesh& mesh,const Settings& cfg){
+Result slice(const Mesh& mesh,const Settings& cfg,const ModelTransform& transform){
     Result result;
     try{
         checkSettings(cfg);
-        double sx=mesh.max.x-mesh.min.x,sy=mesh.max.y-mesh.min.y,sz=mesh.max.z-mesh.min.z;
+        Mesh placed=transformMesh(mesh,transform);
+        double sx=placed.max.x-placed.min.x,sy=placed.max.y-placed.min.y,sz=placed.max.z-placed.min.z;
         if(sx<=EPS||sy<=EPS||sz<=EPS)throw std::runtime_error("STL has a zero-size dimension");
-        if(sx>cfg.bedWidth-2||sy>cfg.bedDepth-2||sz>cfg.bedHeight)
-            throw std::runtime_error("Model exceeds printable bed bounds (1 mm XY margin)");
-        // Place the original geometry at the center of the print bed, grounded at Z=0.
-        Mesh placed=mesh;
-        double dx=(cfg.bedWidth-sx)*0.5-mesh.min.x,dy=(cfg.bedDepth-sy)*0.5-mesh.min.y;
+        const double dx=cfg.bedWidth/2,dy=cfg.bedDepth/2;
+        if(placed.min.x+dx<1-EPS||placed.max.x+dx>cfg.bedWidth-1+EPS
+           ||placed.min.y+dy<1-EPS||placed.max.y+dy>cfg.bedDepth-1+EPS
+           ||sz>cfg.bedHeight+EPS)
+           throw std::runtime_error("Model orientation or position exceeds bed dimensions (1 mm margin)");
         for(auto& t:placed.triangles)for(Vec3* v:{&t.a,&t.b,&t.c}){
-            v->x+=dx;v->y+=dy;v->z-=mesh.min.z;
+            v->x+=dx;v->y+=dy;
         }
         int count=static_cast<int>(std::ceil(sz/cfg.layerHeight));
         if(count>10000)throw std::runtime_error("Too many slicing layers");

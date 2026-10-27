@@ -23,6 +23,16 @@ Mesh load(JNIEnv* env,jbyteArray bytes){
 }
 }
 extern "C" JNIEXPORT jfloatArray JNICALL
+Java_de_theubyte_layerforge_NativeSlicer_inspectTransformed(JNIEnv* env,jobject,jbyteArray bytes,
+ jdouble scale,jdouble rx,jdouble ry,jdouble rz,jdouble ox,jdouble oy){
+ try{
+   auto p=previewTransformed(load(env,bytes),ModelTransform{scale,rx,ry,rz,ox,oy});
+   jfloatArray array=env->NewFloatArray(static_cast<jsize>(p.size()));
+   if(array)env->SetFloatArrayRegion(array,0,static_cast<jsize>(p.size()),p.data());
+   return array;
+ }catch(const std::exception&){return env->NewFloatArray(0);}
+}
+extern "C" JNIEXPORT jfloatArray JNICALL
 Java_de_theubyte_layerforge_NativeSlicer_inspect(JNIEnv* env,jobject,jbyteArray bytes){
  try{
    auto p=preview(load(env,bytes));
@@ -35,7 +45,8 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_de_theubyte_layerforge_NativeSlicer_slice(JNIEnv* env,jobject,jbyteArray bytes,jstring target,
  jdouble layerHeight,jdouble lineWidth,jint walls,jint infill,jdouble speed,jdouble travel,
  jint nozzleC,jint bedC,jdouble filament,jint topBottom,jdouble bedX,jdouble bedY,jdouble bedZ,
- jdouble retractionMm,jdouble retractMinTravelMm,jint fanPercent){
+ jdouble retractionMm,jdouble retractMinTravelMm,jint fanPercent,
+ jdouble scale,jdouble rx,jdouble ry,jdouble rz,jdouble ox,jdouble oy){
  try{
    UtfString path(env,target);
    if(!path.get())throw std::runtime_error("Missing output path");
@@ -44,7 +55,7 @@ Java_de_theubyte_layerforge_NativeSlicer_slice(JNIEnv* env,jobject,jbyteArray by
    cfg.nozzleC=nozzleC;cfg.bedC=bedC;cfg.filamentDiameter=filament;
    cfg.topBottomLayers=topBottom;cfg.bedWidth=bedX;cfg.bedDepth=bedY;cfg.bedHeight=bedZ;
    cfg.retractionMm=retractionMm;cfg.retractMinTravelMm=retractMinTravelMm;cfg.fanPercent=fanPercent;
-   auto result=layerforge::slice(load(env,bytes),cfg);
+   auto result=layerforge::slice(load(env,bytes),cfg,ModelTransform{scale,rx,ry,rz,ox,oy});
    if(!result.ok) return env->NewStringUTF(("ERROR: "+result.message).c_str());
    std::ofstream f(path.get(),std::ios::binary|std::ios::trunc);
    if(!f)throw std::runtime_error("Unable to write G-code");

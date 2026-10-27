@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -48,6 +49,22 @@ fun LayerForgeApp() {
     var page by remember { mutableIntStateOf(0) }
     var profile by remember { mutableStateOf(ProfileStore.load(context)) }
     var model by remember { mutableStateOf<LoadedModel?>(null) }
+    var transform by remember { mutableStateOf(ModelTransform()) }
+    var transformedPreview by remember { mutableStateOf<LoadedModel?>(null) }
+    LaunchedEffect(model,transform) {
+        val current=model ?: run { transformedPreview=null;return@LaunchedEffect }
+        val value=transform
+        delay(140)
+        val info=withContext(Dispatchers.Default) {
+            NativeSlicer.inspectTransformed(current.bytes,value.scale.toDouble(),
+                value.rotationX.toDouble(),value.rotationY.toDouble(),value.rotationZ.toDouble(),
+                value.offsetX.toDouble(),value.offsetY.toDouble())
+        }
+        transformedPreview=if(info.size>=13)
+            current.copy(width=info[1],depth=info[2],height=info[3],
+                previewVertices=info.copyOfRange(4,info.size))
+        else null
+    }
     var gcodeFile by remember { mutableStateOf<File?>(null) }
     var toolpath by remember { mutableStateOf<Toolpath?>(null) }
     var status by remember { mutableStateOf("Bereit. STL laden und lokal slicen.") }
@@ -76,7 +93,7 @@ fun LayerForgeApp() {
                     LoadedModel(displayName, data, info[0].toInt(), info[1], info[2], info[3], info.copyOfRange(4, info.size))
                 }
             }
-            result.onSuccess { model = it; gcodeFile = null; toolpath = null; status = "${it.name} importiert"; page = 0 }
+            result.onSuccess { model = it; transform=ModelTransform(); transformedPreview=null; gcodeFile = null; toolpath = null; status = "${it.name} importiert"; page = 0 }
                 .onFailure { status = "Importfehler: ${it.message}" }
             busy = false
         }
@@ -97,12 +114,13 @@ fun LayerForgeApp() {
         }
     }
     fun changeProfile(value: SliceProfile) { profile = value; ProfileStore.save(context, value); gcodeFile = null; toolpath = null; status = "Parameter gespeichert – erneut slicen" }
+    fun changeTransform(value: ModelTransform) { transform=value;gcodeFile=null;toolpath=null;status="Modell geändert – erneut slicen" }
     MaterialTheme(colorScheme = dark) {
         Scaffold(containerColor = dark.background, topBar = {
             TopAppBar(title = {
                 Column {
                     Text("LAYERFORGE", fontWeight=FontWeight.Bold)
-                    Text("Native Android Slicer · Alpha 0.2", style=MaterialTheme.typography.labelSmall)
+                    Text("Native Android Slicer · Alpha 0.3", style=MaterialTheme.typography.labelSmall)
                 }
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor=dark.background))
         }) { inset ->
@@ -117,14 +135,27 @@ fun LayerForgeApp() {
                         0 -> {
                             Text("Dein 3D-Druckprojekt", style=MaterialTheme.typography.headlineSmall, fontWeight=FontWeight.Bold)
                             Spacer(Modifier.height(12.dp))
-                            ModelPreview(model)
+                            ModelPreview(transformedPreview ?: model)
+                            Spacer(Modifier.height(12.dp))
+                            if(model!=null) {
+                                Text("Modell bearbeiten",style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold)
+                                Text("Rotation XYZ um Modellmitte · XY relativ zur Druckplattenmitte · Z automatisch auf Druckplatte.",style=MaterialTheme.typography.bodySmall)
+                                Spacer(Modifier.height(8.dp))
+                                ParameterSlider("Skalieren",transform.scale,0.25f,3f,"×",2,{changeTransform(transform.copy(scale=it))})
+                                ParameterSlider("Drehen X",transform.rotationX,-180f,180f,"°",0,{changeTransform(transform.copy(rotationX=it))})
+                                ParameterSlider("Drehen Y",transform.rotationY,-180f,180f,"°",0,{changeTransform(transform.copy(rotationY=it))})
+                                ParameterSlider("Drehen Z",transform.rotationZ,-180f,180f,"°",0,{changeTransform(transform.copy(rotationZ=it))})
+                                ParameterSlider("Position X",transform.offsetX,-(profile.bedX/2).toFloat(),(profile.bedX/2).toFloat(),"mm",1,{changeTransform(transform.copy(offsetX=it))})
+                                ParameterSlider("Position Y",transform.offsetY,-(profile.bedY/2).toFloat(),(profile.bedY/2).toFloat(),"mm",1,{changeTransform(transform.copy(offsetY=it))})
+                                OutlinedButton(onClick={changeTransform(ModelTransform())},modifier=Modifier.fillMaxWidth()){Text("Modellbearbeitung zurücksetzen")}
+                            }
                             Spacer(Modifier.height(18.dp))
                             OutlinedButton(onClick={importFile.launch(arrayOf("*/*"))}, enabled=!busy, modifier=Modifier.fillMaxWidth()) {
                                 Icon(Icons.Default.FileOpen, null); Spacer(Modifier.width(10.dp)); Text("STL-/OBJ-Modell importieren")
                             }
                             Spacer(Modifier.height(10.dp))
                             Text("Druckraum: ${profile.bedX.toInt()} × ${profile.bedY.toInt()} × ${profile.bedZ.toInt()} mm · Generisches FDM-Profil", style=MaterialTheme.typography.bodyMedium)
-                            Text("Mit einem Finger drehen, mit zwei Fingern zoomen. Vorschau zeigt das Modell, keine Druckbahnen.", style=MaterialTheme.typography.bodySmall, color=Color(0xFF9FB2C3))
+                            Text("Kamera per Geste drehen/zoomen. Regler ändern die wirkliche Geometrie des G-Codes.", style=MaterialTheme.typography.bodySmall, color=Color(0xFF9FB2C3))
                         }
                         1 -> {
                             Text("Druckeinstellungen", style=MaterialTheme.typography.headlineSmall, fontWeight=FontWeight.Bold)
@@ -154,7 +185,7 @@ fun LayerForgeApp() {
                                 ToolpathPreview(toolpath!!, profile.bedX, profile.bedY)
                             }
                             Spacer(Modifier.height(12.dp))
-                            Text("Enthalten: STL-Schnitte, einfache Perimeter, alternierendes Linien-Infill und Top-/Bottom-Füllung. Noch nicht enthalten: komplexe Polygonkorrektur, Retracts, Supports, 3MF und gerätespezifische Startmakros.", style=MaterialTheme.typography.bodySmall, color=Color(0xFF9FB2C3))
+                            Text("Enthalten: STL-Schnitte, einfache Perimeter, alternierendes Linien-Infill und Top-/Bottom-Füllung. Noch nicht enthalten: robuste Polygonkorrektur, Supports, 3MF und gerätespezifische Startmakros.", style=MaterialTheme.typography.bodySmall, color=Color(0xFF9FB2C3))
                             Spacer(Modifier.height(22.dp))
                             Button(
                                 onClick={
@@ -162,6 +193,7 @@ fun LayerForgeApp() {
                                     if (loaded != null) scope.launch {
                                         busy=true;status="Berechne lokal..."
                                         val current=profile
+                                        val pose=transform
                                         val result=withContext(Dispatchers.Default){
                                             runCatching {
                                                 val file=File(context.cacheDir,"layerforge-output.gcode")
@@ -171,7 +203,9 @@ fun LayerForgeApp() {
                                                     current.travelSpeed.toDouble(),current.nozzleC,current.bedC,
                                                     current.filamentDiameter,current.topBottomLayers,
                                                     current.bedX,current.bedY,current.bedZ,
-                                                    current.retractionMm.toDouble(), current.retractMinTravelMm.toDouble(),current.fanPercent)
+                                                    current.retractionMm.toDouble(), current.retractMinTravelMm.toDouble(),current.fanPercent,
+                                                    pose.scale.toDouble(),pose.rotationX.toDouble(),pose.rotationY.toDouble(),
+                                                    pose.rotationZ.toDouble(),pose.offsetX.toDouble(),pose.offsetY.toDouble())
                                                 if(!message.startsWith("OK:"))throw IOException(message)
                                                 Triple(file, message, parseToolpath(file))
                                             }

@@ -5,14 +5,23 @@ object NativeSlicer {
     init { System.loadLibrary("layerforge") }
     /** [triangleCount, width, depth, height, sampled XYZ vertices...] */
     external fun inspect(stl: ByteArray): FloatArray
+    external fun inspectTransformed(model: ByteArray,scale: Double,rotationX: Double,
+        rotationY: Double,rotationZ: Double,offsetX: Double,offsetY: Double): FloatArray
     /** Writes the full result to the local cache path; returns `OK:` or `ERROR:` status. */
     external fun slice(
         stl: ByteArray, outputPath: String, layerHeight: Double, lineWidth: Double,
         walls: Int, infill: Int, speed: Double, travel: Double, nozzleC: Int, bedC: Int,
         filament: Double, topBottom: Int, bedX: Double, bedY: Double, bedZ: Double,
-        retractionMm: Double, retractMinTravelMm: Double, fanPercent: Int
+        retractionMm: Double, retractMinTravelMm: Double, fanPercent: Int,
+        scale: Double, rotationX: Double,rotationY: Double,rotationZ: Double,
+        offsetX: Double,offsetY: Double
     ): String
 }
+
+data class ModelTransform(
+    val scale: Float=1f, val rotationX: Float=0f, val rotationY: Float=0f,
+    val rotationZ: Float=0f, val offsetX: Float=0f, val offsetY: Float=0f
+)
 
 data class SliceProfile(
     val layerHeight: Float = 0.20f,
