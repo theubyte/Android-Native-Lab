@@ -20,7 +20,10 @@ object ProfileStore {
             topBottomLayers = p.getInt("topBottomLayers", defaults.topBottomLayers),
             retractionMm = p.getFloat("retractionMm", defaults.retractionMm),
             retractMinTravelMm = p.getFloat("retractMinTravelMm", defaults.retractMinTravelMm),
-            fanPercent = p.getInt("fanPercent", defaults.fanPercent)
+            fanPercent = p.getInt("fanPercent", defaults.fanPercent),
+            bedX = p.getFloat("bedX", defaults.bedX.toFloat()).toDouble(),
+            bedY = p.getFloat("bedY", defaults.bedY.toFloat()).toDouble(),
+            bedZ = p.getFloat("bedZ", defaults.bedZ.toFloat()).toDouble()
         )
     }
     fun save(context: Context, value: SliceProfile) {
@@ -37,6 +40,9 @@ object ProfileStore {
             .putFloat("retractionMm", value.retractionMm)
             .putFloat("retractMinTravelMm", value.retractMinTravelMm)
             .putInt("fanPercent", value.fanPercent)
+            .putFloat("bedX", value.bedX.toFloat())
+            .putFloat("bedY", value.bedY.toFloat())
+            .putFloat("bedZ", value.bedZ.toFloat())
             .apply()
     }
 }

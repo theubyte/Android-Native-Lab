@@ -16,13 +16,17 @@ import java.io.File
 /** Layer preview for LayerForge's generated G-code. Not an independent G-code simulator. */
 data class ToolLine(val x1: Float, val y1: Float, val x2: Float, val y2: Float)
 data class ToolLayer(val z: Float, val extrusion: List<ToolLine>, val travel: List<ToolLine>)
-data class Toolpath(val layers: List<ToolLayer>)
+data class Toolpath(val layers: List<ToolLayer>, val metrics: PrintMetrics)
+data class PrintMetrics(val filamentMillimeters: Double, val estimatedSeconds: Double, val filamentVolumeCm3: Double)
 
-fun parseToolpath(file: File): Toolpath {
+fun parseToolpath(file: File, filamentDiameter: Double = 1.75): Toolpath {
     val result = mutableListOf<ToolLayer>()
     var extrusion = mutableListOf<ToolLine>()
     var travel = mutableListOf<ToolLine>()
     var x = 0f; var y = 0f; var z = 0f
+    var netExtrusion=0.0
+    var estimatedSeconds=0.0
+    var feedMmPerMin=1200.0
     var started = false
     var totalSegments = 0
     fun complete() {
@@ -37,6 +41,7 @@ fun parseToolpath(file: File): Toolpath {
             if (!(line.startsWith("G0 ") || line.startsWith("G1 "))) return@forEach
             val fields = line.split(' ').drop(1)
             var nx = x; var ny = y; var nz = z; var e = 0f
+            var currentFeed=feedMmPerMin
             for (word in fields) {
                 if (word.length < 2) continue
                 val number = word.substring(1).toFloatOrNull() ?: continue
@@ -45,8 +50,16 @@ fun parseToolpath(file: File): Toolpath {
                     'Y' -> ny = number
                     'Z' -> nz = number
                     'E' -> e = number
+                    'F' -> if (number>0f) currentFeed=number.toDouble()
                 }
             }
+            feedMmPerMin=currentFeed
+            // The engine generates relative-E (M83), so retract + unretract cancel out.
+            netExtrusion+=e.toDouble()
+            val dx=(nx-x).toDouble();val dy=(ny-y).toDouble();val dz=(nz-z).toDouble()
+            val travelDistance=kotlin.math.sqrt(dx*dx+dy*dy+dz*dz)
+            val moveDistance=maxOf(travelDistance,kotlin.math.abs(e.toDouble()))
+            estimatedSeconds+=moveDistance/maxOf(0.001,feedMmPerMin/60.0)
             if (started && (nx != x || ny != y) && totalSegments < 1_000_000) {
                 val segment = ToolLine(x, y, nx, ny)
                 if (line.startsWith("G1 ") && e > 0f) extrusion.add(segment)
@@ -57,7 +70,9 @@ fun parseToolpath(file: File): Toolpath {
         }
     }
     if (started) result += ToolLayer(z, extrusion, travel)
-    return Toolpath(result)
+    val length=netExtrusion.coerceAtLeast(0.0)
+    val volume=length*kotlin.math.PI*(filamentDiameter/2.0)*(filamentDiameter/2.0)/1000.0
+    return Toolpath(result, PrintMetrics(length,estimatedSeconds,volume))
 }
 
 @Composable
@@ -89,6 +104,11 @@ fun ToolpathPreview(data: Toolpath, bedX: Double, bedY: Double) {
             onValueChange = { layer=it.toInt().coerceIn(0,data.layers.lastIndex) },
             valueRange = 0f..maxOf(1f,data.layers.lastIndex.toFloat())
         )
+        val metrics=data.metrics
+        Text("Filament ca. ${"%.2f".format(java.util.Locale.US,metrics.filamentMillimeters/1000)} m · ${"%.2f".format(java.util.Locale.US,metrics.filamentVolumeCm3)} cm³",
+            style=MaterialTheme.typography.bodySmall,color=Color(0xFF36D6C7))
+        Text("Bewegungszeit mindestens ca. ${"%.0f".format(java.util.Locale.US,metrics.estimatedSeconds/60)} min (ohne Beschleunigung, Aufheizen oder Startmakros)",
+            style=MaterialTheme.typography.bodySmall,color=Color(0xFF9FB2C3))
         Text("Türkis: Extrusion · Grau: Leerfahrt · Z=${"%.2f".format(item.z)} mm",
             style=MaterialTheme.typography.bodySmall, color=Color(0xFF9FB2C3))
     }

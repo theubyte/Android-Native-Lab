@@ -6,12 +6,13 @@ A monorepo for independently written **native Android applications**. The GitHub
 
 **LayerForge** is an experimental, clean-room Android FFF slicer. It targets **feature parity with Creality Print 7.3** over multiple releases, but is **not** a Creality product, a Creality Print port, or a feature-complete slicer today. The Windows installer is not bundled, decompiled, copied, or redistributed. The reference is the public user-facing feature set and official documentation.
 
-### What actually works in the current alpha source (0.4.0)
+### What actually works in the current alpha source (0.5.0)
 
 - Native Kotlin + Jetpack Compose Android shell (minimum Android 8.0, primarily modern arm64 devices).
 - Android Storage Access Framework STL and basic Wavefront OBJ geometry import (binary/ASCII STL and triangulated OBJ polygons, capped at 60 MiB; OBJ material/color and assemblies are not supported).
 - Rotatable, zoomable wireframe preview (sampled mesh, up to ~2,000 triangles shown), model scale, XYZ rotations and XY position that modify slicing G-code.
 - Offline save/reopen of LayerForge-specific compressed .lfproj projects including model bytes, slicer parameters and model transformation; not an interoperable 3MF format.
+- G-code material-length and volumetric estimates plus idealized motion-time estimate, excluding acceleration, heating and firmware macros. Editable generic build dimensions and travel speed.
 - Editable persistent layer height, extrusion width, wall count, infill %, top/bottom layer count, extrusion speed, bed/nozzle temperatures, retraction length/threshold and fan percentage.
 - **Offline device-local C++ slicing**, cross-sectional contour tracing, basic insets for perimeters, linear infill and solid top/bottom fill.
 - G-code generation to local cache, interactive layer-by-layer XY toolpath preview, and explicit export via Android's save-file picker.

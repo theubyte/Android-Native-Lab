@@ -154,7 +154,7 @@ fun LayerForgeApp() {
             TopAppBar(title = {
                 Column {
                     Text("LAYERFORGE", fontWeight=FontWeight.Bold)
-                    Text("Native Android Slicer · Alpha 0.4", style=MaterialTheme.typography.labelSmall)
+                    Text("Native Android Slicer · Alpha 0.5", style=MaterialTheme.typography.labelSmall)
                 }
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor=dark.background))
         }) { inset ->
@@ -206,12 +206,18 @@ fun LayerForgeApp() {
                             ParameterSlider("Wände", profile.walls.toFloat(),1f,5f,"",0,{ changeProfile(profile.copy(walls=it.toInt())) })
                             ParameterSlider("Infill",profile.infill.toFloat(),0f,100f,"%",0,{ changeProfile(profile.copy(infill=it.toInt())) })
                             ParameterSlider("Druckgeschwindigkeit",profile.printSpeed,10f,180f,"mm/s",0,{ changeProfile(profile.copy(printSpeed=it)) })
+                            ParameterSlider("Reisegeschwindigkeit",profile.travelSpeed,30f,400f,"mm/s",0,{ changeProfile(profile.copy(travelSpeed=it)) })
                             ParameterSlider("Düsentemperatur",profile.nozzleC.toFloat(),180f,260f,"°C",0,{ changeProfile(profile.copy(nozzleC=it.toInt())) })
                             ParameterSlider("Betttemperatur",profile.bedC.toFloat(),0f,110f,"°C",0,{ changeProfile(profile.copy(bedC=it.toInt())) })
                             ParameterSlider("Top-/Bottom-Schichten",profile.topBottomLayers.toFloat(),0f,10f,"",0,{changeProfile(profile.copy(topBottomLayers=it.toInt()))})
                             ParameterSlider("Retraktion",profile.retractionMm,0f,3f,"mm",2,{changeProfile(profile.copy(retractionMm=it))})
                             ParameterSlider("Retraktionsweg",profile.retractMinTravelMm,1f,15f,"mm",1,{changeProfile(profile.copy(retractMinTravelMm=it))})
                             ParameterSlider("Bauteillüfter ab Schicht 2",profile.fanPercent.toFloat(),0f,100f,"%",0,{changeProfile(profile.copy(fanPercent=it.toInt()))})
+                            Spacer(Modifier.height(8.dp))
+                            Text("Drucker – generischer Bauraum",style=MaterialTheme.typography.titleMedium)
+                            ParameterSlider("Bauraum X",profile.bedX.toFloat(),100f,450f,"mm",0,{changeProfile(profile.copy(bedX=it.toDouble()))})
+                            ParameterSlider("Bauraum Y",profile.bedY.toFloat(),100f,450f,"mm",0,{changeProfile(profile.copy(bedY=it.toDouble()))})
+                            ParameterSlider("Bauraum Z",profile.bedZ.toFloat(),100f,500f,"mm",0,{changeProfile(profile.copy(bedZ=it.toDouble()))})
                             OutlinedButton(onClick={changeProfile(SliceProfile())}, modifier=Modifier.fillMaxWidth()) { Text("Generische Standardwerte wiederherstellen") }
                             Text("Gespeicherte Werte sind generisch und nicht für einen bestimmten Drucker validiert.",style=MaterialTheme.typography.bodySmall)
                         }
@@ -246,7 +252,7 @@ fun LayerForgeApp() {
                                                     pose.scale.toDouble(),pose.rotationX.toDouble(),pose.rotationY.toDouble(),
                                                     pose.rotationZ.toDouble(),pose.offsetX.toDouble(),pose.offsetY.toDouble())
                                                 if(!message.startsWith("OK:"))throw IOException(message)
-                                                Triple(file, message, parseToolpath(file))
+                                                Triple(file, message, parseToolpath(file,current.filamentDiameter))
                                             }
                                         }
                                         result.onSuccess { (file,message,preview) -> gcodeFile=file;toolpath=preview;status=message }
