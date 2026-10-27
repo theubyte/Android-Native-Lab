@@ -45,6 +45,12 @@ int main(){
  assert(transformMesh(mesh,turned).max.x-transformMesh(mesh,turned).min.x>14.1);
  ModelTransform moved;moved.offsetX=20;
  assert(std::abs((transformMesh(mesh,moved).max.x+transformMesh(mesh,moved).min.x)/2-20.0)<1e-6);
+ auto centerPreview=previewTransformed(mesh,ModelTransform{});
+ auto movedPreview=previewTransformed(mesh,moved);
+ assert(centerPreview.size()==movedPreview.size());
+ for(std::size_t i=4;i+2<centerPreview.size();i+=3){
+     assert(std::abs((movedPreview[i]-centerPreview[i])-20.0f)<0.001f);
+ }
  ModelTransform bad;bad.scale=0;
  try{transformMesh(mesh,bad);assert(false);}catch(const std::runtime_error&){}
  ModelTransform outside;outside.offsetX=200;
