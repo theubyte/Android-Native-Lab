@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Self-contained Gradle launcher for the Unraid APK Builder.
+# It intentionally never calls exit/logout/reboot/shutdown.
+set +e
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+VER=8.9
+CACHE="${GRADLE_USER_HOME:-$HOME/.gradle}/wrapper/dists/manual-$VER"
+BIN="$CACHE/gradle-$VER/bin/gradle"
+if [ ! -x "$BIN" ]; then
+  mkdir -p "$CACHE"
+  ZIP="$CACHE/gradle-$VER-bin.zip"
+  echo "Gradle $VER wird einmalig vorbereitet..."
+  if command -v curl >/dev/null 2>&1; then curl -fL "https://services.gradle.org/distributions/gradle-$VER-bin.zip" -o "$ZIP"; RC=$?; else wget -O "$ZIP" "https://services.gradle.org/distributions/gradle-$VER-bin.zip"; RC=$?; fi
+  if [ $RC -ne 0 ]; then echo "FEHLER: Gradle konnte nicht geladen werden."; false
+  else unzip -q -o "$ZIP" -d "$CACHE" && chmod +x "$BIN"; fi
+fi
+if [ -x "$BIN" ]; then cd "$ROOT" && "$BIN" "$@"; else false; fi

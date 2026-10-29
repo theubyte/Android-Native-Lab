@@ -22,6 +22,12 @@ A monorepo for independently written **native Android applications**. The GitHub
 
 The G-code is **not ready for unsupervised printing**. The offset and scanline geometry algorithms are intentionally basic and not safe for all topology; no robust self-intersection resolution, retraction, seam selection, fan profiles, pressure advance, supports, bridges, acceleration, multi-extrusion or firmware-specific start/end macros yet. The toolpath display is not a full 3D simulation. The built-in **generic** 220×220×250 mm profile is not an official K1C profile and has **not been validated on a real printer**. There is no printer connectivity yet. Never assume an untested file is safe simply because it exported.
 
+## Second app: Digitaler Schulranzen
+
+**Digitaler Schulranzen** is the tablet/S-Pen school application currently tracked at **V15.0.7**. Its source, Unraid sync backend, current UI reference screenshots, project idea, implemented state, architecture notes and open items are stored together under [`apps/digitaler-schulranzen/`](apps/digitaler-schulranzen/).
+
+The project is an independent Android Gradle application using package `de.millione.schulranzen`. The documentation under [`apps/digitaler-schulranzen/docs/`](apps/digitaler-schulranzen/docs/) records the product idea, the features already implemented and the remaining work, including the current S-Pen writing/rendering and eraser quality status.
+
 ## Repository structure
 
 ```text

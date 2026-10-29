@@ -1,0 +1,9 @@
+* text=auto
+*.sh text eol=lf
+*.gradle text eol=lf
+*.java text eol=lf
+*.md text eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.zip binary
