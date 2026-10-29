@@ -43,7 +43,13 @@ data class BackupManifest(
 }
 
 @Serializable
-data class BackupEntry(val path: String, val size: Long, val sha256: String)
+data class BackupEntry(
+    val path: String,
+    val size: Long,
+    val sha256: String,
+    /** Last change of the file, epoch millis (0 = unknown); merging compares it. */
+    val modified: Long = 0,
+)
 
 /** Paths inside an archive: only plain relative names, never "..", absolute paths or backslashes. */
 object ZipPaths {

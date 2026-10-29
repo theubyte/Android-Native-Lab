@@ -55,6 +55,7 @@ object FullBackup {
         zip.setLevel(Deflater.BEST_SPEED)
         val buf = ByteArray(64 * 1024)
         for ((path, file) in files) {
+            val modified = file.lastModified()
             val input = try { file.inputStream() } catch (_: FileNotFoundException) { continue }
             val md = MessageDigest.getInstance("SHA-256")
             var size = 0L
@@ -70,7 +71,7 @@ object FullBackup {
                 }
             }
             zip.closeEntry()
-            entries += BackupEntry(path, size, Hashing.hex(md.digest()))
+            entries += BackupEntry(path, size, Hashing.hex(md.digest()), modified)
         }
         val manifest = info.copy(format = BackupManifest.FORMAT, app = BackupManifest.APP_ID, entries = entries)
         zip.putNextEntry(ZipEntry(BackupManifest.FILE_NAME))
@@ -190,6 +191,9 @@ object FullBackup {
                 if (size != exp.size || !Hashing.hex(md.digest()).equals(exp.sha256, ignoreCase = true)) {
                     throw BackupException("Prüfsumme stimmt nicht: $name. Das Backup ist beschädigt.")
                 }
+                // Keep the original time: merging decides by it.
+                val time = if (exp.modified > 0) exp.modified else entry.time
+                if (time > 0) dest.setLastModified(time)
             }
             val missing = expected.keys - got
             if (missing.isNotEmpty()) throw BackupException("Backup unvollständig, es fehlt: ${missing.first()}")
