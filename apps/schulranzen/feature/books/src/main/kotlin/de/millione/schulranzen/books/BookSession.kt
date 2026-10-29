@@ -23,6 +23,8 @@ import de.millione.schulranzen.ink.ToolKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -87,8 +89,10 @@ internal class BookSession(private val context: Context, val bookId: String, val
                 val record = store.records.value.firstOrNull { it.id == bookId }
                     ?: run { error = "Dieses Buch gibt es nicht mehr."; return@launch }
                 title = record.title
-                val opened = withContext(Dispatchers.IO) { BookDocument.open(store, bookId) to store.loadMarks(bookId) }
+                // Not cancellable: a document opened after the screen closed must still be closed.
+                val opened = withContext(Dispatchers.IO + NonCancellable) { BookDocument.open(store, bookId) to store.loadMarks(bookId) }
                 val d = opened.first
+                if (!isActive) { d.close(); return@launch }
                 doc = d
                 marks = opened.second
                 pageCount = d.pageCount
