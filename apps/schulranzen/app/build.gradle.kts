@@ -55,6 +55,7 @@ dependencies {
     implementation(project(":feature:books"))
     implementation(project(":feature:study"))
     implementation(project(":feature:backup"))
+    implementation(project(":feature:handwriting"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.runtime.compose)

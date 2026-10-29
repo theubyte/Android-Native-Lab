@@ -12,6 +12,7 @@ gelten diese Regeln. Produktziel, Design und Phasen: [PLAN.md](PLAN.md).
 | `feature/books/` + `core/.../core/books/` | Agent „Bücher“ | Bücher/PDF: Import, Ansicht, Annotation, Inhaltsverzeichnis, Ausschnitte |
 | `feature/study/` + `core/.../core/study/` | Agent „Lernen“ | Stundenplan, Prüfungen, Karteikarten mit Wiederholung |
 | `feature/backup/` + `core/.../core/backup/` | Agent „Backup“ | Vollbackup/Restore, Unraid-Sync, Import aus V15 |
+| `feature/handwriting/` + `core/.../core/shapes/` | Agent „Schrift“ | Handschrift → Text, Suchindex über Handschrift, Formerkennung |
 
 Andere Dateien nur lesen. Braucht ein Agent etwas außerhalb seines Bereichs (eine neue
 Bibliothek im Versionskatalog, eine Änderung im Designsystem, ein Hook im Heft), beschreibt er
