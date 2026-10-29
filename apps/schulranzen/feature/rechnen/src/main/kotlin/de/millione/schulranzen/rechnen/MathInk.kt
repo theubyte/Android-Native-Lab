@@ -1,6 +1,8 @@
 package de.millione.schulranzen.rechnen
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.common.model.RemoteModelManager
@@ -16,9 +18,11 @@ import de.millione.schulranzen.core.math.AngleMode
 import de.millione.schulranzen.core.math.MathEngine
 import de.millione.schulranzen.core.math.MathResult
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -32,14 +36,26 @@ sealed interface InkModelStatus {
     data object NotDownloaded : InkModelStatus
     data object Downloading : InkModelStatus
     data object Ready : InkModelStatus
-    /** [message] is German and can be shown as is. */
-    data class Failed(val message: String) : InkModelStatus
+    /** [message] is German and can be shown as is. [canForce]: only blocked by the Wi-Fi rule. */
+    data class Failed(val message: String, val canForce: Boolean = false) : InkModelStatus
+}
+
+/** Outcome of [MathInk.solveOrExplain]: a result, nothing readable, or why recognition cannot run. */
+sealed interface InkSolve {
+    data class Solved(val result: MathResult) : InkSolve
+    data object NotRecognized : InkSolve
+    /** German message, e.g. the model is missing and the device is offline. */
+    data class Unavailable(val message: String) : InkSolve
 }
 
 /**
  * Handwritten maths: recognises pen strokes with Google ML Kit Digital Ink
- * Recognition (German model, about 20 MB, downloaded once on first use; Wi-Fi
- * not required) and solves the most plausible candidate with the core engine.
+ * Recognition (German model, about 20 MB, downloaded once) and solves the
+ * most plausible candidate with the core engine.
+ *
+ * The model state is shared by the whole process ([modelStatus]); the SHK
+ * screen offers a preload button via [ensureModel], so the first circled
+ * calculation also works offline later.
  *
  * Strokes are given as FloatArrays of x, y, t triples per point. t is the time
  * in milliseconds, best relative to the first point (floats cannot hold epoch
@@ -48,43 +64,36 @@ sealed interface InkModelStatus {
  * Keep one instance per screen or app and [close] it when done.
  */
 class MathInk(context: Context) {
-    @Suppress("unused")
     private val appContext = context.applicationContext
     private val lock = Mutex()
-    private var model: DigitalInkRecognitionModel? = null
     private var recognizer: DigitalInkRecognizer? = null
 
-    private val _status = MutableStateFlow<InkModelStatus>(InkModelStatus.Unknown)
-    val status: StateFlow<InkModelStatus> = _status.asStateFlow()
+    /** Same as [MathInk.modelStatus]. */
+    val status: StateFlow<InkModelStatus> get() = modelStatus
 
     /** Checks whether the model is already on the device without downloading it. */
-    suspend fun refreshStatus(): InkModelStatus {
-        val m = modelOrNull() ?: return _status.value
-        if (_status.value == InkModelStatus.Ready || _status.value == InkModelStatus.Downloading) return _status.value
-        val downloaded = runCatching { RemoteModelManager.getInstance().isModelDownloaded(m).await() }.getOrDefault(false)
-        _status.value = if (downloaded == true) InkModelStatus.Ready else InkModelStatus.NotDownloaded
-        return _status.value
+    suspend fun refreshStatus(): InkModelStatus = checkModel()
+
+    /**
+     * Makes sure the model is on the device, downloading it if needed (any
+     * network, since the user asked for a calculation). Returns true when ready.
+     */
+    suspend fun ensureModel(): Boolean = lock.withLock {
+        if (shared.value == InkModelStatus.Ready && recognizer != null) return@withLock true
+        val m = modelOrNull() ?: return@withLock false
+        if (!download(appContext, m, wifiOnly = false)) return@withLock false
+        if (recognizer == null) {
+            recognizer = DigitalInkRecognition.getClient(DigitalInkRecognizerOptions.builder(m).build())
+        }
+        true
     }
 
-    /** Makes sure the model is on the device, downloading it if needed. Returns true when ready. */
-    suspend fun ensureModel(): Boolean = lock.withLock {
-        if (_status.value == InkModelStatus.Ready && recognizer != null) return@withLock true
-        val m = modelOrNull() ?: return@withLock false
-        try {
-            val manager = RemoteModelManager.getInstance()
-            if (manager.isModelDownloaded(m).await() != true) {
-                _status.value = InkModelStatus.Downloading
-                manager.download(m, DownloadConditions.Builder().build()).await()
-            }
-            if (recognizer == null) {
-                recognizer = DigitalInkRecognition.getClient(DigitalInkRecognizerOptions.builder(m).build())
-            }
-            _status.value = InkModelStatus.Ready
-            true
-        } catch (e: Exception) {
-            _status.value = InkModelStatus.Failed("Handschriftmodell konnte nicht geladen werden. Internet beim ersten Mal nötig.")
-            false
+    /** Like [solve], but says why nothing came out (model missing, offline). */
+    suspend fun solveOrExplain(strokes: List<FloatArray>, angle: AngleMode = AngleMode.DEG, ans: Double = 0.0): InkSolve {
+        if (!ensureModel()) {
+            return InkSolve.Unavailable((shared.value as? InkModelStatus.Failed)?.message ?: "Handschrift-Modell nicht verfügbar")
         }
+        return solve(strokes, angle, ans)?.let { InkSolve.Solved(it) } ?: InkSolve.NotRecognized
     }
 
     /**
@@ -147,19 +156,96 @@ class MathInk(context: Context) {
     fun close() {
         runCatching { recognizer?.close() }
         recognizer = null
-        if (_status.value == InkModelStatus.Ready) _status.value = InkModelStatus.Unknown
     }
 
-    private fun modelOrNull(): DigitalInkRecognitionModel? {
-        model?.let { return it }
-        val id = listOf("de-DE", "de", "en-US").firstNotNullOfOrNull { tag ->
-            runCatching { DigitalInkRecognitionModelIdentifier.fromLanguageTag(tag) }.getOrNull()
+    companion object {
+        /** Approximate download size shown in the UI. */
+        const val MODEL_SIZE_TEXT = "~20 MB"
+
+        private val shared = MutableStateFlow<InkModelStatus>(InkModelStatus.Unknown)
+        private val downloadLock = Mutex()
+        @Volatile private var model: DigitalInkRecognitionModel? = null
+
+        /** Process-wide state of the handwriting model. */
+        val modelStatus: StateFlow<InkModelStatus> = shared.asStateFlow()
+
+        /** Looks on the device for the model; never downloads. */
+        suspend fun checkModel(): InkModelStatus {
+            val m = modelOrNull() ?: return shared.value
+            if (shared.value == InkModelStatus.Ready || shared.value == InkModelStatus.Downloading) return shared.value
+            val downloaded = runCatching { RemoteModelManager.getInstance().isModelDownloaded(m).await() }.getOrDefault(false)
+            shared.value = if (downloaded == true) InkModelStatus.Ready else InkModelStatus.NotDownloaded
+            return shared.value
         }
-        if (id == null) {
-            _status.value = InkModelStatus.Failed("Kein Handschriftmodell für Deutsch verfügbar")
-            return null
+
+        /**
+         * Preloads the model and reports progress: checking, downloading,
+         * ready or a German error. With [wifiOnly] a metered connection is
+         * refused with [InkModelStatus.Failed.canForce] set.
+         */
+        fun ensureModel(context: Context, wifiOnly: Boolean = true): Flow<InkModelStatus> = flow {
+            val m = modelOrNull()
+            if (m == null) { emit(shared.value); return@flow }
+            emit(checkModel())
+            if (shared.value != InkModelStatus.Ready) {
+                emit(InkModelStatus.Downloading)
+                download(context.applicationContext, m, wifiOnly)
+                emit(shared.value)
+            }
         }
-        return DigitalInkRecognitionModel.builder(id).build().also { model = it }
+
+        private suspend fun download(context: Context, m: DigitalInkRecognitionModel, wifiOnly: Boolean): Boolean = downloadLock.withLock {
+            val manager = RemoteModelManager.getInstance()
+            val there = runCatching { manager.isModelDownloaded(m).await() }.getOrDefault(false) == true
+            if (there) { shared.value = InkModelStatus.Ready; return@withLock true }
+            val net = network(context)
+            if (net == Net.OFFLINE) {
+                shared.value = InkModelStatus.Failed(
+                    "Das Handschrift-Modell ist noch nicht geladen und das Tablet ist offline. " +
+                        "Einmal mit dem WLAN verbinden und unter SHK-Werkzeuge › Schnellrechner „Handschrift-Modell laden“ tippen.",
+                )
+                return@withLock false
+            }
+            if (wifiOnly && net == Net.METERED) {
+                shared.value = InkModelStatus.Failed("Nur mobiles Internet verbunden. Das Modell ($MODEL_SIZE_TEXT) besser im WLAN laden.", canForce = true)
+                return@withLock false
+            }
+            shared.value = InkModelStatus.Downloading
+            try {
+                manager.download(m, DownloadConditions.Builder().build()).await()
+                shared.value = InkModelStatus.Ready
+                true
+            } catch (e: Exception) {
+                shared.value = InkModelStatus.Failed("Laden fehlgeschlagen. Internetverbindung prüfen und noch einmal versuchen.")
+                false
+            }
+        }
+
+        private enum class Net { OFFLINE, METERED, FREE }
+
+        private fun network(context: Context): Net = try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+            when {
+                caps == null || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) -> Net.OFFLINE
+                cm.isActiveNetworkMetered -> Net.METERED
+                else -> Net.FREE
+            }
+        } catch (e: SecurityException) {
+            Net.FREE // Without permission to look, just try.
+        }
+
+        private fun modelOrNull(): DigitalInkRecognitionModel? {
+            model?.let { return it }
+            val id = listOf("de-DE", "de", "en-US").firstNotNullOfOrNull { tag ->
+                runCatching { DigitalInkRecognitionModelIdentifier.fromLanguageTag(tag) }.getOrNull()
+            }
+            if (id == null) {
+                shared.value = InkModelStatus.Failed("Kein Handschrift-Modell für Deutsch verfügbar")
+                return null
+            }
+            return DigitalInkRecognitionModel.builder(id).build().also { model = it }
+        }
     }
 }
 

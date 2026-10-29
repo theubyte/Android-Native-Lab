@@ -80,6 +80,10 @@ import java.math.MathContext
 private const val TAB_CALC = 0
 private const val TAB_UNITS = 1
 private const val TAB_FORMULAS = 2
+private const val TAB_TABLES = 3
+private const val TAB_AUFMASS = 4
+private const val TAB_MATERIAL = 5
+private const val TAB_SCHEMA = 6
 
 /** Formula list filters: all, favourites, or one category. */
 private const val FILTER_ALL = "alle"
@@ -104,6 +108,12 @@ fun ShkScreen(onBack: () -> Unit) {
     var formulaFilter by rememberSaveable { mutableStateOf(FILTER_ALL) }
     var query by rememberSaveable { mutableStateOf("") }
     var detailOpen by rememberSaveable { mutableStateOf(false) }
+    var tableId by rememberSaveable { mutableStateOf(R_TABLE) }
+    var aufmassId by rememberSaveable { mutableStateOf<String?>(null) }
+    var schemaId by rememberSaveable { mutableStateOf<String?>(null) }
+    var materialSources by rememberSaveable { mutableStateOf(listOf<String>()) }
+    // Where "back" in the calculator leads after a jump from the schema or a table.
+    var returnTab by rememberSaveable { mutableStateOf<Int?>(null) }
     // Inputs survive switching between calculators and tabs: "calcId.key" → text.
     val calcInputs = remember { mutableStateMapOf<String, String>() }
     val unitValues = remember { mutableStateMapOf<String, String>() }
@@ -112,7 +122,12 @@ fun ShkScreen(onBack: () -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().background(c.desk)) {
         val wide = maxWidth >= 840.dp
         BackHandler {
-            if (!wide && detailOpen) detailOpen = false else onBack()
+            val back = returnTab
+            when {
+                back != null && section == TAB_CALC -> { section = back; detailOpen = back == TAB_TABLES; returnTab = null }
+                !wide && detailOpen -> detailOpen = false
+                else -> onBack()
+            }
         }
 
         Column(
@@ -133,27 +148,52 @@ fun ShkScreen(onBack: () -> Unit) {
             }
             Spacer(Modifier.height(18.dp))
             RegisterTabs(
-                tabs = listOf("Schnellrechner" to SubjectPalette.of(0), "Einheiten" to SubjectPalette.of(2), "Formeln" to SubjectPalette.of(1)),
+                tabs = listOf(
+                    "Schnellrechner" to SubjectPalette.of(0), "Einheiten" to SubjectPalette.of(2), "Formeln" to SubjectPalette.of(1),
+                    "Tabellen" to SubjectPalette.of(5), "Aufmaß" to SubjectPalette.of(3), "Material" to SubjectPalette.of(6), "Schema" to SubjectPalette.of(4),
+                ),
                 selected = section,
-                onSelect = { section = it; detailOpen = false },
-                modifier = Modifier.padding(start = 18.dp),
+                onSelect = { section = it; detailOpen = false; returnTab = null },
+                modifier = Modifier.padding(start = 18.dp).horizontalScroll(rememberScrollState()),
             )
             PaperPanel(Modifier.weight(1f).fillMaxWidth()) {
                 Box(Modifier.fillMaxSize()) {
                     val open = { detailOpen = true }
+                    // Jump into a calculator with values from the schema or a table, and back again.
+                    val openCalc = { id: String, values: Map<String, String>, from: Int? ->
+                        values.forEach { (k, v) -> calcInputs[id + "." + k] = v }
+                        calcId = id; section = TAB_CALC; detailOpen = true; returnTab = from
+                    }
                     when (section) {
                         TAB_CALC -> MasterDetail(
                             wide, detailOpen,
                             list = {
-                                CalculatorList(calcId) { calcId = it; open() }
+                                CalculatorList(calcId) { calcId = it; returnTab = null; open() }
                             },
                             detail = {
                                 CalculatorDetail(
                                     ShkCalculators.byId(calcId) ?: ShkCalculators.all.first(),
                                     calcInputs,
                                     onShowFormula = { id -> formulaId = id; formulaFilter = FILTER_ALL; section = TAB_FORMULAS; detailOpen = true },
+                                    returnLabel = when (returnTab) { TAB_SCHEMA -> "Zurück zum Schema"; TAB_TABLES -> "Zurück zur Tabelle"; else -> null },
+                                    onReturn = { returnTab?.let { section = it; detailOpen = it == TAB_TABLES }; returnTab = null },
                                 )
                             },
+                        )
+                        TAB_TABLES -> TablesTab(
+                            wide, detailOpen, tableId,
+                            onSelect = { tableId = it; open() },
+                            onCalculate = { id -> openCalc(id, emptyMap(), TAB_TABLES) },
+                        )
+                        TAB_AUFMASS -> AufmassTab(
+                            wide, detailOpen, onOpenDetail = open,
+                            selectedId = aufmassId, onSelect = { aufmassId = it },
+                            onMaterials = { id -> materialSources = listOf(aufmassSource(id)); section = TAB_MATERIAL; detailOpen = true },
+                        )
+                        TAB_MATERIAL -> MaterialTab(wide, detailOpen, onOpenDetail = open, sources = materialSources, onSources = { materialSources = it })
+                        TAB_SCHEMA -> SchemaTab(
+                            wide, schemaId, onSelectSchema = { schemaId = it },
+                            onCalculate = { link -> openCalc(link.calculatorId, link.inputs, TAB_SCHEMA) },
                         )
                         TAB_UNITS -> MasterDetail(
                             wide, detailOpen,
@@ -190,7 +230,7 @@ fun ShkScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun MasterDetail(
+internal fun MasterDetail(
     wide: Boolean,
     detailOpen: Boolean,
     list: @Composable () -> Unit,
@@ -214,6 +254,7 @@ private fun MasterDetail(
 private fun CalculatorList(selectedId: String, onPick: (String) -> Unit) {
     val groups = remember { ShkCalculators.all.groupBy { it.category } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+        item(key = "ink") { InkModelPanel(Modifier.padding(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 4.dp), compact = true) }
         FormulaCategory.entries.forEach { cat ->
             val calcs = groups[cat].orEmpty()
             if (calcs.isEmpty()) return@forEach
@@ -236,6 +277,8 @@ private fun CalculatorDetail(
     calc: ShkCalculator,
     inputs: MutableMap<String, String>,
     onShowFormula: (String) -> Unit,
+    returnLabel: String? = null,
+    onReturn: () -> Unit = {},
 ) {
     val c = Ranzen.colors
     val accent = calc.category.accent()
@@ -282,6 +325,10 @@ private fun CalculatorDetail(
             Column(
                 Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(horizontal = 32.dp, vertical = 28.dp),
             ) {
+                if (returnLabel != null) {
+                    QuietButton("‹ " + returnLabel, onReturn, color = c.signal)
+                    Spacer(Modifier.height(6.dp))
+                }
                 Caption(calc.category.title, color = accent)
                 Spacer(Modifier.height(4.dp))
                 Text(calc.title, style = Ranzen.type.title, color = c.ink)
@@ -498,7 +545,7 @@ private fun SearchField(query: String, onQuery: (String) -> Unit, modifier: Modi
 
 /** A filter as a quiet index tab: label with a lamp, underlined in the signal colour when active. */
 @Composable
-private fun FilterTab(text: String, color: Color?, selected: Boolean, onClick: () -> Unit) {
+internal fun FilterTab(text: String, color: Color?, selected: Boolean, onClick: () -> Unit) {
     val c = Ranzen.colors
     Column(
         Modifier

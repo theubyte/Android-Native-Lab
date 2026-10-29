@@ -7,6 +7,7 @@ enum class FormulaCategory(val title: String) {
     PIPES("Rohrnetz"),
     ELECTRIC("Elektro"),
     BASICS("SHK-Grundformeln"),
+    DESIGN("Auslegung"),
 }
 
 data class FormulaVariable(val symbol: String, val meaning: String, val unit: String)
@@ -230,6 +231,37 @@ object Formulas {
             listOf(v("c", "schräge Seite (Etagenlänge)", "mm"), v("a, b", "Katheten (Versatz, Baulänge)", "mm")),
             "Für Etagen und Versätze im Rohrleitungsbau.",
             "offset", listOf("etage", "versatz", "dreieck"),
+        ),
+        // Auslegung
+        Formula(
+            "mag", FormulaCategory.DESIGN, "Membran-Ausdehnungsgefäß", "V_N = (V_e + V_V) · (p_e + 1) / (p_e − p₀)",
+            listOf(
+                v("V_N", "Nennvolumen", "l"), v("V_e", "Ausdehnungsvolumen = V_A · n", "l"), v("V_V", "Wasservorlage", "l"),
+                v("p_e", "Enddruck = p_SV − 0,5", "bar"), v("p₀", "Vordruck = h_st / 10 + 0,2", "bar"),
+            ),
+            "Das MAG nimmt die Ausdehnung des Heizwassers auf. Vereinfacht nach EN 12828, für die Ausbildung.",
+            "mag", listOf("ausdehnungsgefäss", "vordruck", "druckhaltung"),
+        ),
+        Formula(
+            "radiator", FormulaCategory.DESIGN, "Heizkörperleistung umrechnen", "Φ = Φ_N · (ΔT_ln / ΔT_ln,N)ⁿ",
+            listOf(
+                v("Φ_N", "Normleistung bei 75/65/20", "W"), v("ΔT_ln", "(ϑ_V − ϑ_R) / ln((ϑ_V − ϑ_i)/(ϑ_R − ϑ_i))", "K"),
+                v("ΔT_ln,N", "49,8 K bei 75/65/20", "K"), v("n", "Heizkörperexponent ≈ 1,3", ""),
+            ),
+            "Katalogleistung auf die echten Systemtemperaturen umrechnen, z. B. für Wärmepumpen mit 55/45 °C.",
+            "radiator", listOf("heizkörper", "übertemperatur", "exponent"),
+        ),
+        Formula(
+            "tw_peak", FormulaCategory.DESIGN, "Trinkwasser-Spitzendurchfluss", "V̇_S = a · (ΣV̇_R)^b − c",
+            listOf(v("V̇_S", "Spitzendurchfluss", "l/s"), v("ΣV̇_R", "Summe der Berechnungsdurchflüsse", "l/s"), v("a, b, c", "Konstanten je Gebäudeart", "")),
+            "Nicht alle Zapfstellen laufen gleichzeitig. Vereinfacht nach DIN 1988-300, für die Ausbildung.",
+            "tw_peak", listOf("trinkwasser", "gleichzeitigkeit", "1988"),
+        ),
+        Formula(
+            "pump_head", FormulaCategory.DESIGN, "Förderhöhe der Pumpe", "H = (R · L · (1 + Z) + Δp_z) / (ρ · g)",
+            listOf(v("R", "Druckverlust je Meter", "Pa/m"), v("L", "Länge des ungünstigsten Kreises", "m"), v("Z", "Zuschlag Einzelwiderstände", "%"), v("Δp_z", "weitere Bauteile", "Pa")),
+            "Die Pumpe muss den Druckverlust des ungünstigsten Kreises überwinden. 10 kPa ≈ 1 m Förderhöhe.",
+            "pump_head", listOf("umwälzpumpe", "betriebspunkt", "druckverlust"),
         ),
     )
 

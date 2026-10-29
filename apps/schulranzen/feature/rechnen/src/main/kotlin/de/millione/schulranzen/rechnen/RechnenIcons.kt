@@ -49,4 +49,32 @@ internal object RechnenIcons {
     val Formula: ImageVector = RanzenIcons.line("formula") {
         moveTo(17f, 5f); lineTo(7f, 5f); lineTo(12.5f, 12f); lineTo(7f, 19f); lineTo(17f, 19f)
     }
+    val Download: ImageVector = RanzenIcons.line("download") {
+        moveTo(12f, 4f); lineTo(12f, 15f); moveTo(7.5f, 10.5f); lineTo(12f, 15f); lineTo(16.5f, 10.5f)
+        moveTo(5f, 19f); lineTo(19f, 19f)
+    }
+    val Rotate: ImageVector = RanzenIcons.line("rotate") {
+        moveTo(18.5f, 12f); arcToRelative(6.5f, 6.5f, 0f, true, true, -2.2f, -4.9f)
+        moveTo(16.8f, 3.6f); lineTo(16.6f, 7.4f); lineTo(12.8f, 7.2f)
+    }
+    val Mirror: ImageVector = RanzenIcons.line("mirror") {
+        moveTo(12f, 3.5f); lineTo(12f, 20.5f)
+        moveTo(9f, 7f); lineTo(4f, 17f); lineTo(9f, 17f); close()
+        moveTo(15f, 7f); lineTo(20f, 17f); lineTo(15f, 17f); close()
+    }
+    val Pipe: ImageVector = RanzenIcons.line("pipe") {
+        moveTo(3.5f, 8f); lineTo(14f, 8f); lineTo(14f, 20f)
+        moveTo(3.5f, 12f); lineTo(10f, 12f); lineTo(10f, 20f)
+    }
+    val Select: ImageVector = RanzenIcons.line("select") {
+        moveTo(6f, 4f); lineTo(6f, 18f); lineTo(9.6f, 14.6f); lineTo(12.2f, 20f); lineTo(14.4f, 19f); lineTo(11.8f, 13.6f); lineTo(16.5f, 13.4f); close()
+    }
+    val Label: ImageVector = RanzenIcons.line("label") {
+        moveTo(6f, 6f); lineTo(18f, 6f); moveTo(12f, 6f); lineTo(12f, 18.5f); moveTo(9.5f, 18.5f); lineTo(14.5f, 18.5f)
+    }
+    val Fit: ImageVector = RanzenIcons.line("fit") {
+        moveTo(4f, 9f); lineTo(4f, 4f); lineTo(9f, 4f); moveTo(15f, 4f); lineTo(20f, 4f); lineTo(20f, 9f)
+        moveTo(20f, 15f); lineTo(20f, 20f); lineTo(15f, 20f); moveTo(9f, 20f); lineTo(4f, 20f); lineTo(4f, 15f)
+    }
+    val Calc: ImageVector = Calculator
 }
