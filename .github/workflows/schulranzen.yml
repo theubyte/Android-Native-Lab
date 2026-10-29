@@ -1,0 +1,44 @@
+name: Schulranzen (neu) APK
+
+on:
+  push:
+    branches: [main]
+    paths: ['apps/schulranzen/**', '.github/workflows/schulranzen.yml']
+  pull_request:
+    paths: ['apps/schulranzen/**', '.github/workflows/schulranzen.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/schulranzen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - name: Android SDK 36
+        run: |
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -1)
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Unit tests
+        run: gradle :core:test --no-daemon
+      - name: Debug APK
+        run: gradle :app:assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: schulranzen-debug-apk
+          path: apps/schulranzen/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
