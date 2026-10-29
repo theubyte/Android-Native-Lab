@@ -10,6 +10,18 @@ import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import de.millione.schulranzen.design.RanzenIcon
+import de.millione.schulranzen.design.TactileKey
+import de.millione.schulranzen.study.StudyHome
+import de.millione.schulranzen.study.StudySubject
+import de.millione.schulranzen.study.TimetableScreen
+import de.millione.schulranzen.study.TodayStrip
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
@@ -92,34 +104,54 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 LaunchedEffect(Unit) { app.library.seed() }
-                var open by rememberSaveable { mutableStateOf<String?>(null) }
+                // Where we are, as a saveable string: "lib", "nb:<id>", "study", "timetable".
+                var route by rememberSaveable { mutableStateOf("lib") }
+                val subjects by app.library.subjects.collectAsState(initial = emptyList())
+                val studySubjects = remember(subjects) { subjects.map { StudySubject(it.id, it.name, it.colorIndex) } }
                 AnimatedContent(
-                    open,
+                    route,
                     transitionSpec = { (fadeIn() + scaleIn(spring(dampingRatio = 0.8f), initialScale = 0.97f)) togetherWith fadeOut() },
                     label = "screen",
-                ) { id ->
+                ) { r ->
                     val isDark = Ranzen.colors.isDark
-                    if (id == null) {
-                        LibraryScreen(
+                    when {
+                        r == "lib" -> LibraryScreen(
                             app.library,
-                            onOpen = { open = it },
+                            onOpen = { route = "nb:$it" },
                             onToggleTheme = {
                                 app.settings.setTheme(if (isDark) ThemeMode.LIGHT else ThemeMode.DARK)
                             },
+                            tools = {
+                                TactileKey({ route = "study" }, contentDescription = "Lernen") { RanzenIcon(AppIcons.Study) }
+                                Spacer(Modifier.width(10.dp))
+                                TactileKey({ route = "timetable" }, contentDescription = "Stundenplan") { RanzenIcon(AppIcons.Timetable) }
+                                Spacer(Modifier.width(16.dp))
+                            },
+                            today = { TodayStrip(Modifier.fillMaxWidth(), onClick = { route = "timetable" }) },
                         )
-                    } else {
-                        val session = remember(id) { NotebookSession(id, canvas, app.library, app.settings, app.scope) }
-                        DisposableEffect(session) {
-                            session.open()
-                            this@MainActivity.session = session
-                            canvas.visibility = View.VISIBLE
-                            onDispose {
-                                this@MainActivity.session = null
-                                session.close()
-                                canvas.visibility = View.GONE
-                            }
+                        r == "study" -> {
+                            BackHandler { route = "lib" }
+                            StudyHome(onBack = { route = "lib" }, onOpenTimetable = { route = "timetable" }, subjects = studySubjects)
                         }
-                        NotebookScreen(session, app.settings, onBack = { open = null })
+                        r == "timetable" -> {
+                            BackHandler { route = "lib" }
+                            TimetableScreen(onBack = { route = "lib" }, subjects = studySubjects)
+                        }
+                        r.startsWith("nb:") -> {
+                            val id = r.removePrefix("nb:")
+                            val session = remember(id) { NotebookSession(id, canvas, app.library, app.settings, app.scope) }
+                            DisposableEffect(session) {
+                                session.open()
+                                this@MainActivity.session = session
+                                canvas.visibility = View.VISIBLE
+                                onDispose {
+                                    this@MainActivity.session = null
+                                    session.close()
+                                    canvas.visibility = View.GONE
+                                }
+                            }
+                            NotebookScreen(session, app.settings, onBack = { route = "lib" })
+                        }
                     }
                 }
             }
