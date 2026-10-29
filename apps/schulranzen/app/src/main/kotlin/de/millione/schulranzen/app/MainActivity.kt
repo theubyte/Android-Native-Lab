@@ -21,6 +21,8 @@ import de.millione.schulranzen.design.TactileKey
 import de.millione.schulranzen.study.StudyHome
 import de.millione.schulranzen.books.BookShelf
 import de.millione.schulranzen.books.BookScreen
+import de.millione.schulranzen.app.notebook.SplitWithBook
+import de.millione.schulranzen.app.notebook.BookPickerSheet
 import de.millione.schulranzen.app.library.ClipTargetSheet
 import android.widget.Toast
 import androidx.compose.foundation.layout.Box
@@ -123,6 +125,8 @@ class MainActivity : ComponentActivity() {
                 AnimatedContent(
                     route,
                     transitionSpec = { (fadeIn() + scaleIn(spring(dampingRatio = 0.8f), initialScale = 0.97f)) togetherWith fadeOut() },
+                    // Opening a book beside the notebook keeps the notebook (same session, no fade).
+                    contentKey = { it.substringBefore("|") },
                     label = "screen",
                 ) { r ->
                     val isDark = Ranzen.colors.isDark
@@ -194,7 +198,9 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         r.startsWith("nb:") -> {
-                            val id = r.removePrefix("nb:")
+                            // "nb:<id>" or "nb:<id>|book:<bookId>" (book beside the notebook)
+                            val id = r.removePrefix("nb:").substringBefore("|")
+                            val sideBook = r.substringAfter("|book:", "").ifEmpty { null }
                             val session = remember(id) { NotebookSession(id, canvas, app.library, app.settings, app.scope) }
                             DisposableEffect(session) {
                                 session.open()
@@ -206,7 +212,19 @@ class MainActivity : ComponentActivity() {
                                     canvas.visibility = View.GONE
                                 }
                             }
-                            NotebookScreen(session, app.settings, onBack = { route = "lib" })
+                            var pickBook by remember { mutableStateOf(false) }
+                            SplitWithBook(
+                                canvas = canvas,
+                                bookId = sideBook,
+                                notebook = { compact ->
+                                    NotebookScreen(session, app.settings, onBack = { route = "lib" },
+                                        onBookBeside = { pickBook = true }, compact = compact)
+                                },
+                                book = { bookId ->
+                                    BookScreen(bookId, onBack = { route = "nb:$id" }, onClip = { session.insertImageFile(it) })
+                                },
+                            )
+                            if (pickBook) BookPickerSheet(app.books, onPick = { b -> pickBook = false; route = "nb:$id|book:${b.id}" }, onCancel = { pickBook = false })
                         }
                     }
                 }
@@ -239,8 +257,10 @@ class MainActivity : ComponentActivity() {
     override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
         if (::canvas.isInitialized && canvas.visibility == View.VISIBLE && ev.pointerCount > 0) {
             val t = ev.getToolType(0)
-            if (t == MotionEvent.TOOL_TYPE_STYLUS || t == MotionEvent.TOOL_TYPE_ERASER) {
-                val loc = IntArray(2).also { canvas.getLocationInWindow(it) }
+            val loc = IntArray(2).also { canvas.getLocationInWindow(it) }
+            // With a book beside the notebook, only hover over the notebook half is ours.
+            val inside = ev.x >= loc[0] && ev.x < loc[0] + canvas.width
+            if (inside && (t == MotionEvent.TOOL_TYPE_STYLUS || t == MotionEvent.TOOL_TYPE_ERASER)) {
                 val local = MotionEvent.obtain(ev).apply { offsetLocation(-loc[0].toFloat(), -loc[1].toFloat()) }
                 try { if (canvas.handleHover(local)) return true } finally { local.recycle() }
             }

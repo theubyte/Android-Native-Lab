@@ -97,7 +97,15 @@ private enum class Panel { NONE, STYLE, MORE, PAGES }
  * to the pen engine.
  */
 @Composable
-fun NotebookScreen(session: NotebookSession, settings: Settings, onBack: () -> Unit) {
+fun NotebookScreen(
+    session: NotebookSession,
+    settings: Settings,
+    onBack: () -> Unit,
+    /** Opens a book beside the notebook; null hides the entry. */
+    onBookBeside: (() -> Unit)? = null,
+    /** Narrow pane next to a book: keep the rail vertical even when the pane is taller than wide. */
+    compact: Boolean = false,
+) {
     val c = Ranzen.colors
     var panel by remember { mutableStateOf(Panel.NONE) }
     session.density = LocalDensity.current.density
@@ -130,7 +138,7 @@ fun NotebookScreen(session: NotebookSession, settings: Settings, onBack: () -> U
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val landscape = maxWidth > maxHeight
+        val landscape = compact || maxWidth > maxHeight
         val safe = Modifier.windowInsetsPadding(WindowInsets.safeDrawing)
 
         // Page counter, top centre
@@ -215,7 +223,8 @@ fun NotebookScreen(session: NotebookSession, settings: Settings, onBack: () -> U
                     cameraUri = uri
                     runCatching { takePhoto.launch(uri) }.onFailure { session.say("Keine Kamera-App gefunden") }
                 },
-                onPdf = { panel = Panel.NONE; savePdf.launch(session.title.ifBlank { "Heft" } + ".pdf") })
+                onPdf = { panel = Panel.NONE; savePdf.launch(session.title.ifBlank { "Heft" } + ".pdf") },
+                onBookBeside = onBookBeside?.let { open -> { panel = Panel.NONE; open() } })
         }
         AnimatedVisibility(panel == Panel.PAGES, Modifier.align(Alignment.CenterEnd),
             enter = fadeIn() + slideInHorizontally(spring(dampingRatio = 0.8f)) { it / 3 },
@@ -481,6 +490,7 @@ private fun MorePanel(
     onWorksheetPdf: () -> Unit,
     onWorksheetCamera: () -> Unit,
     onPdf: () -> Unit,
+    onBookBeside: (() -> Unit)?,
 ) {
     val c = Ranzen.colors
     PaperPanel(corner = 22.dp) {
@@ -514,6 +524,12 @@ private fun MorePanel(
             ActionRow(RanzenIcons.Image, "Bild aus der Galerie", onImage)
             if (session.clip != null) ActionRow(RanzenIcons.Copy, "Kopierte Auswahl einfügen", session::paste)
             Spacer(Modifier.height(16.dp))
+            if (onBookBeside != null) {
+                Text("Nebeneinander", style = Ranzen.type.heading, color = c.ink)
+                Spacer(Modifier.height(4.dp))
+                ActionRow(RanzenIcons.Book, "Buch daneben öffnen", onBookBeside)
+                Spacer(Modifier.height(16.dp))
+            }
             Text("Teilen", style = Ranzen.type.heading, color = c.ink)
             Spacer(Modifier.height(4.dp))
             ActionRow(RanzenIcons.Export, "Heft als PDF speichern", onPdf)

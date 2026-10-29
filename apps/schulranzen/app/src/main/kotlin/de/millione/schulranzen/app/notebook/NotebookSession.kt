@@ -196,6 +196,24 @@ class NotebookSession(
         }
     }
 
+    /**
+     * A picture that is already in the image folder (e.g. a clipping from
+     * the book beside the notebook) onto the visible page.
+     */
+    fun insertImageFile(file: java.io.File) {
+        val target = canvas.currentPage
+        if (canvas.page(target)?.locked == true) { say("Seite ist gesperrt"); return }
+        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(file.path, opts)
+        val aspect = if (opts.outWidth > 0) opts.outHeight.toFloat() / opts.outWidth else 0.75f
+        val w = minOf(PageGeometry.WIDTH * 0.6f, PageGeometry.HEIGHT * 0.8f / aspect)
+        val h = w * aspect
+        val c = canvas.visibleCentreOfCurrent()
+        tool = ToolKind.LASSO; applyTool()
+        canvas.addItem(target, ImageItem(canvas.newId(), c[0] - w / 2, c[1] - h / 2, w, h, file.name))
+        say("Ausschnitt eingefügt – mit dem Rahmen verschieben und skalieren")
+    }
+
     // ---- worksheets as pages ----
 
     /** Photos (gallery or camera) become new pages after the current one. */
