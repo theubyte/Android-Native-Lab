@@ -161,7 +161,8 @@ fun RegisterTabs(
             val shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp)
             Box(
                 Modifier
-                    .padding(top = lift, end = 6.dp)
+                    // The spring overshoots; padding must never go below zero.
+                    .padding(top = lift.coerceAtLeast(0.dp), end = 6.dp)
                     .clip(shape)
                     .background(if (active) c.paper else c.line.copy(alpha = if (c.isDark) 0.55f else 0.5f))
                     .border(0.5.dp, if (active) c.line else Color.Transparent, shape)

@@ -69,6 +69,21 @@ interface LibraryDao {
     @Query("SELECT * FROM notebook WHERE trashedAt IS NULL ORDER BY updatedAt DESC")
     fun notebooks(): Flow<List<Notebook>>
 
+    @Query("SELECT * FROM notebook WHERE trashedAt IS NOT NULL ORDER BY trashedAt DESC")
+    fun trashed(): Flow<List<Notebook>>
+
+    @Query("DELETE FROM notebook WHERE id = :id")
+    suspend fun deleteNotebookRow(id: String)
+
+    @Query("DELETE FROM page WHERE notebookId = :id")
+    suspend fun deletePagesOf(id: String)
+
+    @Transaction
+    suspend fun deleteNotebook(id: String) {
+        deletePagesOf(id)
+        deleteNotebookRow(id)
+    }
+
     @Query("SELECT * FROM notebook WHERE id = :id")
     suspend fun notebook(id: String): Notebook?
 

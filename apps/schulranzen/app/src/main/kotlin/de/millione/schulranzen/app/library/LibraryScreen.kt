@@ -66,6 +66,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -105,30 +106,52 @@ private sealed interface Sheet {
     data object New : Sheet
     data class Edit(val notebook: Notebook) : Sheet
     data object NewSubject : Sheet
+    data class Trashed(val notebook: Notebook) : Sheet
 }
 
 /** Home: the satchel. Subjects as register tabs, notebooks as real notebooks. */
 @Composable
-fun LibraryScreen(library: Library, onOpen: (String) -> Unit, onToggleTheme: () -> Unit) {
+fun LibraryScreen(
+    library: Library,
+    onOpen: (String) -> Unit,
+    onToggleTheme: () -> Unit,
+    /** Keys for the other areas (Lernen, Rechner, …), shown in the header. */
+    tools: @Composable () -> Unit = {},
+    /** Strip under the header (today's lessons, next exam). */
+    today: @Composable () -> Unit = {},
+) {
     val c = Ranzen.colors
     val subjects by library.subjects.collectAsState(initial = emptyList())
     val notebooks by library.notebooks.collectAsState(initial = emptyList())
+    val trashed by library.trashed.collectAsState(initial = emptyList())
     var tab by remember { mutableStateOf(0) }
     var sheet by remember { mutableStateOf<Sheet>(Sheet.None) }
+    var query by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { runCatching { library.emptyOldTrash() } }
 
-    val filter: Long? = if (tab == 0) null else subjects.getOrNull(tab - 1)?.id
-    val shown = notebooks.filter { filter == null || it.subjectId == filter }
+    val trashTab = subjects.size + 1
+    val inTrash = tab == trashTab
+    val filter: Long? = if (tab == 0 || inTrash) null else subjects.getOrNull(tab - 1)?.id
     val subjectOf = subjects.associateBy { it.id }
+    val q = query.trim().lowercase(Locale.GERMANY)
+    val shown = (if (inTrash) trashed else notebooks).filter { nb ->
+        (filter == null || nb.subjectId == filter) &&
+            (q.isEmpty() || nb.title.lowercase(Locale.GERMANY).contains(q) ||
+                (nb.subjectId?.let(subjectOf::get)?.name?.lowercase(Locale.GERMANY)?.contains(q) == true))
+    }
 
     Box(Modifier.fillMaxSize().background(c.desk)) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 40.dp)) {
             Spacer(Modifier.height(28.dp))
-            Header(onToggleTheme)
-            Spacer(Modifier.height(26.dp))
+            Header(onToggleTheme, query, { query = it }, tools)
+            Spacer(Modifier.height(14.dp))
+            today()
+            Spacer(Modifier.height(14.dp))
             Row(Modifier.zIndex(1f).offset(y = 1.dp).padding(start = 22.dp).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.Bottom) {
                 RegisterTabs(
-                    tabs = listOf("Alle" to null) + subjects.map { it.name to SubjectPalette.of(it.colorIndex) },
+                    tabs = listOf("Alle" to null) + subjects.map { it.name to SubjectPalette.of(it.colorIndex) } +
+                        (("Papierkorb" + if (trashed.isEmpty()) "" else " · ${trashed.size}") to null),
                     selected = tab,
                     onSelect = { tab = it },
                 )
@@ -147,17 +170,25 @@ fun LibraryScreen(library: Library, onOpen: (String) -> Unit, onToggleTheme: () 
                 ) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Hefte", style = Ranzen.type.title, color = c.ink)
+                            Text(if (inTrash) "Papierkorb" else if (q.isNotEmpty()) "Suche" else "Hefte", style = Ranzen.type.title, color = c.ink)
                             Spacer(Modifier.width(12.dp))
                             Text("%02d".format(shown.size), style = Ranzen.type.mono, color = c.inkMuted)
                             Spacer(Modifier.weight(1f))
-                            SignalButton("Neues Heft", { sheet = Sheet.New }, icon = RanzenIcons.Plus)
+                            if (inTrash) Text("Hefte im Papierkorb werden nach 30 Tagen gelöscht.", style = Ranzen.type.caption, color = c.inkMuted)
+                            else SignalButton("Neues Heft", { sheet = Sheet.New }, icon = RanzenIcons.Plus)
                         }
                     }
                     items(shown, key = { it.id }) { nb ->
-                        NotebookCover(nb, nb.subjectId?.let(subjectOf::get), onClick = { onOpen(nb.id) }, onLongClick = { sheet = Sheet.Edit(nb) })
+                        Box(Modifier.graphicsLayer { alpha = if (inTrash) 0.6f else 1f }) {
+                            NotebookCover(nb, nb.subjectId?.let(subjectOf::get),
+                                onClick = { if (inTrash) sheet = Sheet.Trashed(nb) else onOpen(nb.id) },
+                                onLongClick = { sheet = if (inTrash) Sheet.Trashed(nb) else Sheet.Edit(nb) })
+                        }
                     }
-                    item { NewTile { sheet = Sheet.New } }
+                    if (!inTrash && q.isEmpty()) item { NewTile { sheet = Sheet.New } }
+                    if (shown.isEmpty() && (inTrash || q.isNotEmpty())) item(span = { GridItemSpan(maxLineSpan) }) {
+                        Text(if (inTrash) "Der Papierkorb ist leer." else "Nichts gefunden zu \u201E$query\u201C.", style = Ranzen.type.body, color = c.inkMuted)
+                    }
                 }
             }
         }
@@ -189,6 +220,28 @@ fun LibraryScreen(library: Library, onOpen: (String) -> Unit, onToggleTheme: () 
             )
         }
         AnimatedVisibility(
+            current is Sheet.Trashed,
+            enter = fadeIn() + scaleIn(spring(dampingRatio = 0.7f), initialScale = 0.9f), exit = fadeOut() + scaleOut(targetScale = 0.95f),
+        ) {
+            val nb = (current as? Sheet.Trashed)?.notebook
+            var confirm by remember(nb) { mutableStateOf(false) }
+            if (nb != null) PaperPanel(corner = 26.dp) {
+                Column(Modifier.padding(30.dp).width(460.dp)) {
+                    Text(nb.title, style = Ranzen.type.title, color = c.ink)
+                    Spacer(Modifier.height(8.dp))
+                    Text("${nb.pageCount} Seiten · im Papierkorb", style = Ranzen.type.mono, color = c.inkMuted)
+                    Spacer(Modifier.height(26.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        QuietButton(if (confirm) "Wirklich endgültig löschen?" else "Endgültig löschen", {
+                            if (confirm) { scope.launch { library.deleteForever(nb) }; sheet = Sheet.None } else confirm = true
+                        }, color = c.signal)
+                        Spacer(Modifier.weight(1f))
+                        SignalButton("Wiederherstellen", { scope.launch { library.restore(nb) }; sheet = Sheet.None })
+                    }
+                }
+            }
+        }
+        AnimatedVisibility(
             current is Sheet.NewSubject,
             enter = fadeIn() + scaleIn(spring(dampingRatio = 0.7f), initialScale = 0.9f), exit = fadeOut() + scaleOut(targetScale = 0.95f),
         ) {
@@ -202,7 +255,7 @@ fun LibraryScreen(library: Library, onOpen: (String) -> Unit, onToggleTheme: () 
 }
 
 @Composable
-private fun Header(onToggleTheme: () -> Unit) {
+private fun Header(onToggleTheme: () -> Unit, query: String, onQuery: (String) -> Unit, tools: @Composable () -> Unit) {
     val c = Ranzen.colors
     var now by remember { mutableStateOf(Date()) }
     LaunchedEffect(Unit) { while (true) { delay(20_000); now = Date() } }
@@ -218,6 +271,9 @@ private fun Header(onToggleTheme: () -> Unit) {
                 Text(day, style = Ranzen.type.mono, color = c.inkMuted)
             }
         }
+        SearchField(query, onQuery)
+        Spacer(Modifier.width(16.dp))
+        tools()
         // A small retro display for the time
         Box(
             Modifier.clip(RoundedCornerShape(12.dp)).background(c.ink.copy(alpha = if (c.isDark) 0.08f else 0.88f))
@@ -335,7 +391,8 @@ private fun NotebookSheet(
     var paper by remember(editing) { mutableStateOf(PaperStyle.of(editing?.paper)) }
     val focus = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    // Keyboard only for a new notebook; editing is mostly subject or bin.
+    LaunchedEffect(Unit) { if (editing == null) runCatching { focus.requestFocus() } }
     PaperPanel(corner = 26.dp) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(30.dp).width(520.dp)) {
             Text(if (editing == null) "Neues Heft" else "Heft bearbeiten", style = Ranzen.type.title, color = c.ink)
@@ -443,6 +500,34 @@ private fun SubjectSheet(nextColor: Int, onCancel: () -> Unit, onSave: (String, 
                 Spacer(Modifier.width(10.dp))
                 SignalButton("Anlegen", { if (name.isNotBlank()) onSave(name, color) })
             }
+        }
+    }
+}
+
+/** Search in titles and subjects: an engraved field like a label strip. */
+@Composable
+private fun SearchField(query: String, onQuery: (String) -> Unit) {
+    val c = Ranzen.colors
+    val focus = LocalFocusManager.current
+    Row(
+        Modifier.width(300.dp).height(48.dp).clip(RoundedCornerShape(14.dp)).background(c.raised)
+            .border(1.dp, c.line, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RanzenIcon(RanzenIcons.Search, tint = c.inkMuted, size = 20.dp)
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.weight(1f)) {
+            BasicTextField(
+                query, onQuery, singleLine = true,
+                textStyle = Ranzen.type.body.copy(color = c.ink), cursorBrush = SolidColor(c.signal),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (query.isEmpty()) Text("Hefte suchen", style = Ranzen.type.body, color = c.inkFaint)
+        }
+        if (query.isNotEmpty()) Box(Modifier.clip(CircleShape).clickable { onQuery("") }.padding(4.dp)) {
+            RanzenIcon(RanzenIcons.Close, tint = c.inkMuted, size = 18.dp)
         }
     }
 }

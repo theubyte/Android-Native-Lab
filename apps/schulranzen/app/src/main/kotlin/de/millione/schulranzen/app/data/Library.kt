@@ -17,6 +17,7 @@ import de.millione.schulranzen.ink.PaperStyle
 import de.millione.schulranzen.ink.PdfExporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -34,6 +35,7 @@ class Library(private val context: Context) {
 
     val subjects: Flow<List<Subject>> = dao.subjects()
     val notebooks: Flow<List<Notebook>> = dao.notebooks()
+    val trashed: Flow<List<Notebook>> = dao.trashed()
 
     /** The subjects of the old app, so a fresh install starts organised. */
     suspend fun seed() {
@@ -63,6 +65,20 @@ class Library(private val context: Context) {
         dao.updateNotebook(n.copy(title = title.trim().ifEmpty { n.title }, subjectId = subjectId, updatedAt = System.currentTimeMillis()))
 
     suspend fun trash(n: Notebook) = dao.updateNotebook(n.copy(trashedAt = System.currentTimeMillis()))
+
+    suspend fun restore(n: Notebook) = dao.updateNotebook(n.copy(trashedAt = null, updatedAt = System.currentTimeMillis()))
+
+    /** Removes a notebook for good: its pages, ink and object files. Pictures stay (they may be shared). */
+    suspend fun deleteForever(n: Notebook) = withContext(Dispatchers.IO) {
+        for (p in dao.pages(n.id)) { inkFile(p.id).delete(); itemFile(p.id).delete() }
+        dao.deleteNotebook(n.id)
+    }
+
+    /** Notebooks in the bin longer than [days] are deleted for good. */
+    suspend fun emptyOldTrash(days: Int = 30) {
+        val limit = System.currentTimeMillis() - days * 86_400_000L
+        dao.trashed().first().filter { (it.trashedAt ?: 0) < limit }.forEach { deleteForever(it) }
+    }
 
     /** All pages with ink and objects, read off the main thread; pictures are decoded ahead. */
     suspend fun loadPages(notebookId: String): List<CanvasPage> = withContext(Dispatchers.IO) {
