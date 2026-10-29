@@ -27,6 +27,8 @@ dependencies {
     implementation(libs.motion.prediction)
     // Embedded outline and text layer for the table of contents (as in V15).
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    // On-device text recognition for scanned books; the Latin model ships with the app (no download).
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     testImplementation(libs.junit)
     testImplementation(kotlin("test"))
 }
