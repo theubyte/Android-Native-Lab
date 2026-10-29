@@ -18,15 +18,15 @@ class InkHistory(private val limit: Int = 200) {
         redo.clear()
     }
 
-    /** Reverts the last step on [pages]; returns the pages touched. */
-    fun undo(pages: (Int) -> PageInk?): Set<Int> {
+    /** Reverts the last step on [pages] (by page id); returns the page ids touched. */
+    fun undo(pages: (String) -> PageInk?): Set<String> {
         val step = undo.removeLastOrNull() ?: return emptySet()
         for (edit in step.asReversed()) pages(edit.page)?.revert(edit)
         redo.addLast(step)
         return step.mapTo(HashSet()) { it.page }
     }
 
-    fun redo(pages: (Int) -> PageInk?): Set<Int> {
+    fun redo(pages: (String) -> PageInk?): Set<String> {
         val step = redo.removeLastOrNull() ?: return emptySet()
         for (edit in step) pages(edit.page)?.apply(edit)
         undo.addLast(step)

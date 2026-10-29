@@ -8,7 +8,13 @@ enum class ToolKind(val code: Byte, val writes: Boolean) {
     PEN(1, true),
     MARKER(2, true),
     ERASER(3, false),
-    STROKE_ERASER(4, false);
+    STROKE_ERASER(4, false),
+    /** Select with a loop, then move, scale, copy, delete. */
+    LASSO(5, false),
+    /** Straight lines with angle snap and length readout. */
+    RULER(6, false),
+    /** Tap to place or edit typed text. */
+    TEXT(7, false);
 
     val erases get() = this == ERASER || this == STROKE_ERASER
 

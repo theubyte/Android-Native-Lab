@@ -27,6 +27,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.content.res.ResourcesCompat
 import androidx.core.view.WindowCompat
 import de.millione.schulranzen.app.data.Library
 import de.millione.schulranzen.app.data.Settings
@@ -68,7 +69,10 @@ class MainActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
         val root = FrameLayout(this)
-        canvas = NotebookCanvasView(this).apply { visibility = View.GONE }
+        canvas = NotebookCanvasView(this).apply {
+            visibility = View.GONE
+            ResourcesCompat.getFont(this@MainActivity, de.millione.schulranzen.design.R.font.inter)?.let { typeface = it }
+        }
         val ui = ComposeView(this)
         root.addView(canvas, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         root.addView(ui, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))

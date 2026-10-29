@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.serialization)
 }
 android {
     namespace = "de.millione.schulranzen.ink"
@@ -24,5 +25,6 @@ dependencies {
     implementation(libs.motion.prediction)
     implementation(libs.androidx.core.ktx)
     implementation(libs.coroutines.android)
+    api(libs.serialization.json)
     testImplementation(libs.junit)
 }

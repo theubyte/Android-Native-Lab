@@ -120,4 +120,32 @@ object RanzenIcons {
         curveTo(9.2f, 5.4f, 9.5f, 4.7f, 9.8f, 4.1f); curveTo(5.8f, 5.1f, 3.3f, 9.1f, 4.2f, 13.2f)
         curveTo(5.2f, 17.8f, 9.8f, 20.6f, 14.4f, 19.6f); curveTo(16.6f, 19.1f, 18.4f, 17.1f, 19.5f, 14.5f); close()
     }
+    val Bookmark = icon("bookmark") {
+        moveTo(7f, 3.5f); lineTo(17f, 3.5f); lineTo(17f, 20.5f); lineTo(12f, 16.5f); lineTo(7f, 20.5f); close()
+    }
+    val Lock = icon("lock") {
+        moveTo(6f, 10.5f); lineTo(18f, 10.5f); lineTo(18f, 20f); lineTo(6f, 20f); close()
+        moveTo(8.5f, 10.5f); lineTo(8.5f, 7.5f); arcToRelative(3.5f, 3.5f, 0f, false, true, 7f, 0f); lineTo(15.5f, 10.5f)
+        moveTo(12f, 14f); lineTo(12f, 16.5f)
+    }
+    val Image = icon("image") {
+        moveTo(4f, 5f); lineTo(20f, 5f); lineTo(20f, 19f); lineTo(4f, 19f); close()
+        moveTo(4f, 16f); lineTo(9f, 11f); lineTo(13f, 15f); lineTo(15.5f, 12.5f); lineTo(20f, 17f)
+        moveTo(15.5f, 8f); arcToRelative(1.3f, 1.3f, 0f, true, true, 0f, 2.6f); arcToRelative(1.3f, 1.3f, 0f, true, true, 0f, -2.6f)
+    }
+    val Export = icon("export") {
+        moveTo(12f, 14.5f); lineTo(12f, 3.5f); moveTo(8f, 7.5f); lineTo(12f, 3.5f); lineTo(16f, 7.5f)
+        moveTo(6f, 11f); lineTo(4.5f, 11f); lineTo(4.5f, 20.5f); lineTo(19.5f, 20.5f); lineTo(19.5f, 11f); lineTo(18f, 11f)
+    }
+    val Copy = icon("copy") {
+        moveTo(8.5f, 8.5f); lineTo(19.5f, 8.5f); lineTo(19.5f, 19.5f); lineTo(8.5f, 19.5f); close()
+        moveTo(15.5f, 8.5f); lineTo(15.5f, 4.5f); lineTo(4.5f, 4.5f); lineTo(4.5f, 15.5f); lineTo(8.5f, 15.5f)
+    }
+    val Scissors = icon("scissors") {
+        moveTo(6.5f, 4.5f); arcToRelative(2.5f, 2.5f, 0f, true, true, 0f, 5f); arcToRelative(2.5f, 2.5f, 0f, true, true, 0f, -5f)
+        moveTo(6.5f, 14.5f); arcToRelative(2.5f, 2.5f, 0f, true, true, 0f, 5f); arcToRelative(2.5f, 2.5f, 0f, true, true, 0f, -5f)
+        moveTo(8.6f, 8.4f); lineTo(20f, 17.5f); moveTo(8.6f, 15.6f); lineTo(20f, 6.5f)
+    }
+    val ArrowUp = icon("up") { moveTo(12f, 19f); lineTo(12f, 5f); moveTo(6.5f, 10.5f); lineTo(12f, 5f); lineTo(17.5f, 10.5f) }
+    val ArrowDown = icon("down") { moveTo(12f, 5f); lineTo(12f, 19f); moveTo(6.5f, 13.5f); lineTo(12f, 19f); lineTo(17.5f, 13.5f) }
 }

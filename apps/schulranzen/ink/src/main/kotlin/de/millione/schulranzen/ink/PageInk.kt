@@ -1,5 +1,7 @@
 package de.millione.schulranzen.ink
 
+import android.graphics.Matrix
+import android.graphics.RectF
 import androidx.ink.brush.InputToolType
 import androidx.ink.strokes.MutableStrokeInputBatch
 import androidx.ink.strokes.Stroke
@@ -32,24 +34,64 @@ class PageStroke(
         val half = size / 2
         minX = x0 - half; minY = y0 - half; maxX = x1 + half; maxY = y1 + half
     }
+
+    val bounds get() = RectF(minX, minY, maxX, maxY)
+
+    /**
+     * The stroke moved/scaled by [m] (uniform scale + translation). The
+     * brush width scales with it, so a shrunk drawing keeps its look.
+     */
+    fun transformed(m: Matrix, newId: Long): PageStroke {
+        val scale = abs(m.mapRadius(1f))
+        val pts = FloatArray(2)
+        val inputs = stroke.inputs
+        val out = MutableStrokeInputBatch()
+        for (i in 0 until inputs.size) {
+            val s = inputs.get(i)
+            pts[0] = s.x; pts[1] = s.y
+            m.mapPoints(pts)
+            out.add(StrokeInput.create(
+                pts[0], pts[1], s.elapsedTimeMillis, s.toolType, s.strokeUnitLengthCm,
+                if (s.hasPressure) s.pressure else StrokeInput.NO_PRESSURE,
+                if (s.hasTilt) s.tiltRadians else StrokeInput.NO_TILT,
+                if (s.hasOrientation) s.orientationRadians else StrokeInput.NO_ORIENTATION,
+            ))
+        }
+        val newSize = size * scale
+        return PageStroke(newId, tool, color, newSize, Stroke(Brushes.brush(tool, color, newSize), out))
+    }
+
+    fun recolored(newColor: Int, newId: Long) =
+        PageStroke(newId, tool, newColor, size, Stroke(Brushes.brush(tool, newColor, size), stroke.inputs))
+
+    private fun abs(f: Float) = if (f < 0) -f else f
 }
 
-/** A change to one page, as the eraser or a new stroke produced it. */
+/**
+ * A change to one page (by page id): strokes and objects taken away (each
+ * with the index it had, ascending) and added. Page ids, not positions, so
+ * undo still finds the page after pages were moved.
+ */
 class PageEdit(
-    val page: Int,
-    /** Strokes taken away, each with the index it had, ascending. */
+    val page: String,
     val removed: List<Pair<Int, PageStroke>>,
     val added: List<PageStroke>,
-)
+    val removedItems: List<Pair<Int, PageItem>> = emptyList(),
+    val addedItems: List<PageItem> = emptyList(),
+) {
+    val isEmpty get() = removed.isEmpty() && added.isEmpty() && removedItems.isEmpty() && addedItems.isEmpty()
+}
 
 /**
- * The strokes of one page and the operations on them. All coordinates are
- * page units; the eraser works on the true path geometry (capsules with the
- * brush width), so fast strokes leave no remnants.
+ * The content of one page: strokes plus objects (text, images). All
+ * coordinates are page units; the eraser works on the true path geometry
+ * (capsules with the brush width), so fast strokes leave no remnants.
  */
-class PageInk(strokes: List<PageStroke> = emptyList()) {
+class PageInk(strokes: List<PageStroke> = emptyList(), items: List<PageItem> = emptyList()) {
     private val list = ArrayList(strokes)
+    private val objects = ArrayList(items)
     val strokes: List<PageStroke> get() = list
+    val items: List<PageItem> get() = objects
     /** Bumped on every change; renderers re-record when it differs. */
     var revision = 0L
         private set
@@ -62,6 +104,11 @@ class PageInk(strokes: List<PageStroke> = emptyList()) {
             list.removeAll { it.id in ids }
         }
         list += edit.added
+        if (edit.removedItems.isNotEmpty()) {
+            val ids = edit.removedItems.mapTo(HashSet()) { it.second.id }
+            objects.removeAll { it.id in ids }
+        }
+        objects += edit.addedItems
         revision++
     }
 
@@ -71,8 +118,27 @@ class PageInk(strokes: List<PageStroke> = emptyList()) {
             list.removeAll { it.id in ids }
         }
         for ((index, s) in edit.removed) list.add(index.coerceIn(0, list.size), s)
+        if (edit.addedItems.isNotEmpty()) {
+            val ids = edit.addedItems.mapTo(HashSet()) { it.id }
+            objects.removeAll { it.id in ids }
+        }
+        for ((index, s) in edit.removedItems) objects.add(index.coerceIn(0, objects.size), s)
         revision++
     }
+
+    /** Edit that replaces the given strokes/items by their changed versions. */
+    fun replaceEdit(page: String, strokes: Map<Long, PageStroke>, items: Map<Long, PageItem>): PageEdit {
+        val removed = list.withIndex().filter { it.value.id in strokes }.map { it.index to it.value }
+        val removedItems = objects.withIndex().filter { it.value.id in items }.map { it.index to it.value }
+        return PageEdit(page, removed, strokes.values.toList(), removedItems, items.values.toList())
+    }
+
+    /** Edit that removes the given strokes and items. */
+    fun removeEdit(page: String, strokeIds: Set<Long>, itemIds: Set<Long>): PageEdit = PageEdit(
+        page,
+        list.withIndex().filter { it.value.id in strokeIds }.map { it.index to it.value }, emptyList(),
+        objects.withIndex().filter { it.value.id in itemIds }.map { it.index to it.value }, emptyList(),
+    )
 
     /**
      * Erases along the segment (ax, ay)–(bx, by) with [radius]. A stroke
@@ -80,7 +146,7 @@ class PageInk(strokes: List<PageStroke> = emptyList()) {
      * touched parts out and keeps the rest as new strokes. Returns the edit,
      * or null when nothing was hit. [nextId] provides ids for new pieces.
      */
-    fun erase(page: Int, ax: Float, ay: Float, bx: Float, by: Float, radius: Float, whole: Boolean, nextId: () -> Long): PageEdit? {
+    fun erase(page: String, ax: Float, ay: Float, bx: Float, by: Float, radius: Float, whole: Boolean, nextId: () -> Long): PageEdit? {
         val removed = ArrayList<Pair<Int, PageStroke>>()
         val added = ArrayList<PageStroke>()
         val sx0 = min(ax, bx) - radius; val sx1 = max(ax, bx) + radius
@@ -104,7 +170,59 @@ class PageInk(strokes: List<PageStroke> = emptyList()) {
         return edit
     }
 
+    /**
+     * What a lasso loop ([polygon], page units, x/y pairs) encloses: strokes
+     * with most of their path inside, objects whose centre is inside.
+     */
+    fun select(polygon: FloatArray): Pair<Set<Long>, Set<Long>> {
+        if (polygon.size < 6) return emptySet<Long>() to emptySet()
+        val strokes = HashSet<Long>()
+        val scratch = StrokeInput()
+        for (s in list) {
+            val inputs = s.stroke.inputs
+            val n = inputs.size
+            if (n == 0) continue
+            val step = max(1, n / 24)
+            var inside = 0; var total = 0
+            var i = 0
+            while (i < n) {
+                inputs.populate(i, scratch)
+                if (contains(polygon, scratch.x, scratch.y)) inside++
+                total++
+                i += step
+            }
+            if (inside * 2 > total) strokes += s.id
+        }
+        val items = objects.filter { val b = it.bounds(); contains(polygon, b.centerX(), b.centerY()) }.mapTo(HashSet()) { it.id }
+        return strokes to items
+    }
+
+    /** Union of the bounds of the given strokes and items, or null. */
+    fun boundsOf(strokeIds: Set<Long>, itemIds: Set<Long>): RectF? {
+        var r: RectF? = null
+        for (s in list) if (s.id in strokeIds) r = (r ?: RectF(s.bounds)).also { it.union(s.bounds) }
+        for (o in objects) if (o.id in itemIds) { val b = o.bounds(); r = (r ?: RectF(b)).also { it.union(b) } }
+        return r
+    }
+
+    /** Text item at a page point, for editing. */
+    fun textAt(x: Float, y: Float): TextItem? =
+        objects.asReversed().firstOrNull { it is TextItem && it.bounds().contains(x, y) } as? TextItem
+
     companion object {
+        /** Even-odd point in polygon test. */
+        fun contains(poly: FloatArray, x: Float, y: Float): Boolean {
+            var c = false
+            var j = poly.size - 2
+            var i = 0
+            while (i < poly.size) {
+                val xi = poly[i]; val yi = poly[i + 1]; val xj = poly[j]; val yj = poly[j + 1]
+                if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c
+                j = i; i += 2
+            }
+            return c
+        }
+
         private fun pathTouches(inputs: StrokeInputBatch, s: StrokeInput, ax: Float, ay: Float, bx: Float, by: Float, reach: Float): Boolean {
             if (inputs.size == 0) return false
             inputs.populate(0, s)
@@ -177,6 +295,17 @@ class PageInk(strokes: List<PageStroke> = emptyList()) {
                 if (a.hasTilt && b.hasTilt) mix(a.tiltRadians, b.tiltRadians) else StrokeInput.NO_TILT,
                 if (a.hasOrientation && b.hasOrientation) a.orientationRadians else StrokeInput.NO_ORIENTATION,
             )
+        }
+
+        /** A straight stroke from a to b (ruler), evenly sampled. */
+        fun line(ax: Float, ay: Float, bx: Float, by: Float, tool: InputToolType = InputToolType.STYLUS): StrokeInputBatch {
+            val b = MutableStrokeInputBatch()
+            val n = max(2, (hypot(bx - ax, by - ay) / 3f).toInt())
+            for (i in 0..n) {
+                val t = i / n.toFloat()
+                b.add(tool, ax + (bx - ax) * t, ay + (by - ay) * t, i * 4L)
+            }
+            return b
         }
 
         /** Builds a batch from plain points (tests, imports). */

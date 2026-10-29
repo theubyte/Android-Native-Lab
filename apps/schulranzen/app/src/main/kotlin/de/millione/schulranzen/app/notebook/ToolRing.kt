@@ -60,7 +60,7 @@ object ToolRingGeometry {
     const val HOLE = 30f
     const val INNER = 80f
     const val OUTER = 124f
-    val tools = listOf(ToolKind.PEN, ToolKind.MARKER, ToolKind.ERASER, ToolKind.STROKE_ERASER)
+    val tools = listOf(ToolKind.PEN, ToolKind.MARKER, ToolKind.ERASER, ToolKind.STROKE_ERASER, ToolKind.LASSO, ToolKind.RULER, ToolKind.TEXT)
     /** Swatches follow the tool; set by the session before the ring opens. */
     var swatches: List<Int> = InkPalette.pen
 
@@ -101,6 +101,7 @@ fun ToolRingOverlay(
     val icons = mapOf(
         ToolKind.PEN to RanzenIcons.Pen, ToolKind.MARKER to RanzenIcons.Marker,
         ToolKind.ERASER to RanzenIcons.Eraser, ToolKind.STROKE_ERASER to RanzenIcons.Trash,
+        ToolKind.LASSO to RanzenIcons.Lasso, ToolKind.RULER to RanzenIcons.Ruler, ToolKind.TEXT to RanzenIcons.Text,
     )
     val painters = icons.mapValues { rememberVectorPainter(it.value) }
     val hovered = ToolRingGeometry.hit(state.x, state.y, state.hoverX, state.hoverY, density)
@@ -152,7 +153,7 @@ fun ToolRingOverlay(
                         drawArcSegment(centre, hole + 3.dp.toPx(), inner - 3.dp.toPx(), i * seg, seg,
                             (if (hot) c.signal.copy(alpha = 0.22f) else c.signal.copy(alpha = 0.12f)).copy(alpha = if (hot) 0.22f * alpha else 0.12f * alpha))
                     }
-                    val iconSize = (if (hot) 30 else 26).dp.toPx()
+                    val iconSize = (if (hot) 28 else 23).dp.toPx()
                     translate(pos.x - iconSize / 2, pos.y - iconSize / 2) {
                         with(painters.getValue(kind)) {
                             draw(Size(iconSize, iconSize), alpha = alpha, colorFilter = ColorFilter.tint(if (selected) c.signal else c.ink))
@@ -211,6 +212,9 @@ fun toolName(kind: ToolKind) = when (kind) {
     ToolKind.MARKER -> "Marker"
     ToolKind.ERASER -> "Radierer"
     ToolKind.STROKE_ERASER -> "Strichradierer"
+    ToolKind.LASSO -> "Lasso"
+    ToolKind.RULER -> "Lineal"
+    ToolKind.TEXT -> "Text"
 }
 
 private fun DrawScope.drawArcSegment(centre: Offset, r0: Float, r1: Float, startDeg: Float, sweepDeg: Float, color: Color) {

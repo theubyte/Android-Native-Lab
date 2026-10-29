@@ -3,6 +3,20 @@
 Native Android-App (Kotlin, Jetpack Compose, Jetpack Ink) für das Galaxy Tab S7 FE mit S Pen.
 Nachfolger von `apps/digitaler-schulranzen` (V15.0.7, Java). Plan, Design und Phasen: [docs/PLAN.md](docs/PLAN.md).
 
+## Stand 0.2.0 (Phase 1–3)
+
+Neu in 0.2.0 (Phase 3, Heft komplett):
+- **Lasso:** Schleife ziehen, Auswahl verschieben, am Griff skalieren (Strichstärke skaliert mit),
+  Ausschneiden, Kopieren, Duplizieren, Einfärben, Löschen; Einfügen auf der sichtbaren Seite.
+- **Lineal:** gerade Linien, rastet bei 15°-Schritten ein, Anzeige von Länge (mm) und Winkel.
+- **Text:** Seite antippen, Text schreiben (Klein/Normal/Groß, Farben), antippen zum Bearbeiten.
+- **Bilder** aus der Galerie (werden in die App kopiert), mit dem Lasso verschieb- und skalierbar.
+- **Seitenübersicht** mit Vorschaubildern: springen, Seite vor/zurück, Kopie, Lesezeichen, Sperren,
+  Löschen; Filter „Lesezeichen“.
+- **Lesezeichen** (oranges Band am Blatt) und **Seitensperre** (kein Schreiben/Radieren).
+- **PDF-Export** über den Speichern-Dialog, wahlweise ohne Linien/Karos.
+- Rückgängig/Wiederholen für alles davon; Datenbank-Migration 1 → 2.
+
 ## Stand 0.1.0 (Phase 1 + Anfang Phase 2)
 
 - Designsystem „Retro-Modern Clean“: Papier- und Schiefer-Farben, Fachfarben als Akzente, Schriften Bricolage Grotesque / Inter / IBM Plex Mono (OFL, `licenses/`), eigene Linien-Icons, Tasten mit Soft-3D.

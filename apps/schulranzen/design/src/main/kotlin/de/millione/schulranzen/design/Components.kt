@@ -136,7 +136,9 @@ fun Lamp(color: Color, modifier: Modifier = Modifier, size: Dp = 10.dp, glow: Bo
                 if (glow) drawCircle(color.copy(alpha = 0.28f), radius = this.size.minDimension * 0.95f)
             }
             .clip(CircleShape)
-            .background(color),
+            .background(color)
+            // A fine rim so ink black stays visible on the slate theme.
+            .border(0.75.dp, Ranzen.colors.inkFaint.copy(alpha = 0.6f), CircleShape),
     )
 }
 

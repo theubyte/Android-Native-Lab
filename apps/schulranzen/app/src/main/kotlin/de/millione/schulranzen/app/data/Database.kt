@@ -13,6 +13,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "subject")
@@ -44,6 +46,8 @@ data class Page(
     val notebookId: String,
     val position: Int,
     val paper: String,
+    val bookmarked: Boolean = false,
+    val locked: Boolean = false,
 )
 
 @Dao
@@ -93,6 +97,31 @@ interface LibraryDao {
     @Query("UPDATE page SET paper = :paper WHERE id = :id")
     suspend fun setPaper(id: String, paper: String)
 
+    @Query("UPDATE page SET bookmarked = :on WHERE id = :id")
+    suspend fun setBookmarked(id: String, on: Boolean)
+
+    @Query("UPDATE page SET locked = :on WHERE id = :id")
+    suspend fun setLocked(id: String, on: Boolean)
+
+    @Query("DELETE FROM page WHERE id = :id")
+    suspend fun deletePage(id: String)
+
+    @Query("UPDATE page SET position = :position WHERE id = :id")
+    suspend fun setPosition(id: String, position: Int)
+
+    /** Writes the page order as given. */
+    @Transaction
+    suspend fun reorder(notebookId: String, ids: List<String>) {
+        ids.forEachIndexed { i, id -> setPosition(id, i) }
+        recount(notebookId)
+    }
+
+    @Transaction
+    suspend fun removePage(notebookId: String, id: String, remaining: List<String>) {
+        deletePage(id)
+        reorder(notebookId, remaining)
+    }
+
     @Transaction
     suspend fun createNotebook(n: Notebook, first: Page) {
         insertNotebook(n)
@@ -107,14 +136,23 @@ interface LibraryDao {
     }
 }
 
-@Database(entities = [Subject::class, Notebook::class, Page::class], version = 1, exportSchema = true)
+@Database(entities = [Subject::class, Notebook::class, Page::class], version = 2, exportSchema = true)
 abstract class RanzenDatabase : RoomDatabase() {
     abstract fun library(): LibraryDao
 
     companion object {
+        /** 0.2: bookmarks and locked pages. */
+        val V1_TO_V2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE page ADD COLUMN bookmarked INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE page ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         @Volatile private var instance: RanzenDatabase? = null
         fun get(context: Context): RanzenDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, RanzenDatabase::class.java, "ranzen.db")
+                .addMigrations(V1_TO_V2)
                 .build().also { instance = it }
         }
     }
