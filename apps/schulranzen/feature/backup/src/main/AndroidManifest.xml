@@ -1,7 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- Unraid sync. The server runs in the home network over plain HTTP
          (http://<nas>:8788), so cleartext must be allowed. -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <application android:usesCleartextTraffic="true" />
+    <application android:usesCleartextTraffic="true">
+        <!-- Re-creates the automatic backup schedule at app start (also after a restore). -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="de.millione.schulranzen.backup.AutoBackupInitializer"
+                android:value="androidx.startup" />
+        </provider>
+    </application>
 </manifest>

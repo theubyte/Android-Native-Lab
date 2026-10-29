@@ -139,7 +139,7 @@ class BackupCryptoTest {
             e.finish()
         }
         assertTrue(BackupCrypto.isEncrypted(enc))
-        assertEquals(ArchiveKind.UNKNOWN, FullBackup.detect(enc))
+        assertEquals(ArchiveKind.ENCRYPTED, FullBackup.detect(enc))
         assertTrue(BackupCrypto.checkPassword(enc, pw))
         assertFalse(BackupCrypto.checkPassword(enc, "falsch".toCharArray()))
         val zip = File(tmp.root, "out.zip")

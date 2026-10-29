@@ -24,6 +24,10 @@ dependencies {
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)
+    // Automatic backup (exact stable versions, own coordinates per AGENTS.md).
+    implementation("androidx.work:work-runtime:2.11.0")
+    implementation("androidx.startup:startup-runtime:1.2.0")
+    implementation("androidx.documentfile:documentfile:1.1.0")
     testImplementation(libs.junit)
     testImplementation(kotlin("test"))
 }

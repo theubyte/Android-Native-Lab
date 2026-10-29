@@ -21,8 +21,8 @@ class BackupRoot(val name: String, val dir: File, val exclude: (String) -> Boole
     init { require(ZipPaths.isSafe(name) && !name.contains('/')) { "Ungültiger Wurzelname: $name" } }
 }
 
-/** What kind of ZIP a user picked. */
-enum class ArchiveKind { OWN, V15, UNKNOWN }
+/** What kind of file a user picked. [ENCRYPTED] needs a password first ([BackupCrypto]). */
+enum class ArchiveKind { OWN, V15, ENCRYPTED, UNKNOWN }
 
 /**
  * Full backup and restore as plain file operations, independent of Android,
@@ -100,7 +100,7 @@ object FullBackup {
     }
 
     /** Looks at a ZIP without extracting it. */
-    fun detect(zip: File): ArchiveKind = try {
+    fun detect(zip: File): ArchiveKind = if (BackupCrypto.isEncrypted(zip)) ArchiveKind.ENCRYPTED else try {
         ZipFile(zip).use { z ->
             when {
                 z.getEntry(BackupManifest.FILE_NAME) != null -> ArchiveKind.OWN

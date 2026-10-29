@@ -45,27 +45,36 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import de.millione.schulranzen.core.backup.ArchiveKind
+import de.millione.schulranzen.core.backup.AutoInterval
+import de.millione.schulranzen.core.backup.BackupCrypto
+import de.millione.schulranzen.core.backup.BackupHooks
 import de.millione.schulranzen.core.backup.ImportedLibrary
+import de.millione.schulranzen.core.backup.MergeParticipant
+import de.millione.schulranzen.core.backup.MergeReport
 import de.millione.schulranzen.core.backup.NotebookKind
 import de.millione.schulranzen.core.backup.RemoteVersion
 import de.millione.schulranzen.core.backup.V15Backup
+import de.millione.schulranzen.core.backup.WrongPasswordException
 import de.millione.schulranzen.design.Lamp
 import de.millione.schulranzen.design.PaperPanel
 import de.millione.schulranzen.design.QuietButton
@@ -75,8 +84,13 @@ import de.millione.schulranzen.design.RanzenIcons
 import de.millione.schulranzen.design.SignalButton
 import de.millione.schulranzen.design.SubjectPalette
 import de.millione.schulranzen.design.TactileKey
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -105,50 +119,98 @@ object BackupIcons {
         moveTo(9f, 9f); lineTo(9f, 6.5f); curveTo(9f, 4.5f, 15f, 4.5f, 15f, 6.5f); lineTo(15f, 9f)
         moveTo(12f, 11.5f); lineTo(12f, 17f); moveTo(9.5f, 14.5f); lineTo(12f, 17f); lineTo(14.5f, 14.5f)
     }
+    /** Clock face with a circular arrow: automatic backup. */
+    val Auto = RanzenIcons.line("auto") {
+        moveTo(19.5f, 12f); curveTo(19.5f, 16.2f, 16.2f, 19.5f, 12f, 19.5f); curveTo(7.8f, 19.5f, 4.5f, 16.2f, 4.5f, 12f)
+        curveTo(4.5f, 7.8f, 7.8f, 4.5f, 12f, 4.5f); curveTo(14.6f, 4.5f, 16.9f, 5.8f, 18.2f, 7.8f)
+        moveTo(18.5f, 4.5f); lineTo(18.4f, 8f); lineTo(15f, 7.8f)
+        moveTo(12f, 8f); lineTo(12f, 12f); lineTo(14.8f, 13.8f)
+    }
+    /** Padlock: encryption. */
+    val Lock = RanzenIcons.Lock
 }
 
-/** Remembers one manager per screen; pass your own to set the hooks. */
+/** Remembers one manager per screen with the given hooks. */
 @Composable
-fun rememberBackupManager(): BackupManager {
+fun rememberBackupManager(hooks: BackupHooks = BackupHooks.None): BackupManager {
     val ctx = LocalContext.current.applicationContext
-    return remember { BackupManager(ctx) }
+    return remember { BackupManager(ctx, hooks) }.also { it.hooks = hooks }
 }
 
 private sealed interface Sheet {
     data class ConfirmRestore(val info: ArchiveInfo, val source: String) : Sheet
     data class Preview(val library: ImportedLibrary, val file: File) : Sheet
+    data class Unlock(val info: ArchiveInfo, val source: String, val error: String?) : Sheet
+    /** Asks for a password; [twice] = new password (typed twice), [offerRemember] shows the switch. */
+    class Password(
+        val title: String,
+        val text: String,
+        val twice: Boolean,
+        val offerRemember: Boolean,
+        val onOk: (CharArray, Boolean) -> Unit,
+    ) : Sheet
+    data class MergeDone(val reports: List<MergeReport>) : Sheet
 }
 
 /**
- * Backup, restore, Unraid sync and the import from the old app.
- * [onImportV15] stores the read library (implement with V15Import.run and
- * an ImportSink); the library is closed afterwards. [manager] carries the
- * database hooks (beforeBackup / beforeRestore).
+ * Backup, restore, automatic backup, encryption, Unraid sync and the
+ * import from the old app.
+ *
+ * - [onImportV15] stores the read library (implement with V15Import.run
+ *   and an ImportSink); the library is closed afterwards.
+ * - [hooks] close and reopen the databases around a restore
+ *   ([BackupHooks.beforeRestore] / [BackupHooks.afterRestore]); after a
+ *   restore the app restarts by itself.
+ * - [mergeParticipants] enable "Zusammenführen" (merge instead of
+ *   replace); with none the option is shown greyed out.
  */
 @Composable
 fun BackupScreen(
     onBack: () -> Unit,
     onImportV15: suspend (ImportedLibrary) -> Unit,
-    manager: BackupManager = rememberBackupManager(),
+    hooks: BackupHooks = BackupHooks.None,
+    mergeParticipants: List<MergeParticipant> = emptyList(),
+    manager: BackupManager = rememberBackupManager(hooks),
 ) {
     val c = Ranzen.colors
     val context = LocalContext.current
     val account = remember { SyncAccount(context.applicationContext) }
+    val settings = remember { BackupSettings.get(context.applicationContext) }
     val scope = rememberCoroutineScope()
     val progress by manager.progress.collectAsState()
     val restart by manager.restartRequired.collectAsState()
     var sheet by remember { mutableStateOf<Sheet?>(null) }
+    var job by remember { mutableStateOf<Job?>(null) }
     val busy = progress is BackupProgress.Working
 
     fun fail(e: Throwable) {
-        if (e is kotlinx.coroutines.CancellationException) throw e
+        if (e is CancellationException) throw e
         manager.report(BackupProgress.Failed(BackupManager.messageOf(e)))
     }
 
-    /** A picked/downloaded archive: own backup → confirm restore, V15 → read and preview. */
+    /** Starts one user operation; only one at a time, cancellable from the status strip. */
+    fun launchOp(block: suspend CoroutineScope.() -> Unit) {
+        if (job?.isActive == true) return
+        job = scope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                if (manager.progress.value is BackupProgress.Working) manager.report(BackupProgress.Done("Abgebrochen."))
+                throw e
+            } catch (e: Exception) {
+                fail(e)
+            }
+        }
+    }
+
+    /** A picked/downloaded file: own backup → confirm, encrypted → password, V15 → read and preview. */
     suspend fun handle(info: ArchiveInfo, source: String) {
         when (info.kind) {
             ArchiveKind.OWN -> sheet = Sheet.ConfirmRestore(info, source)
+            ArchiveKind.ENCRYPTED -> {
+                val opened = manager.unlockWithSaved(info)
+                if (opened != null) handle(opened, source) else sheet = Sheet.Unlock(info, source, null)
+            }
             ArchiveKind.V15 -> {
                 manager.report(BackupProgress.Working("Alte Daten lesen", 0f))
                 val lib = withContext(Dispatchers.IO) {
@@ -161,13 +223,35 @@ fun BackupScreen(
         }
     }
 
-    val saveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
-        if (uri != null) scope.launch { runCatching { manager.exportTo(uri) }.onFailure(::fail) }
+    /**
+     * Runs [action] with the password for a new backup: null when
+     * encryption is off, the remembered one, or one asked for now.
+     */
+    fun withBackupPassword(action: (CharArray?) -> Unit) {
+        val st = settings.state.value
+        if (!st.encrypt) return action(null)
+        val saved = settings.password()
+        if (saved != null) return action(saved)
+        sheet = Sheet.Password(
+            "Passwort für dieses Backup",
+            "Die Verschlüsselung ist an, das Passwort ist aber nicht gemerkt. Ohne dieses Passwort lässt sich das Backup nie wieder öffnen.",
+            twice = true, offerRemember = false,
+        ) { pw, _ -> sheet = null; action(pw) }
+    }
+
+    var pendingPassword by remember { mutableStateOf<CharArray?>(null) }
+    val saveZip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) launchOp { manager.exportTo(uri, null) }
+    }
+    val saveEncrypted = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val pw = pendingPassword
+        pendingPassword = null
+        if (uri != null && pw != null) launchOp { manager.exportTo(uri, pw) }
     }
     val openLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) scope.launch { runCatching { handle(manager.open(uri), "Datei") }.onFailure(::fail) }
+        if (uri != null) launchOp { handle(manager.open(uri), "Datei") }
     }
-    val zipTypes = arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
+    val pickTypes = arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
 
     DisposableEffect(Unit) {
         onDispose {
@@ -184,37 +268,50 @@ fun BackupScreen(
                 Spacer(Modifier.width(20.dp))
                 Column(Modifier.weight(1f)) {
                     Text("Sichern & Übernehmen", style = Ranzen.type.title, color = c.ink)
-                    Text("Vollbackup, Unraid-Server und Daten aus der alten App", style = Ranzen.type.label, color = c.inkMuted)
+                    Text("Vollbackup, automatisch, verschlüsselt, Unraid-Server und Daten aus der alten App", style = Ranzen.type.label, color = c.inkMuted)
                 }
             }
             Spacer(Modifier.height(18.dp))
-            StatusStrip(progress) { manager.resetProgress() }
+            StatusStrip(progress, onCancel = { job?.cancel() }) { manager.resetProgress() }
             Spacer(Modifier.height(18.dp))
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                 val wide = maxWidth >= 980.dp
                 val device: @Composable () -> Unit = {
                     DeviceSection(
                         busy = busy,
-                        onSave = { saveLauncher.launch(manager.suggestedName()) },
-                        onOpen = { openLauncher.launch(zipTypes) },
+                        onSave = {
+                            withBackupPassword { pw ->
+                                if (pw == null) saveZip.launch(manager.suggestedName(false))
+                                else { pendingPassword = pw; saveEncrypted.launch(manager.suggestedName(true)) }
+                            }
+                        },
+                        onOpen = { openLauncher.launch(pickTypes) },
                     )
                 }
-                val v15: @Composable () -> Unit = { V15Section(busy) { openLauncher.launch(zipTypes) } }
+                val crypto: @Composable () -> Unit = {
+                    EncryptionSection(settings, busy) { sheet = it }
+                }
+                val auto: @Composable () -> Unit = { AutoSection(settings, account, busy) }
+                val v15: @Composable () -> Unit = { V15Section(busy) { openLauncher.launch(pickTypes) } }
                 val server: @Composable () -> Unit = {
-                    ServerSection(account, manager, busy, scope, onFail = ::fail) { file ->
-                        runCatching { handle(manager.inspect(file), "Unraid-Server") }.onFailure(::fail)
-                    }
+                    ServerSection(
+                        account, manager, busy,
+                        launchOp = ::launchOp,
+                        withPassword = ::withBackupPassword,
+                    ) { file -> handle(manager.inspect(file), "Unraid-Server") }
                 }
                 if (wide) {
                     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                            device(); v15()
+                            device(); crypto(); v15()
                         }
-                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { server() }
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(22.dp)) {
+                            auto(); server()
+                        }
                     }
                 } else {
                     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                        device(); server(); v15()
+                        device(); auto(); crypto(); server(); v15()
                     }
                 }
             }
@@ -229,13 +326,46 @@ fun BackupScreen(
             ) {
                 when {
                     restart -> RestartSheet(progress) { context.findActivity()?.let { BackupManager.restartApp(it) } }
-                    current is Sheet.ConfirmRestore -> ConfirmRestoreSheet(current, busy,
+                    current is Sheet.ConfirmRestore -> ConfirmRestoreSheet(current, busy, canMerge = mergeParticipants.isNotEmpty(),
                         onCancel = { manager.discard(current.info); sheet = null },
-                        onRestore = {
-                            scope.launch {
-                                runCatching { manager.restore(current.info.file) }.onFailure { fail(it); sheet = null }
+                        onRestore = { merge ->
+                            launchOp {
+                                try {
+                                    if (merge) {
+                                        val reports = manager.merge(current.info.file, mergeParticipants)
+                                        sheet = Sheet.MergeDone(reports)
+                                    } else {
+                                        manager.restore(current.info.file)
+                                    }
+                                } catch (e: Throwable) {
+                                    sheet = null
+                                    throw e
+                                }
                             }
                         },
+                    )
+                    current is Sheet.Unlock -> UnlockSheet(current, busy,
+                        onCancel = { sheet = closeSheet(current) },
+                        onUnlock = { pw ->
+                            launchOp {
+                                try {
+                                    val opened = manager.unlock(current.info, pw)
+                                    sheet = null
+                                    handle(opened, current.source)
+                                } catch (_: WrongPasswordException) {
+                                    manager.report(BackupProgress.Idle)
+                                    sheet = current.copy(error = "Falsches Passwort.")
+                                } catch (e: Throwable) {
+                                    if (e !is CancellationException) sheet = closeSheet(current)
+                                    throw e
+                                }
+                            }
+                        },
+                    )
+                    current is Sheet.Password -> PasswordSheet(current, onCancel = { sheet = null })
+                    current is Sheet.MergeDone -> MergeDoneSheet(current.reports,
+                        onClose = { sheet = null; manager.resetProgress() },
+                        onRestart = { context.findActivity()?.let { BackupManager.restartApp(it) } },
                     )
                     current is Sheet.Preview -> PreviewSheet(current.library, busy,
                         onCancel = { sheet = closeSheet(current) },
@@ -261,6 +391,7 @@ fun BackupScreen(
 private fun closeSheet(s: Sheet?): Sheet? {
     if (s is Sheet.Preview) { s.library.close(); s.file.delete() }
     if (s is Sheet.ConfirmRestore) s.info.file.delete()
+    if (s is Sheet.Unlock) s.info.file.delete()
     return null
 }
 
@@ -295,20 +426,21 @@ private fun Section(icon: androidx.compose.ui.graphics.vector.ImageVector, title
 }
 
 @Composable
-private fun StatusStrip(p: BackupProgress, onDismiss: () -> Unit) {
+private fun StatusStrip(p: BackupProgress, onCancel: () -> Unit, onDismiss: () -> Unit) {
     val c = Ranzen.colors
     val (lamp, text) = when (p) {
         BackupProgress.Idle -> c.inkFaint to "Bereit."
-        is BackupProgress.Working -> SubjectPalette.of(2) to (p.label + (p.fraction?.let { " · ${(it * 100).toInt()} %" } ?: " …"))
+        is BackupProgress.Working -> SubjectPalette.of(2) to workingText(p)
         is BackupProgress.Done -> SubjectPalette.of(3) to p.message
         is BackupProgress.Failed -> c.signal to p.message
     }
     PaperPanel(Modifier.fillMaxWidth(), corner = 16.dp, depth = 0.5f) {
         Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 44.dp)) {
                 Lamp(lamp, size = 10.dp, glow = p !is BackupProgress.Idle)
                 Spacer(Modifier.width(12.dp))
                 Text(text, style = Ranzen.type.label, color = if (p is BackupProgress.Failed) c.signal else c.ink, modifier = Modifier.weight(1f))
+                if (p is BackupProgress.Working && p.cancellable) QuietButton("Abbrechen", onCancel, color = c.signal)
                 if (p is BackupProgress.Done || p is BackupProgress.Failed) QuietButton("OK", onDismiss)
             }
             if (p is BackupProgress.Working) {
@@ -317,6 +449,19 @@ private fun StatusStrip(p: BackupProgress, onDismiss: () -> Unit) {
             }
         }
     }
+}
+
+/** "Sichern · 42 % · 12,3 MB von 80,0 MB". */
+private fun workingText(p: BackupProgress.Working): String {
+    val sb = StringBuilder(p.label)
+    if (p.fraction != null && p.total > 0) sb.append(" · ").append((p.fraction * 100).toInt()).append(" %")
+    when {
+        p.done >= 0 && p.total > 0 -> sb.append(" · ").append(BackupManager.formatSize(p.done)).append(" von ").append(BackupManager.formatSize(p.total))
+        p.done >= 0 -> sb.append(" · ").append(BackupManager.formatSize(p.done))
+        p.fraction == null -> sb.append(" …")
+        else -> sb.append(" · ").append((p.fraction * 100).toInt()).append(" %")
+    }
+    return sb.toString()
 }
 
 /** A slim retro gauge; without a fraction a short segment runs back and forth. */
@@ -364,6 +509,39 @@ private fun LineField(
     }
 }
 
+/** A labelled switch built from a tactile key: lit check mark when on. */
+@Composable
+private fun CheckRow(label: String, checked: Boolean, enabled: Boolean = true, hint: String? = null, onChange: (Boolean) -> Unit) {
+    val c = Ranzen.colors
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).alpha(if (enabled) 1f else 0.45f)
+            .clickable(enabled = enabled, role = Role.Checkbox, onClickLabel = label) { onChange(!checked) },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TactileKey({ if (enabled) onChange(!checked) }, selected = checked, size = 44.dp, corner = 12.dp, contentDescription = label) {
+            if (checked) RanzenIcon(RanzenIcons.Check, tint = c.signal, size = 22.dp)
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, style = Ranzen.type.label, color = c.ink)
+            if (hint != null) Text(hint, style = Ranzen.type.caption, color = c.inkMuted)
+        }
+    }
+}
+
+/** A row of tactile keys, one of them pressed in. */
+@Composable
+private fun Choice(options: List<String>, selected: Int, enabled: Boolean = true, onSelect: (Int) -> Unit) {
+    val c = Ranzen.colors
+    Row(Modifier.alpha(if (enabled) 1f else 0.45f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        options.forEachIndexed { i, label ->
+            TactileKey({ if (enabled) onSelect(i) }, Modifier.widthIn(min = 120.dp), selected = i == selected, contentDescription = label) {
+                Text(label, style = Ranzen.type.label, color = if (i == selected) c.ink else c.inkMuted, modifier = Modifier.padding(horizontal = 16.dp))
+            }
+        }
+    }
+}
+
 // --- sections ----------------------------------------------------------
 
 @Composable
@@ -378,6 +556,132 @@ private fun DeviceSection(busy: Boolean, onSave: () -> Unit, onOpen: () -> Unit)
 }
 
 @Composable
+private fun EncryptionSection(settings: BackupSettings, busy: Boolean, show: (Sheet?) -> Unit) {
+    val c = Ranzen.colors
+    val st by settings.state.collectAsState()
+    Section(BackupIcons.Lock, "Verschlüsselung", "Backups mit einem eigenen Passwort schützen (AES-256). Gilt für Datei, Server und automatische Backups.", SubjectPalette.of(1)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Lamp(if (st.encrypt) SubjectPalette.of(3) else c.inkFaint, size = 10.dp, glow = st.encrypt)
+            Spacer(Modifier.width(12.dp))
+            Text(
+                when {
+                    !st.encrypt -> "Aus – Backups werden unverschlüsselt gespeichert."
+                    st.passwordSaved -> "An – das Passwort ist auf diesem Gerät gemerkt."
+                    else -> "An – das Passwort wird bei jedem Backup abgefragt."
+                },
+                style = Ranzen.type.label, color = c.ink,
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        fun setup(title: String) = show(
+            Sheet.Password(
+                title,
+                "Mindestens ${BackupCrypto.MIN_PASSWORD} Zeichen. Gut merken oder aufschreiben: Ohne das Passwort lässt sich ein verschlüsseltes Backup nie wieder öffnen, auch nicht vom Server.",
+                twice = true, offerRemember = true,
+            ) { pw, remember -> settings.setEncryption(pw, remember); show(null) },
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (!st.encrypt) {
+                SignalButton("Verschlüsselung einrichten …", { if (!busy) setup("Verschlüsselung einrichten") }, icon = BackupIcons.Lock)
+            } else {
+                QuietButton("Passwort ändern …", { if (!busy) setup("Neues Passwort") }, color = c.ink)
+                if (st.passwordSaved) QuietButton("Passwort vergessen", { settings.forgetPassword() }, color = c.ink)
+                QuietButton("Ausschalten", { settings.setEncryption(null, false) }, color = c.signal)
+            }
+        }
+        if (st.encrypt) {
+            Spacer(Modifier.height(8.dp))
+            Text("Ältere Backups behalten ihr altes Passwort. Beim Wiederherstellen wird das gemerkte Passwort zuerst versucht.", style = Ranzen.type.caption, color = c.inkMuted)
+        }
+    }
+}
+
+@Composable
+private fun AutoSection(settings: BackupSettings, account: SyncAccount, busy: Boolean) {
+    val c = Ranzen.colors
+    val context = LocalContext.current
+    val st by settings.state.collectAsState()
+    val acc by account.state.collectAsState()
+    val work by remember { AutoBackup.status(context.applicationContext) }.collectAsState(AutoBackup.Status(false, null, false))
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) runCatching { AutoBackup.setFolder(context, uri) }
+            .onFailure { settings.recordRun(null, 0, "", "Ordner kann nicht dauerhaft verwendet werden: ${BackupManager.messageOf(it)}") }
+    }
+    fun changed() = AutoBackup.apply(context.applicationContext)
+
+    Section(BackupIcons.Auto, "Automatisch sichern", "Regelmäßig im Hintergrund sichern, in einen Ordner und/oder auf den Unraid-Server.", SubjectPalette.of(2)) {
+        val intervals = AutoInterval.entries
+        Choice(intervals.map { it.label }, intervals.indexOf(st.interval)) { settings.setInterval(intervals[it]); changed() }
+        Spacer(Modifier.height(16.dp))
+        Text("ZIEL", style = Ranzen.type.caption, color = c.inkMuted)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                CheckRow(
+                    if (st.localTree != null) "Ordner: ${st.localName ?: "gewählt"}" else "In einen Ordner",
+                    checked = st.localTree != null,
+                    hint = if (st.localTree == null) "Ordner wählen, z. B. auf der SD-Karte" else "Behält die letzten ${st.keep} automatischen Backups",
+                ) { on -> if (on) folderPicker.launch(null) else AutoBackup.clearFolder(context) }
+            }
+            if (st.localTree != null) QuietButton("Ändern …", { folderPicker.launch(null) }, color = c.ink)
+        }
+        CheckRow(
+            "Auf den Unraid-Server", st.toServer, enabled = acc.loggedIn || st.toServer,
+            hint = if (!acc.loggedIn) "Dazu unten am Server anmelden" else "Der Server behält selbst die letzten Versionen",
+        ) { settings.setToServer(it); changed() }
+        Spacer(Modifier.height(8.dp))
+        Text("BEDINGUNGEN", style = Ranzen.type.caption, color = c.inkMuted)
+        CheckRow("Nur im WLAN", st.wifiOnly, enabled = st.toServer, hint = "Gilt für das Hochladen") { settings.setWifiOnly(it); changed() }
+        CheckRow("Nur beim Laden", st.chargingOnly) { settings.setChargingOnly(it); changed() }
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Aufbewahren", style = Ranzen.type.label, color = c.ink, modifier = Modifier.weight(1f))
+            TactileKey({ settings.setKeep(st.keep - 1) }, contentDescription = "Weniger") { Text("−", style = Ranzen.type.heading, color = c.ink) }
+            Text("${st.keep}", style = Ranzen.type.mono, color = c.ink, modifier = Modifier.width(56.dp).padding(horizontal = 18.dp))
+            TactileKey({ settings.setKeep(st.keep + 1) }, contentDescription = "Mehr") { RanzenIcon(RanzenIcons.Plus) }
+            Spacer(Modifier.width(12.dp))
+            Text("Versionen", style = Ranzen.type.label, color = c.inkMuted)
+        }
+        Spacer(Modifier.height(16.dp))
+
+        // Status: last result, next run, problems.
+        val lines = buildList {
+            add(
+                if (st.lastOk > 0) "Letztes Backup: ${BackupManager.formatDate(st.lastOk)} · ${BackupManager.formatSize(st.lastSize)} · ${st.lastTargets}"
+                else "Noch kein automatisches Backup.",
+            )
+            when {
+                work.running -> add("Läuft gerade …")
+                work.waiting -> add("Wartet auf WLAN, Ladekabel oder freien Speicher.")
+                st.interval != AutoInterval.OFF && work.next != null -> add("Nächstes: ab ${BackupManager.formatDate(work.next!!)}")
+            }
+        }
+        lines.forEach { Text(it, style = Ranzen.type.label, color = c.ink) }
+        val problem = when {
+            st.interval != AutoInterval.OFF && !st.hasTarget -> "Bitte ein Ziel wählen – sonst wird nichts gesichert."
+            st.interval != AutoInterval.OFF && st.autoNeedsPassword -> "Verschlüsselung ist an, aber das Passwort ist nicht gemerkt. Automatische Backups brauchen das gemerkte Passwort."
+            else -> null
+        }
+        if (problem != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(problem, style = Ranzen.type.label, color = c.signal)
+        }
+        st.lastError?.let { err ->
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.Top) {
+                Lamp(c.signal, size = 8.dp, modifier = Modifier.padding(top = 6.dp))
+                Spacer(Modifier.width(10.dp))
+                Text("Fehler am ${BackupManager.formatDate(st.lastErrorAt)}:\n$err", style = Ranzen.type.label, color = c.signal, modifier = Modifier.weight(1f))
+                QuietButton("Ausblenden", { settings.clearError() })
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        SignalButton("Jetzt automatisch sichern", {
+            if (!busy && st.hasTarget && !work.running) AutoBackup.runNow(context.applicationContext)
+        }, icon = BackupIcons.Save, modifier = Modifier.alpha(if (st.hasTarget && !work.running) 1f else 0.45f))
+    }
+}
+
+@Composable
 private fun V15Section(busy: Boolean, onPick: () -> Unit) {
     val c = Ranzen.colors
     Section(BackupIcons.Import, "Aus alter App übernehmen (V15)", "Hefte, Arbeitsblätter, Bücher mit Notizen, Fächer, Prüfungen und Karteikarten aus dem Vollbackup der alten App einlesen. Vor dem Übernehmen siehst du, was gefunden wurde.", SubjectPalette.of(5)) {
@@ -387,13 +691,22 @@ private fun V15Section(busy: Boolean, onPick: () -> Unit) {
     }
 }
 
+/** Progress callback for uploads and downloads that also stops when the job is cancelled. */
+private suspend fun transferProgress(manager: BackupManager, label: String): (Long, Long) -> Unit {
+    val job = currentCoroutineContext()[Job]
+    return { s, t ->
+        job?.ensureActive()
+        manager.report(BackupProgress.Working(label, if (t > 0) (s.toFloat() / t).coerceIn(0f, 1f) else null, s, t, cancellable = true))
+    }
+}
+
 @Composable
 private fun ServerSection(
     account: SyncAccount,
     manager: BackupManager,
     busy: Boolean,
-    scope: CoroutineScope,
-    onFail: (Throwable) -> Unit,
+    launchOp: (suspend CoroutineScope.() -> Unit) -> Unit,
+    withPassword: ((CharArray?) -> Unit) -> Unit,
     onDownloaded: suspend (File) -> Unit,
 ) {
     val c = Ranzen.colors
@@ -407,9 +720,9 @@ private fun ServerSection(
 
     fun op(label: String, block: suspend () -> Unit) {
         if (busy) return
-        scope.launch {
+        launchOp {
             manager.report(BackupProgress.Working(label, null))
-            runCatching { block() }.onFailure(onFail)
+            block()
         }
     }
 
@@ -473,17 +786,17 @@ private fun ServerSection(
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SignalButton("Jetzt hochladen", {
-                    op("Sichern") {
-                        val zip = manager.createBackup()
-                        try {
-                            val r = account.upload(zip, manager.suggestedName()) { s, t ->
-                                manager.report(BackupProgress.Working("Hochladen", if (t > 0) s.toFloat() / t else null))
+                    if (!busy) withPassword { pw ->
+                        op("Sichern") {
+                            val zip = manager.createBackup(pw)
+                            try {
+                                val r = account.upload(zip, manager.suggestedName(false), transferProgress(manager, "Hochladen"))
+                                manager.report(BackupProgress.Done("Hochgeladen: ${r.version} (${BackupManager.formatSize(r.size)}${if (pw != null) ", verschlüsselt" else ""})."))
+                            } finally {
+                                withContext(Dispatchers.IO) { zip.delete() }
                             }
-                            manager.report(BackupProgress.Done("Hochgeladen: ${r.version} (${BackupManager.formatSize(r.size)})."))
-                        } finally {
-                            withContext(Dispatchers.IO) { zip.delete() }
+                            versions = runCatching { account.versions() }.getOrNull() ?: versions
                         }
-                        versions = runCatching { account.versions() }.getOrNull() ?: versions
                     }
                 }, icon = BackupIcons.Restore)
                 Spacer(Modifier.width(10.dp))
@@ -500,9 +813,14 @@ private fun ServerSection(
                     list.forEach { v ->
                         VersionRow(v) {
                             op("Herunterladen") {
-                                val target = File(File(context.cacheDir, "backup").apply { mkdirs() }, "dl-" + System.currentTimeMillis() + ".zip")
-                                account.download(v.name, target) { s, t ->
-                                    manager.report(BackupProgress.Working("Herunterladen", if (t > 0) s.toFloat() / t else null))
+                                val dir = File(context.cacheDir, "backup").apply { mkdirs() }
+                                dir.listFiles()?.filter { it.name.startsWith("dl-") }?.forEach { it.delete() }
+                                val target = File(dir, "dl-" + System.currentTimeMillis())
+                                try {
+                                    account.download(v.name, target, transferProgress(manager, "Herunterladen"))
+                                } catch (e: Throwable) {
+                                    withContext(Dispatchers.IO) { target.delete(); File(target.path + ".part").delete() }
+                                    throw e
                                 }
                                 manager.report(BackupProgress.Idle)
                                 onDownloaded(target)
@@ -558,9 +876,10 @@ private fun SheetButtons(busy: Boolean, cancel: String = "Abbrechen", confirm: S
 }
 
 @Composable
-private fun ConfirmRestoreSheet(s: Sheet.ConfirmRestore, busy: Boolean, onCancel: () -> Unit, onRestore: () -> Unit) {
+private fun ConfirmRestoreSheet(s: Sheet.ConfirmRestore, busy: Boolean, canMerge: Boolean, onCancel: () -> Unit, onRestore: (merge: Boolean) -> Unit) {
     val c = Ranzen.colors
     val m = s.info.manifest
+    var merge by remember { mutableStateOf(false) }
     SheetPanel("Backup wiederherstellen?") {
         if (m != null) {
             Fact("Stand", BackupManager.formatDate(m.created))
@@ -569,8 +888,83 @@ private fun ConfirmRestoreSheet(s: Sheet.ConfirmRestore, busy: Boolean, onCancel
             Fact("Inhalt", "${m.entries.size} Dateien · ${BackupManager.formatSize(m.totalSize)}")
         }
         Spacer(Modifier.height(14.dp))
-        Text("Alle Daten auf diesem Gerät werden durch das Backup ersetzt. Vorher wird jede Datei geprüft; ist etwas beschädigt, bleibt alles wie es ist. Danach startet die App neu.", style = Ranzen.type.body, color = c.ink)
-        SheetButtons(busy, confirm = "Wiederherstellen", onCancel = onCancel, onConfirm = onRestore)
+        CheckRow("Ersetzen", !merge, hint = "Alle Daten auf diesem Gerät werden durch das Backup ersetzt. Danach startet die App neu.") { merge = false }
+        CheckRow(
+            "Zusammenführen", merge, enabled = canMerge,
+            hint = if (canMerge) "Nur Neues und Neueres aus dem Backup übernehmen; auf diesem Gerät geht nichts verloren." else "In dieser Version noch nicht verfügbar.",
+        ) { if (canMerge) merge = true }
+        Spacer(Modifier.height(10.dp))
+        Text("Vorher wird jede Datei geprüft; ist etwas beschädigt, bleibt alles, wie es ist.", style = Ranzen.type.body, color = c.inkMuted)
+        SheetButtons(busy, confirm = if (merge) "Zusammenführen" else "Wiederherstellen", onCancel = onCancel, onConfirm = { onRestore(merge) })
+    }
+}
+
+@Composable
+private fun UnlockSheet(s: Sheet.Unlock, busy: Boolean, onCancel: () -> Unit, onUnlock: (CharArray) -> Unit) {
+    val c = Ranzen.colors
+    var pw by remember { mutableStateOf("") }
+    SheetPanel("Verschlüsseltes Backup") {
+        Text("Dieses Backup ist mit einem Passwort geschützt (Quelle: ${s.source}).", style = Ranzen.type.body, color = c.ink)
+        Spacer(Modifier.height(18.dp))
+        LineField("Passwort", pw, { pw = it }, "Passwort des Backups", KeyboardType.Password, secret = true)
+        s.error?.let {
+            Spacer(Modifier.height(10.dp))
+            Text(it, style = Ranzen.type.label, color = c.signal)
+        }
+        SheetButtons(busy, confirm = "Öffnen", onCancel = onCancel, onConfirm = { if (pw.isNotEmpty()) onUnlock(pw.toCharArray()) })
+    }
+}
+
+@Composable
+private fun PasswordSheet(s: Sheet.Password, onCancel: () -> Unit) {
+    val c = Ranzen.colors
+    var pw by remember { mutableStateOf("") }
+    var again by remember { mutableStateOf("") }
+    var remember by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    SheetPanel(s.title) {
+        Text(s.text, style = Ranzen.type.body, color = c.ink)
+        Spacer(Modifier.height(18.dp))
+        LineField("Passwort", pw, { pw = it; error = null }, "mindestens ${BackupCrypto.MIN_PASSWORD} Zeichen", KeyboardType.Password, secret = true)
+        if (s.twice) {
+            Spacer(Modifier.height(18.dp))
+            LineField("Wiederholen", again, { again = it; error = null }, "noch einmal", KeyboardType.Password, secret = true)
+        }
+        if (s.offerRemember) {
+            Spacer(Modifier.height(12.dp))
+            CheckRow("Auf diesem Gerät merken", remember, hint = "Sicher im Android-Schlüsselspeicher. Nötig für automatische Backups.") { remember = it }
+        }
+        error?.let {
+            Spacer(Modifier.height(10.dp))
+            Text(it, style = Ranzen.type.label, color = c.signal)
+        }
+        SheetButtons(false, confirm = "OK", onCancel = onCancel, onConfirm = {
+            error = when {
+                pw.length < BackupCrypto.MIN_PASSWORD -> "Das Passwort braucht mindestens ${BackupCrypto.MIN_PASSWORD} Zeichen."
+                s.twice && pw != again -> "Die beiden Passwörter sind verschieden."
+                else -> null
+            }
+            if (error == null) s.onOk(pw.toCharArray(), s.offerRemember && remember)
+        })
+    }
+}
+
+@Composable
+private fun MergeDoneSheet(reports: List<MergeReport>, onClose: () -> Unit, onRestart: () -> Unit) {
+    val c = Ranzen.colors
+    SheetPanel("Zusammengeführt") {
+        reports.forEach { r ->
+            Row(Modifier.padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                Lamp(if (r.ok) SubjectPalette.of(3) else c.signal, size = 8.dp)
+                Spacer(Modifier.width(10.dp))
+                Text(r.summary(), style = Ranzen.type.label, color = if (r.ok) c.ink else c.signal)
+            }
+            r.warnings.take(3).forEach { Text("· $it", style = Ranzen.type.caption, color = c.inkMuted) }
+            if (r.warnings.size > 3) Text("· … und ${r.warnings.size - 3} weitere", style = Ranzen.type.caption, color = c.inkMuted)
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("Damit überall der neue Stand zu sehen ist, die App am besten neu starten.", style = Ranzen.type.body, color = c.inkMuted)
+        SheetButtons(false, cancel = "Fertig", confirm = "Neu starten", onCancel = onClose, onConfirm = onRestart)
     }
 }
 
@@ -606,12 +1000,18 @@ private fun PreviewSheet(lib: ImportedLibrary, busy: Boolean, onCancel: () -> Un
     }
 }
 
+/** After a restore: short notice, then the app restarts by itself. */
 @Composable
 private fun RestartSheet(p: BackupProgress, onRestart: () -> Unit) {
+    var left by remember { mutableIntStateOf(3) }
+    LaunchedEffect(Unit) {
+        while (left > 0) { delay(1000); left-- }
+        onRestart()
+    }
     SheetPanel("Wiederherstellung fertig") {
         Text((p as? BackupProgress.Done)?.message ?: "Die Daten wurden ersetzt.", style = Ranzen.type.body, color = Ranzen.colors.ink)
         Spacer(Modifier.height(8.dp))
-        Text("Damit alles neu geladen wird, startet die App jetzt neu.", style = Ranzen.type.body, color = Ranzen.colors.inkMuted)
+        Text("Die App startet neu, damit alles frisch geladen wird … ($left)", style = Ranzen.type.body, color = Ranzen.colors.inkMuted)
         Spacer(Modifier.height(26.dp))
         Row { Spacer(Modifier.weight(1f)); SignalButton("Jetzt neu starten", onRestart) }
     }
