@@ -1,7 +1,11 @@
 # Schulranzen (Neuaufbau)
 
 Native Android-App (Kotlin, Jetpack Compose, Jetpack Ink) für das Galaxy Tab S7 FE mit S Pen.
-Nachfolger von `apps/digitaler-schulranzen` (V15.0.7, Java). Plan, Design und Phasen: [docs/PLAN.md](docs/PLAN.md).
+Nachfolger von `apps/digitaler-schulranzen` (V15.0.7, Java). Plan, Design und Phasen: [docs/PLAN.md](docs/PLAN.md). **Was erledigt ist und was noch fehlt: [docs/STAND.md](docs/STAND.md).**
+
+## Stand 0.3.1
+
+Fester Signaturschlüssel (nur lokal, Updates behalten die Hefte; vor 0.3.1 einmal deinstallieren), SHK-Ergebnis neben den Feldern, Buchausschnitte nie in gesperrte Seiten. Details: [docs/STAND.md](docs/STAND.md).
 
 ## Stand 0.3.0 (Phasen 1–8, parallel gebaut)
 

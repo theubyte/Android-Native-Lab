@@ -183,9 +183,12 @@ class MainActivity : ComponentActivity() {
                                 BookScreen(r.removePrefix("book:"), onBack = { route = "lib" }, onClip = { clip = it })
                                 clip?.let { file ->
                                     ClipTargetSheet(app.library, onPick = { nb ->
-                                        app.scope.launch { app.library.addImageToNotebook(nb.id, file.name, canvas.newId()) }
+                                        app.scope.launch {
+                                            val newPage = app.library.addImageToNotebook(nb.id, file.name, canvas.newId())
+                                            val where = if (newPage) " auf einer neuen Seite (die Seite war gesperrt)" else ""
+                                            Toast.makeText(this@MainActivity, "Ausschnitt in „${nb.title}“$where eingefügt", Toast.LENGTH_SHORT).show()
+                                        }
                                         clip = null
-                                        Toast.makeText(this@MainActivity, "Ausschnitt in \u201E${nb.title}\u201C eingefügt", Toast.LENGTH_SHORT).show()
                                     }, onCancel = { clip = null })
                                 }
                             }

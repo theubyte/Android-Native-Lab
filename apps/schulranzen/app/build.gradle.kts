@@ -1,3 +1,4 @@
+import java.util.Properties
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -12,13 +13,30 @@ android {
         applicationId = "de.millione.schulranzen.neu"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.3.1"
+    }
+    // One fixed key, so a new APK installs over the old one and keeps the
+    // notebooks. The key stays off GitHub (public repo): signing/ holds the
+    // .jks and keystore.properties locally and is git-ignored. Without them
+    // (e.g. on CI) the normal debug key is used.
+    val keyProps = rootProject.file("signing/keystore.properties")
+    val ranzenKey = keyProps.exists()
+    if (ranzenKey) signingConfigs {
+        create("ranzen") {
+            val props = Properties().apply { keyProps.inputStream().use { load(it) } }
+            storeFile = rootProject.file("signing/" + props.getProperty("storeFile"))
+            storePassword = props.getProperty("storePassword")
+            keyAlias = props.getProperty("keyAlias")
+            keyPassword = props.getProperty("keyPassword")
+        }
     }
     buildTypes {
+        val key = signingConfigs.findByName(if (ranzenKey) "ranzen" else "debug")
+        debug { signingConfig = key }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = key
         }
     }
     compileOptions {

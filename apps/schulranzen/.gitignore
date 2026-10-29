@@ -1,3 +1,5 @@
+# Signaturschlüssel bleibt lokal (öffentliches Repo)
+signing/
 .gradle/
 build/
 local.properties

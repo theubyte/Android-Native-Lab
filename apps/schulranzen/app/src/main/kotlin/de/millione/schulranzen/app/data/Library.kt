@@ -188,20 +188,25 @@ class Library(private val context: Context) {
      * Puts a picture (already in the image folder, e.g. a book clipping) on
      * the page the notebook was last open at, centred, 60 % page width.
      */
-    suspend fun addImageToNotebook(notebookId: String, file: String, id: Long) = withContext(Dispatchers.IO) {
-        val nb = dao.notebook(notebookId) ?: return@withContext
+    suspend fun addImageToNotebook(notebookId: String, file: String, id: Long): Boolean = withContext(Dispatchers.IO) {
+        val nb = dao.notebook(notebookId) ?: return@withContext false
         val pages = dao.pages(notebookId)
-        val page = pages.getOrNull(nb.lastPage) ?: pages.lastOrNull() ?: return@withContext
+        val last = pages.getOrNull(nb.lastPage) ?: pages.lastOrNull() ?: return@withContext false
+        // A locked page stays as it is: the clipping gets a fresh page right after it.
+        val page = if (!last.locked) last else
+            Page(UUID.randomUUID().toString(), notebookId, last.position + 1, last.paper).also { dao.insertPageAt(it) }
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(File(imageDir, file).path, opts)
         val aspect = if (opts.outWidth > 0) opts.outHeight.toFloat() / opts.outWidth else 0.75f
-        val w = de.millione.schulranzen.ink.PageGeometry.WIDTH * 0.6f
+        // 60 % of the page width, but never taller than 80 % of the page.
+        val w = minOf(de.millione.schulranzen.ink.PageGeometry.WIDTH * 0.6f, de.millione.schulranzen.ink.PageGeometry.HEIGHT * 0.8f / aspect)
         val h = w * aspect
         val x = (de.millione.schulranzen.ink.PageGeometry.WIDTH - w) / 2
         val y = ((de.millione.schulranzen.ink.PageGeometry.HEIGHT - h) / 2).coerceAtLeast(40f)
         val items = runCatching { ItemCodec.read(itemFile(page.id)) }.getOrDefault(emptyList())
         ItemCodec.write(itemFile(page.id), items + de.millione.schulranzen.ink.ImageItem(id, x, y, w, h, file))
         dao.touch(notebookId, System.currentTimeMillis())
+        page !== last
     }
 
     /** Writes the notebook as PDF to [uri] (from the system save dialog). */

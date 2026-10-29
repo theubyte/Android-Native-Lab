@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.style.Hyphens
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -246,37 +247,8 @@ private fun CalculatorDetail(
     val result = calc.calculate(values)
     val formula = remember(calc.id) { Formulas.all.firstOrNull { it.calculatorId == calc.id } }
 
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 32.dp, vertical = 28.dp),
-    ) {
-        Caption(calc.category.title, color = accent)
-        Spacer(Modifier.height(4.dp))
-        Text(calc.title, style = Ranzen.type.title, color = c.ink)
-        Spacer(Modifier.height(10.dp))
-        Text(calc.formula, style = Ranzen.type.monoLarge.copy(fontSize = 22.sp, lineHeight = 28.sp), color = c.ink)
-        Spacer(Modifier.height(24.dp))
-
-        calc.inputs.forEach { input ->
-            val text = textOf(input)
-            val bad = text.isNotBlank() && parseField(text) == null
-            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(input.symbol, style = Ranzen.type.mono.copy(fontSize = 18.sp), color = accent, modifier = Modifier.width(64.dp))
-                Column(Modifier.weight(1f).padding(end = 16.dp)) {
-                    Text(input.label, style = Ranzen.type.label, color = c.ink)
-                    input.hint?.let { Text(it, style = Ranzen.type.caption, color = c.inkMuted) }
-                }
-                NumberField(
-                    value = text,
-                    onValueChange = { inputs[key(input.key)] = it },
-                    unit = input.unit,
-                    placeholder = "0",
-                    error = bad,
-                    modifier = Modifier.width(250.dp),
-                )
-            }
-        }
-
-        Spacer(Modifier.height(20.dp))
+    // Beside the fields when there is room: the keyboard then never covers the result.
+    val resultPanel: @Composable () -> Unit = {
         Column(Modifier.fillMaxWidth().recessed(18.dp).padding(horizontal = 20.dp, vertical = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Lamp(if (result is ShkCalcResult.Ok) c.signal else c.inkFaint, size = 7.dp, glow = result is ShkCalcResult.Ok)
@@ -287,8 +259,8 @@ private fun CalculatorDetail(
             when (result) {
                 is ShkCalcResult.Ok -> result.outputs.forEachIndexed { i, out ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Bottom) {
-                        Text(out.symbol, style = Ranzen.type.mono.copy(fontSize = 16.sp), color = c.inkMuted, modifier = Modifier.width(64.dp))
-                        Text(out.label, style = Ranzen.type.body, color = c.inkMuted, modifier = Modifier.weight(1f))
+                        Text(out.symbol, style = Ranzen.type.mono.copy(fontSize = 16.sp), color = c.inkMuted, modifier = Modifier.width(40.dp))
+                        Text(out.label, style = Ranzen.type.body.copy(hyphens = Hyphens.Auto), color = c.inkMuted, modifier = Modifier.weight(1f))
                         Text(
                             GermanNumber.format(out.value, out.decimals),
                             style = Ranzen.type.monoLarge.copy(fontSize = if (i == 0) 30.sp else 22.sp),
@@ -303,12 +275,52 @@ private fun CalculatorDetail(
                 is ShkCalcResult.Invalid -> Text(result.message, style = Ranzen.type.body, color = c.signal)
             }
         }
-        Spacer(Modifier.height(16.dp))
-        Text(calc.note, style = Ranzen.type.body, color = c.inkMuted)
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (formula != null) QuietButton("Formelblatt ansehen", { onShowFormula(formula.id) }, color = c.signal)
-            QuietButton("Felder leeren", { calc.inputs.forEach { inputs[key(it.key)] = "" } })
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val side = maxWidth >= 760.dp
+        Row(Modifier.fillMaxSize()) {
+            Column(
+                Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(horizontal = 32.dp, vertical = 28.dp),
+            ) {
+                Caption(calc.category.title, color = accent)
+                Spacer(Modifier.height(4.dp))
+                Text(calc.title, style = Ranzen.type.title, color = c.ink)
+                Spacer(Modifier.height(10.dp))
+                Text(calc.formula, style = Ranzen.type.monoLarge.copy(fontSize = 22.sp, lineHeight = 28.sp), color = c.ink)
+                Spacer(Modifier.height(24.dp))
+
+                calc.inputs.forEach { input ->
+                    val text = textOf(input)
+                    val bad = text.isNotBlank() && parseField(text) == null
+                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(input.symbol, style = Ranzen.type.mono.copy(fontSize = 18.sp), color = accent, modifier = Modifier.width(64.dp))
+                        Column(Modifier.weight(1f).padding(end = 16.dp)) {
+                            Text(input.label, style = Ranzen.type.label.copy(hyphens = Hyphens.Auto), color = c.ink)
+                            input.hint?.let { Text(it, style = Ranzen.type.caption, color = c.inkMuted) }
+                        }
+                        NumberField(
+                            value = text,
+                            onValueChange = { inputs[key(input.key)] = it },
+                            unit = input.unit,
+                            placeholder = "0",
+                            error = bad,
+                            modifier = Modifier.width(if (side) 210.dp else 250.dp),
+                        )
+                    }
+                }
+
+                if (!side) { Spacer(Modifier.height(20.dp)); resultPanel() }
+                Spacer(Modifier.height(16.dp))
+                Text(calc.note, style = Ranzen.type.body, color = c.inkMuted)
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (formula != null) QuietButton("Formelblatt ansehen", { onShowFormula(formula.id) }, color = c.signal)
+                    QuietButton("Felder leeren", { calc.inputs.forEach { inputs[key(it.key)] = "" } })
+                }
+            }
+            if (side) Column(Modifier.width(420.dp).fillMaxHeight().verticalScroll(rememberScrollState()).padding(top = 28.dp, end = 32.dp, bottom = 28.dp)) {
+                resultPanel()
+            }
         }
     }
 }
