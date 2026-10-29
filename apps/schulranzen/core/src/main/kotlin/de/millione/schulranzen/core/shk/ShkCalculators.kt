@@ -253,7 +253,7 @@ object ShkCalculators {
             val a = v.getValue("a"); val b = v.getValue("b")
             listOf(ShkOutput("Etagenlänge", "c", sqrt(a * a + b * b), "mm", 1))
         },
-    )
+    ) + DesignCalculators.all
 
     fun byId(id: String): ShkCalculator? = all.firstOrNull { it.id == id }
 }
