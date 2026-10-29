@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
@@ -108,17 +109,28 @@ object StudyImages {
         }
     }
 
+    private val background = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
+    /** Fire-and-forget [delete], for clean-up when a screen goes away and its own scope is gone. */
+    fun discard(context: Context, relatives: Collection<String?>) {
+        if (relatives.all { it == null }) return
+        val app = context.applicationContext
+        val list = relatives.toList()
+        background.launch { delete(app, list) }
+    }
+
     // Decoded pictures by "path@edge"; sized in kilobytes.
     private val cache = object : LruCache<String, ImageBitmap>(48 * 1024) {
         override fun sizeOf(key: String, value: ImageBitmap) = value.width * value.height * 4 / 1024
     }
 
     /** Decodes a picture no larger than [maxEdge] pixels on its long side, off the main thread. */
-    suspend fun load(context: Context, relative: String, maxEdge: Int): ImageBitmap? {
-        val key = "$relative@$maxEdge"
+    suspend fun load(context: Context, relative: String, maxEdge: Int): ImageBitmap? = load(file(context, relative), maxEdge, "$relative@$maxEdge")
+
+    /** Same for any picture file, e.g. a cut-out the host passes in. */
+    suspend fun load(f: File, maxEdge: Int, key: String = "${f.path}@$maxEdge"): ImageBitmap? {
         synchronized(cache) { cache.get(key) }?.let { return it }
         return withContext(Dispatchers.IO) {
-            val f = file(context, relative)
             if (!f.exists()) return@withContext null
             val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(f.path, o)
@@ -136,4 +148,11 @@ internal fun StudyImage(relative: String, modifier: Modifier = Modifier, maxEdge
     val context = LocalContext.current
     val bmp by produceState<ImageBitmap?>(null, relative, maxEdge) { value = StudyImages.load(context, relative, maxEdge) }
     bmp?.let { Image(it, contentDescription = "Bild der Karte", modifier = modifier, contentScale = contentScale, filterQuality = FilterQuality.High) }
+}
+
+/** A picture file outside the card store (e.g. a fresh cut-out), decoded off the main thread. */
+@Composable
+internal fun FileImage(file: File, modifier: Modifier = Modifier, maxEdge: Int = StudyImages.MAX_EDGE) {
+    val bmp by produceState<ImageBitmap?>(null, file.path, maxEdge) { value = StudyImages.load(file, maxEdge) }
+    bmp?.let { Image(it, contentDescription = "Ausschnitt", modifier = modifier, contentScale = ContentScale.Fit, filterQuality = FilterQuality.High) }
 }
