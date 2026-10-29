@@ -68,6 +68,7 @@ import de.millione.schulranzen.core.backup.ArchiveKind
 import de.millione.schulranzen.core.backup.AutoInterval
 import de.millione.schulranzen.core.backup.BackupCrypto
 import de.millione.schulranzen.core.backup.BackupHooks
+import de.millione.schulranzen.core.backup.DiagnoseStep
 import de.millione.schulranzen.core.backup.ImportedLibrary
 import de.millione.schulranzen.core.backup.MergeParticipant
 import de.millione.schulranzen.core.backup.MergeReport
@@ -150,6 +151,7 @@ private sealed interface Sheet {
         val onOk: (CharArray, Boolean) -> Unit,
     ) : Sheet
     data class MergeDone(val reports: List<MergeReport>) : Sheet
+    data class Diagnose(val steps: List<DiagnoseStep>) : Sheet
 }
 
 /**
@@ -298,6 +300,7 @@ fun BackupScreen(
                         account, manager, busy,
                         launchOp = ::launchOp,
                         withPassword = ::withBackupPassword,
+                        onDiagnose = { sheet = Sheet.Diagnose(it) },
                     ) { file -> handle(manager.inspect(file), "Unraid-Server") }
                 }
                 if (wide) {
@@ -363,6 +366,7 @@ fun BackupScreen(
                         },
                     )
                     current is Sheet.Password -> PasswordSheet(current, onCancel = { sheet = null })
+                    current is Sheet.Diagnose -> DiagnoseSheet(current.steps) { sheet = null }
                     current is Sheet.MergeDone -> MergeDoneSheet(current.reports,
                         onClose = { sheet = null; manager.resetProgress() },
                         onRestart = { context.findActivity()?.let { BackupManager.restartApp(it) } },
@@ -707,6 +711,7 @@ private fun ServerSection(
     busy: Boolean,
     launchOp: (suspend CoroutineScope.() -> Unit) -> Unit,
     withPassword: ((CharArray?) -> Unit) -> Unit,
+    onDiagnose: (List<DiagnoseStep>) -> Unit,
     onDownloaded: suspend (File) -> Unit,
 ) {
     val c = Ranzen.colors
@@ -749,7 +754,16 @@ private fun ServerSection(
                 }
             }, color = c.ink)
         }
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(8.dp))
+        QuietButton("Verbindung testen (Fehlersuche)", {
+            op("Verbindung testen") {
+                val steps = account.diagnose(server, email.takeIf { !st.loggedIn }, pin.takeIf { !st.loggedIn })
+                reachable = steps.firstOrNull()?.ok
+                manager.report(BackupProgress.Idle)
+                onDiagnose(steps)
+            }
+        }, color = c.ink)
+        Spacer(Modifier.height(12.dp))
         if (!st.loggedIn) {
             Row {
                 LineField("E-Mail", email, { email = it.trim() }, "name@beispiel.de", KeyboardType.Email, modifier = Modifier.weight(1.4f))
@@ -946,6 +960,31 @@ private fun PasswordSheet(s: Sheet.Password, onCancel: () -> Unit) {
             }
             if (error == null) s.onOk(pw.toCharArray(), s.offerRemember && remember)
         })
+    }
+}
+
+/** Result of "Verbindung testen": one line per step with lamp, answer and time. */
+@Composable
+private fun DiagnoseSheet(steps: List<DiagnoseStep>, onClose: () -> Unit) {
+    val c = Ranzen.colors
+    SheetPanel("Verbindungstest") {
+        steps.forEachIndexed { i, s ->
+            Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
+                Lamp(if (s.ok) SubjectPalette.of(3) else c.signal, size = 10.dp, modifier = Modifier.padding(top = 6.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("${i + 1}. ${s.name}", style = Ranzen.type.label, color = c.ink)
+                    Text(s.detail, style = Ranzen.type.body, color = if (s.ok) c.inkMuted else c.signal)
+                }
+                Text("${s.millis} ms", style = Ranzen.type.mono, color = c.inkFaint)
+            }
+        }
+        if (steps.all { it.ok } && steps.size >= 3) {
+            Spacer(Modifier.height(10.dp))
+            Text("Alles in Ordnung. Hochladen und Laden sollten funktionieren.", style = Ranzen.type.body, color = c.ink)
+        }
+        Spacer(Modifier.height(26.dp))
+        Row { Spacer(Modifier.weight(1f)); SignalButton("Schließen", onClose) }
     }
 }
 

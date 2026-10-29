@@ -27,7 +27,11 @@ import javax.net.ssl.SSLException
 /** Why a server call failed; the UI shows [SyncException.message] as is. */
 enum class SyncError { UNREACHABLE, BAD_INPUT, WRONG_LOGIN, EXISTS, SESSION_EXPIRED, NOT_FOUND, TOO_LARGE, SERVER, PROTOCOL }
 
-class SyncException(val error: SyncError, message: String, cause: Throwable? = null) : IOException(message, cause)
+/** [httpCode] is set when the server answered (null = network or input problem). */
+class SyncException(val error: SyncError, message: String, cause: Throwable? = null, val httpCode: Int? = null) : IOException(message, cause)
+
+/** One step of [SyncClient.diagnose]: what was tried, whether it worked, the answer, the time taken. */
+data class DiagnoseStep(val name: String, val ok: Boolean, val detail: String, val millis: Long)
 
 data class SyncSession(val token: String, val email: String)
 data class RemoteVersion(val name: String, val size: Long, /** Epoch seconds. */ val mtime: Long)
@@ -53,6 +57,11 @@ class SyncClient(
     var token: String? = null,
     private val connectTimeoutMs: Int = 8_000,
     private val readTimeoutMs: Int = 120_000,
+    /**
+     * Waiting for the answer after a large upload: the server writes the
+     * file to disk first (gunicorn timeout there: 600 s).
+     */
+    private val uploadTimeoutMs: Int = 600_000,
 ) {
     val baseUrl: String = normalizeUrl(serverUrl)
 
@@ -88,10 +97,10 @@ class SyncClient(
                 token = tok
                 return SyncSession(tok, o["email"]?.jsonPrimitive?.contentOrNull ?: mail)
             }
-            code == 409 -> throw SyncException(SyncError.EXISTS, "Diese E-Mail ist schon registriert. Bitte anmelden.")
-            code == 400 -> throw SyncException(SyncError.BAD_INPUT, "E-Mail oder PIN ungültig. Die PIN hat genau 6 Ziffern.")
-            code == 401 && !register -> throw SyncException(SyncError.WRONG_LOGIN, "E-Mail oder PIN falsch.")
-            else -> throw serverError(code, o)
+            code == 409 -> throw SyncException(SyncError.EXISTS, "Diese E-Mail ist schon registriert. Bitte anmelden. (HTTP 409)", httpCode = code)
+            code == 400 -> throw SyncException(SyncError.BAD_INPUT, "E-Mail oder PIN ungültig. Die PIN hat genau 6 Ziffern. (HTTP 400${detailOf(o, text)?.let { ": $it" } ?: ""})", httpCode = code)
+            code == 401 && !register -> throw SyncException(SyncError.WRONG_LOGIN, "E-Mail oder PIN falsch. (HTTP 401)", httpCode = code)
+            else -> throw serverError(code, o, text)
         }
     }
 
@@ -104,7 +113,14 @@ class SyncClient(
             "Content-Type: application/zip\r\n\r\n").toByteArray(Charsets.UTF_8)
         val tail = "\r\n--$boundary--\r\n".toByteArray(Charsets.UTF_8)
         val total = zip.length()
+        // A server that rejects the token answers 401 and closes the socket
+        // while we are still sending; the client then only sees "broken pipe".
+        // A cheap authenticated call first turns that into a clear 401 (and
+        // lets withRelogin repair it before megabytes are sent).
+        if (total > PREFLIGHT_BYTES) versions()
         val h = open("POST", "/api/sync/upload", auth = true)
+        h.readTimeout = uploadTimeoutMs
+        var sent = 0L
         try {
             h.doOutput = true
             h.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
@@ -113,7 +129,6 @@ class SyncClient(
             val (code, text) = exchange(h) {
                 h.outputStream.buffered(64 * 1024).use { out ->
                     out.write(head)
-                    var sent = 0L
                     zip.inputStream().use { input ->
                         val buf = ByteArray(64 * 1024)
                         while (true) {
@@ -128,10 +143,17 @@ class SyncClient(
                 }
             }
             val o = parse(text)
-            if (code != 200) throw serverError(code, o)
+            if (code != 200) throw serverError(code, o, text)
             val version = o?.get("version")?.jsonPrimitive?.contentOrNull
-                ?: throw SyncException(SyncError.PROTOCOL, "Der Server hat das Hochladen nicht bestätigt.")
+                ?: throw SyncException(SyncError.PROTOCOL, "Der Server hat das Hochladen nicht bestätigt (HTTP $code).", httpCode = code)
             return UploadResult(version, o["size"]?.jsonPrimitive?.longOrNull ?: total)
+        } catch (e: SyncException) {
+            // A broken connection: say how far it got.
+            if (e.httpCode == null && e.error == SyncError.UNREACHABLE) {
+                val where = if (sent >= total) "nach dem Senden aller ${mb(total)} (beim Warten auf die Antwort)" else "bei ${mb(sent)} von ${mb(total)}"
+                throw SyncException(e.error, "Hochladen abgebrochen $where. ${e.message}", e.cause)
+            }
+            throw e
         } finally {
             h.disconnect()
         }
@@ -141,7 +163,7 @@ class SyncClient(
     fun versions(): List<RemoteVersion> {
         val (code, text) = request("GET", "/api/sync/versions", auth = true)
         val o = parse(text)
-        if (code != 200) throw serverError(code, o)
+        if (code != 200) throw serverError(code, o, text)
         val arr = runCatching { o!!["versions"]!!.jsonArray }.getOrNull()
             ?: throw SyncException(SyncError.PROTOCOL, "Antwort des Servers ist unverständlich.")
         return arr.mapNotNull { e ->
@@ -164,9 +186,10 @@ class SyncClient(
         try {
             val code = try { h.responseCode } catch (e: IOException) { throw networkError(e) }
             if (code != 200) {
-                val o = parse(readBody(h.errorStream))
-                if (code == 404) throw SyncException(SyncError.NOT_FOUND, if (version == null) "Auf dem Server liegt noch kein Backup." else "Diese Version gibt es auf dem Server nicht mehr.")
-                throw serverError(code, o)
+                val text = readBody(h.errorStream)
+                val o = parse(text)
+                if (code == 404) throw SyncException(SyncError.NOT_FOUND, (if (version == null) "Auf dem Server liegt noch kein Backup." else "Diese Version gibt es auf dem Server nicht mehr.") + " (HTTP 404)", httpCode = code)
+                throw serverError(code, o, text)
             }
             val total = h.contentLengthLong
             val tmp = File(target.parentFile, target.name + ".part")
@@ -183,13 +206,15 @@ class SyncClient(
                             got += n
                             progress(got, total)
                         }
-                        if (total >= 0 && got != total) throw SyncException(SyncError.UNREACHABLE, "Download abgebrochen. Bitte erneut versuchen.")
+                        if (total >= 0 && got != total) throw SyncException(SyncError.UNREACHABLE, "Download abgebrochen bei ${mb(got)} von ${mb(total)}. Bitte erneut versuchen.")
                     }
                 }
             } catch (e: SyncException) {
                 tmp.delete(); throw e
             } catch (e: IOException) {
-                tmp.delete(); throw networkError(e)
+                tmp.delete()
+                val n = networkError(e)
+                throw SyncException(n.error, "Download abgebrochen. ${n.message}", e)
             }
             target.delete()
             if (!tmp.renameTo(target)) { tmp.copyTo(target, overwrite = true); tmp.delete() }
@@ -243,9 +268,13 @@ class SyncClient(
         } catch (e: SyncException) {
             throw e
         } catch (e: IOException) {
-            // Flask closes the connection on a too large upload before reading it.
+            // The server may answer and close before it read the whole body
+            // (too large, or a rejected token): prefer its answer to "broken pipe".
             val code = runCatching { h.responseCode }.getOrNull()
-            if (code == 413) throw SyncException(SyncError.TOO_LARGE, "Das Backup ist größer als das Limit des Servers (MAX_UPLOAD_MB).")
+            if (code != null && code >= 300) {
+                val body = runCatching { readBody(h.errorStream) }.getOrDefault("")
+                throw serverError(code, parse(body), body)
+            }
             throw networkError(e)
         }
     }
@@ -266,18 +295,81 @@ class SyncClient(
 
     private fun parse(text: String): JsonObject? = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
 
-    private fun serverError(code: Int, o: JsonObject?): SyncException = when (code) {
-        401 -> SyncException(SyncError.SESSION_EXPIRED, "Die Anmeldung ist abgelaufen. Bitte neu anmelden.")
-        404 -> SyncException(SyncError.NOT_FOUND, "Nicht gefunden. Stimmt die Server-Adresse?")
-        413 -> SyncException(SyncError.TOO_LARGE, "Das Backup ist größer als das Limit des Servers (MAX_UPLOAD_MB).")
-        in 300..399 -> SyncException(SyncError.PROTOCOL, "Der Server leitet um. Bitte die genaue Adresse eintragen (http:// oder https://).")
-        else -> {
-            val detail = o?.get("error")?.jsonPrimitive?.contentOrNull
-            SyncException(SyncError.SERVER, "Serverfehler $code" + (detail?.let { ": $it" } ?: "."))
+    /**
+     * Runs [block]; when the server rejects the token (401) and [email] and
+     * [pin] are known, logs in again once and repeats the call. [onLogin]
+     * gets the new session so it can be stored. A second 401 is thrown.
+     */
+    fun <T> withRelogin(email: String?, pin: String?, onLogin: (SyncSession) -> Unit = {}, block: (SyncClient) -> T): T {
+        val canRelogin = !email.isNullOrBlank() && !pin.isNullOrBlank()
+        if (token.isNullOrEmpty() && canRelogin) onLogin(login(email!!, pin!!))
+        return try {
+            block(this)
+        } catch (e: SyncException) {
+            if (e.error != SyncError.SESSION_EXPIRED || !canRelogin) throw e
+            onLogin(login(email!!, pin!!))
+            block(this)
         }
     }
 
+    /** Every server error names the HTTP code and, if any, the server's own words. */
+    private fun serverError(code: Int, o: JsonObject?, body: String = ""): SyncException {
+        val detail = detailOf(o, body)
+        val tail = " (HTTP $code" + (detail?.let { ": $it" } ?: "") + ")"
+        return when (code) {
+            401 -> SyncException(SyncError.SESSION_EXPIRED, "Anmeldung abgelehnt$tail. Bitte neu anmelden.", httpCode = code)
+            404 -> SyncException(SyncError.NOT_FOUND, "Nicht gefunden$tail. Stimmt die Server-Adresse?", httpCode = code)
+            413 -> SyncException(SyncError.TOO_LARGE, "Das Backup ist größer als das Limit des Servers (MAX_UPLOAD_MB)$tail.", httpCode = code)
+            in 300..399 -> SyncException(SyncError.PROTOCOL, "Der Server leitet um$tail. Bitte die genaue Adresse eintragen (http:// oder https://).", httpCode = code)
+            502, 503, 504 -> SyncException(SyncError.SERVER, "Server überlastet oder Zeitüberschreitung$tail. Später erneut versuchen.", httpCode = code)
+            else -> SyncException(SyncError.SERVER, "Serverfehler$tail.", httpCode = code)
+        }
+    }
+
+    /**
+     * Checks the whole chain step by step for troubleshooting: is the server
+     * there, does the login work, can the backups be listed. Never throws;
+     * stops after the first failed step, since the later ones depend on it.
+     * Sets [token] on a successful login.
+     */
+    fun diagnose(email: String, pin: String): List<DiagnoseStep> {
+        val steps = ArrayList<DiagnoseStep>()
+        fun step(name: String, block: () -> String): Boolean {
+            val t0 = System.nanoTime()
+            val r = runCatching(block)
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            val detail = r.fold({ it }, { e ->
+                when (e) {
+                    is SyncException -> e.message.orEmpty()
+                    is IOException -> networkError(e).message.orEmpty()
+                    else -> e.message ?: e.javaClass.simpleName
+                }
+            })
+            steps += DiagnoseStep(name, r.isSuccess, detail, ms)
+            return r.isSuccess
+        }
+        if (!step("Server erreichbar ($baseUrl)") { health(); "Antwortet als Schulranzen-Server." }) return steps
+        if (!step("Anmelden") { "Angemeldet als ${login(email, pin).email}." }) return steps
+        step("Backups auflisten") {
+            val v = versions()
+            if (v.isEmpty()) "Anmeldung gilt. Noch keine Backups auf dem Server." else "Anmeldung gilt. ${v.size} Backup(s), neuestes ${mb(v.first().size)}."
+        }
+        return steps
+    }
+
     companion object {
+        private const val PREFLIGHT_BYTES = 1L shl 20
+
+        /** The server's "error" field, or the title of an HTML error page, shortened. */
+        internal fun detailOf(o: JsonObject?, body: String): String? {
+            val err = o?.get("error")?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
+            if (!err.isNullOrBlank()) return err.take(160)
+            val title = Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE).find(body)?.groupValues?.get(1)?.trim()
+            return title?.takeIf { it.isNotBlank() }?.take(160)
+        }
+
+        internal fun mb(bytes: Long): String = String.format(java.util.Locale.GERMANY, "%.1f MB", bytes / (1024.0 * 1024))
+
         /** "192.168.1.20:8788/" → "http://192.168.1.20:8788" (as V15 did). */
         fun normalizeUrl(s: String?): String {
             var v = s?.trim().orEmpty()
@@ -291,13 +383,22 @@ class SyncClient(
             if (pin.length != 6 || !pin.all { it in '0'..'9' }) throw SyncException(SyncError.BAD_INPUT, "Die PIN hat genau 6 Ziffern.")
         }
 
-        fun networkError(e: IOException): SyncException = when (e) {
-            is SyncException -> e
-            is UnknownHostException -> SyncException(SyncError.UNREACHABLE, "Server nicht gefunden. Adresse prüfen.", e)
-            is ConnectException, is NoRouteToHostException -> SyncException(SyncError.UNREACHABLE, "Server nicht erreichbar. Läuft er, und ist das Tablet im selben WLAN?", e)
-            is SocketTimeoutException -> SyncException(SyncError.UNREACHABLE, "Der Server antwortet nicht (Zeitüberschreitung).", e)
-            is SSLException -> SyncException(SyncError.UNREACHABLE, "Sichere Verbindung fehlgeschlagen. Mit http:// statt https:// versuchen?", e)
-            else -> SyncException(SyncError.UNREACHABLE, "Verbindung zum Server unterbrochen: ${e.message ?: e.javaClass.simpleName}", e)
+        /** Network failures with their cause in plain German, plus the original text for troubleshooting. */
+        fun networkError(e: IOException): SyncException {
+            if (e is SyncException) return e
+            val raw = e.message ?: e.javaClass.simpleName
+            val msg = when {
+                e is UnknownHostException -> "Server nicht gefunden. Adresse prüfen."
+                e is ConnectException || e is NoRouteToHostException -> "Server nicht erreichbar. Läuft er, und ist das Tablet im selben WLAN?"
+                e is SocketTimeoutException -> "Der Server antwortet nicht (Zeitüberschreitung)."
+                e is SSLException -> "Sichere Verbindung fehlgeschlagen. Mit http:// statt https:// versuchen?"
+                raw.contains("reset", ignoreCase = true) -> "Verbindung vom Server zurückgesetzt."
+                raw.contains("broken pipe", ignoreCase = true) -> "Verbindung abgebrochen, der Server hat nicht weiter gelesen."
+                e is java.io.EOFException || raw.contains("end of stream", ignoreCase = true) -> "Der Server hat die Verbindung vorzeitig beendet."
+                raw.contains("unreachable", ignoreCase = true) -> "Kein Netzwerk. WLAN prüfen."
+                else -> "Verbindung zum Server unterbrochen."
+            }
+            return SyncException(SyncError.UNREACHABLE, "$msg [$raw]", e)
         }
     }
 }
