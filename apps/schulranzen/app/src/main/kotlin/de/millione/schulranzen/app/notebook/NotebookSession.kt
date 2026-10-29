@@ -19,6 +19,8 @@ import de.millione.schulranzen.ink.PaperStyle
 import de.millione.schulranzen.ink.RingEvent
 import de.millione.schulranzen.ink.TextItem
 import de.millione.schulranzen.ink.ToolKind
+import de.millione.schulranzen.core.math.MathResult
+import de.millione.schulranzen.rechnen.MathInk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -61,6 +63,11 @@ class NotebookSession(
     var textDraft by mutableStateOf<TextDraft?>(null); private set
     /** Short message at the bottom ("Seite ist gesperrt"). */
     var toast by mutableStateOf<String?>(null); private set
+    var showCalculator by mutableStateOf(false)
+    /** Result of "Ausrechnen" with the selection frame it belongs to. */
+    var mathResult by mutableStateOf<Pair<MathResult, RectF>?>(null); private set
+    private var mathInk: MathInk? = null
+
     /** Longer work in progress ("Seite 3 von 8 …"), or null. */
     var busy by mutableStateOf<String?>(null); private set
     /** Bumped when page flags or order change, so the overview redraws. */
@@ -91,6 +98,7 @@ class NotebookSession(
     fun close() {
         for (id in saves.keys.toList()) { saves.remove(id)?.cancel(); saveNow(id) }
         scope.launch { library.setLastPage(notebookId, page) }
+        mathInk?.close(); mathInk = null
         canvas.listener = null
     }
 
@@ -136,6 +144,23 @@ class NotebookSession(
         if (tool != ToolKind.LASSO) { tool = ToolKind.LASSO; applyTool() }
         canvas.paste(c)
     }
+
+    /** Reads the selected handwriting as a calculation and solves it. */
+    fun solveSelection() {
+        val frame = selection ?: return
+        val strokes = canvas.selectedStrokePoints()
+        if (strokes.isEmpty()) { say("Keine Handschrift ausgewählt"); return }
+        val ink = mathInk ?: MathInk(canvas.context).also { mathInk = it }
+        scope.launch {
+            busy = "Rechnung wird erkannt …"
+            val result = runCatching { ink.solve(strokes) }.getOrNull()
+            busy = null
+            if (result == null) say("Keine Rechnung erkannt – deutlicher schreiben oder Rechner nutzen")
+            else mathResult = result to RectF(frame)
+        }
+    }
+
+    fun dismissMath() { mathResult = null }
 
     // ---- text ----
 

@@ -19,6 +19,10 @@ import androidx.compose.ui.unit.dp
 import de.millione.schulranzen.design.RanzenIcon
 import de.millione.schulranzen.design.TactileKey
 import de.millione.schulranzen.study.StudyHome
+import de.millione.schulranzen.rechnen.ShkScreen
+import de.millione.schulranzen.backup.BackupScreen
+import de.millione.schulranzen.core.backup.V15Import
+import de.millione.schulranzen.app.data.V15Sink
 import de.millione.schulranzen.study.StudySubject
 import de.millione.schulranzen.study.TimetableScreen
 import de.millione.schulranzen.study.TodayStrip
@@ -125,6 +129,10 @@ class MainActivity : ComponentActivity() {
                                 TactileKey({ route = "study" }, contentDescription = "Lernen") { RanzenIcon(AppIcons.Study) }
                                 Spacer(Modifier.width(10.dp))
                                 TactileKey({ route = "timetable" }, contentDescription = "Stundenplan") { RanzenIcon(AppIcons.Timetable) }
+                                Spacer(Modifier.width(10.dp))
+                                TactileKey({ route = "shk" }, contentDescription = "SHK-Werkzeuge") { RanzenIcon(AppIcons.Shk) }
+                                Spacer(Modifier.width(10.dp))
+                                TactileKey({ route = "backup" }, contentDescription = "Sichern und übernehmen") { RanzenIcon(AppIcons.Backup) }
                                 Spacer(Modifier.width(16.dp))
                             },
                             today = { TodayStrip(Modifier.fillMaxWidth(), onClick = { route = "timetable" }) },
@@ -136,6 +144,16 @@ class MainActivity : ComponentActivity() {
                         r == "timetable" -> {
                             BackHandler { route = "lib" }
                             TimetableScreen(onBack = { route = "lib" }, subjects = studySubjects)
+                        }
+                        r == "shk" -> ShkScreen(onBack = { route = "lib" })
+                        r == "backup" -> {
+                            BackHandler { route = "lib" }
+                            BackupScreen(
+                                onBack = { route = "lib" },
+                                onImportV15 = { lib ->
+                                    V15Import.run(lib, V15Sink(this@MainActivity, app.library, canvas::newId))
+                                },
+                            )
                         }
                         r.startsWith("nb:") -> {
                             val id = r.removePrefix("nb:")

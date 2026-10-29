@@ -354,6 +354,32 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
 
     fun cutSelection(): Clip? = copySelection()?.also { deleteSelection() }
 
+    /**
+     * The selected strokes as recognisers want them: one FloatArray per
+     * stroke with x, y, t (ms, increasing across strokes from 0).
+     */
+    fun selectedStrokePoints(): List<FloatArray> {
+        val s = selection ?: return emptyList()
+        var offset = 0L
+        val out = ArrayList<FloatArray>()
+        for (st in pages[s.page].ink.strokes) {
+            if (st.id !in s.strokes || st.tool == ToolKind.MARKER) continue
+            val inputs = st.stroke.inputs
+            if (inputs.size == 0) continue
+            val arr = FloatArray(inputs.size * 3)
+            var last = 0L
+            for (i in 0 until inputs.size) {
+                val p = inputs.get(i)
+                arr[i * 3] = p.x; arr[i * 3 + 1] = p.y
+                last = p.elapsedTimeMillis
+                arr[i * 3 + 2] = (offset + last).toFloat()
+            }
+            offset += last + 120
+            out += arr
+        }
+        return out
+    }
+
     /** Puts [clip] on the visible page (centred), or [offset] next to where it was. */
     fun paste(clip: Clip, offset: Float? = null) {
         val target = if (offset != null) selection?.page ?: currentPage else currentPage

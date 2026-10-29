@@ -85,6 +85,8 @@ import de.millione.schulranzen.ink.Brushes
 import de.millione.schulranzen.ink.PaperStyle
 import de.millione.schulranzen.ink.TextItem
 import de.millione.schulranzen.ink.ToolKind
+import de.millione.schulranzen.rechnen.CalculatorWindow
+import de.millione.schulranzen.rechnen.ResultBubble
 import kotlin.math.roundToInt
 
 private enum class Panel { NONE, STYLE, MORE, PAGES }
@@ -173,6 +175,17 @@ fun NotebookScreen(session: NotebookSession, settings: Settings, onBack: () -> U
                         Text("Einfügen", style = Ranzen.type.label, color = c.ink)
                     }
                 }
+            }
+        }
+
+        // Floating calculator above the paper; only the window takes touches.
+        if (session.showCalculator) CalculatorWindow(onClose = { session.showCalculator = false }, modifier = Modifier.fillMaxSize())
+
+        // Result of "Ausrechnen", next to the handwriting
+        session.mathResult?.let { (result, frame) ->
+            val d = LocalDensity.current.density
+            Box(Modifier.offset { IntOffset((frame.right + 16 * d).roundToInt(), frame.top.roundToInt()) }) {
+                ResultBubble(result, onDismiss = session::dismissMath)
             }
         }
 
@@ -294,6 +307,10 @@ private fun ToolRail(
         toolKey(ToolKind.RULER, RanzenIcons.Ruler, "Lineal")
         Gap(vertical, 6)
         toolKey(ToolKind.TEXT, RanzenIcons.Text, "Text")
+        Gap(vertical, 6)
+        TactileKey({ session.showCalculator = !session.showCalculator }, selected = session.showCalculator, contentDescription = "Taschenrechner") {
+            RanzenIcon(CalcIcon, tint = if (session.showCalculator) c.signal else c.ink)
+        }
         Gap(vertical, 12)
         val color = Color(if (session.tool == ToolKind.MARKER) session.markerColor else session.penColor)
         TactileKey(onStyle, contentDescription = "Farbe und Dicke") {
@@ -334,6 +351,7 @@ private fun SelectionBar(session: NotebookSession, frame: android.graphics.RectF
                     BarButton(RanzenIcons.Copy, "Kopieren", session::copy)
                     BarButton(RanzenIcons.Pages, "Duplizieren", session::duplicate)
                     BarButton(null, "Farbe", { colors = !colors }) { Lamp(Color(session.penColor), size = 14.dp) }
+                    BarButton(CalcIcon, "Ausrechnen", session::solveSelection)
                     BarButton(RanzenIcons.Trash, "Löschen", session::delete, tint = c.signal)
                 }
                 if (colors) Row(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -572,4 +590,12 @@ internal fun PaperSwatch(style: PaperStyle, selected: Boolean) {
             PaperStyle.BLANK -> Unit
         }
     }
+}
+
+/** Pocket calculator key: body, display, keys. */
+private val CalcIcon: ImageVector = RanzenIcons.line("calc") {
+    moveTo(6f, 3.5f); lineTo(18f, 3.5f); lineTo(18f, 20.5f); lineTo(6f, 20.5f); close()
+    moveTo(8.5f, 6.5f); lineTo(15.5f, 6.5f); lineTo(15.5f, 9.5f); lineTo(8.5f, 9.5f); close()
+    moveTo(9f, 13f); lineTo(9.01f, 13f); moveTo(12f, 13f); lineTo(12.01f, 13f); moveTo(15f, 13f); lineTo(15.01f, 13f)
+    moveTo(9f, 17f); lineTo(9.01f, 17f); moveTo(12f, 17f); lineTo(12.01f, 17f); moveTo(15f, 17f); lineTo(15.01f, 17f)
 }
