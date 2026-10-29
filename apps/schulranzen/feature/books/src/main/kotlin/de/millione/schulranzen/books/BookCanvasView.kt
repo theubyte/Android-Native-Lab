@@ -34,10 +34,12 @@ import de.millione.schulranzen.core.books.ColumnLayout
 import de.millione.schulranzen.core.books.PageRotation
 import de.millione.schulranzen.core.books.RenderMath
 import de.millione.schulranzen.ink.Brushes
-import de.millione.schulranzen.ink.InkHistory
+import de.millione.schulranzen.ink.ItemPainter
 import de.millione.schulranzen.ink.PageEdit
 import de.millione.schulranzen.ink.PageInk
+import de.millione.schulranzen.ink.PageItem
 import de.millione.schulranzen.ink.PageStroke
+import de.millione.schulranzen.ink.TextItem
 import de.millione.schulranzen.ink.ToolKind
 import java.util.concurrent.Executors
 import kotlin.math.abs
@@ -51,6 +53,10 @@ enum class BookTool {
     /** Pen scrolls like a finger; nothing is written. */
     READ,
     PEN, MARKER, ERASER, STROKE_ERASER,
+    /** Loop around ink or text: move, scale, recolour, delete. */
+    LASSO,
+    /** Tap to type text; tap typed text to change it. */
+    TEXT,
     /** Drag a rectangle: clip it into a notebook or keep it as a marked area. */
     AREA,
     /** Tap to stick a note on the page. */
@@ -70,20 +76,30 @@ enum class BookTool {
  *   fling). While the pen is near, other touches count as the resting hand.
  * - The stylus writes with Jetpack Ink's low-latency renderer; the side
  *   button or the eraser end erases. Ink, notes and marked areas are kept in
- *   unrotated page units, so turning a page turns them along.
+ *   unrotated page units, so turning a page turns them along. Typed text
+ *   is anchored in those units too but always drawn upright.
+ * - Undo lives in the session: every ink change is reported as one step
+ *   ([Listener.onInkStep]) and replayed through [applyEdits].
+ * - Touches only count when they went down inside this view, so a
+ *   notebook next to the book keeps its own pen and hand.
  */
 @SuppressLint("ViewConstructor")
 internal class BookCanvasView(context: Context) : FrameLayout(context) {
 
     interface Listener {
         fun onInkChanged(page: Int) {}
-        fun onHistoryChanged(canUndo: Boolean, canRedo: Boolean) {}
+        /** One user action on ink or text (already applied), for undo. */
+        fun onInkStep(edits: List<PageEdit>) {}
         fun onVisiblePageChanged(page: Int) {}
         /** The marked rectangle in view pixels, or null when it is gone. */
         fun onAreaChanged(frame: RectF?) {}
         /** Note tool tapped a page at (x, y) in unrotated page units. */
         fun onNoteRequest(page: Int, x: Float, y: Float) {}
         fun onNoteOpen(note: BookNote) {}
+        /** Lasso selection frame in view pixels, or null when nothing is selected. */
+        fun onSelectionChanged(frame: RectF?) {}
+        /** Text tool tapped (x, y) in unrotated units of [page]; [existing] is the text there. */
+        fun onTextRequest(page: Int, x: Float, y: Float, existing: TextItem?) {}
     }
 
     var listener: Listener? = null
@@ -93,6 +109,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         set(value) {
             field = value
             if (value != BookTool.AREA) clearArea()
+            if (value != BookTool.LASSO) clearSelection()
             overlay.invalidate()
         }
     var penColor: Int = 0xFF1C1B19.toInt()
@@ -123,9 +140,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private val inkFiles = HashSet<Int>()
     private val inkLoading = HashSet<Int>()
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "book-ink") }
-    val history = InkHistory()
     private var nextStrokeId = SystemClock.elapsedRealtimeNanos()
-    private fun newId() = nextStrokeId++
+    fun newId() = nextStrokeId++
 
     // ---- view transform: column units -> view pixels ----
     private val view = Matrix()
@@ -136,6 +152,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private var ty = 0f
     private var laidOut = false
     private var pendingPage = -1
+    private var pendingFocus: RectF? = null
 
     private val density = resources.displayMetrics.density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -183,7 +200,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     fun setDocument(document: BookDocument, store: BookInkStore, marks: BookMarks, page: Int) {
         doc = document
         inkStore = store
-        inks.clear(); inkLoading.clear(); history.clear()
+        inks.clear(); inkLoading.clear()
+        selection = null; drag.reset(); highlightPage = -1; highlightRects = emptyList()
         io.execute {
             val files = store.pagesWithInk()
             post { inkFiles.clear(); inkFiles += files; layer.invalidate() }
@@ -191,9 +209,15 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         unitH = FloatArray(document.pageCount) { document.unitHeight(it) }
         this.marks = marks
         relayout()
-        pendingPage = page
-        if (laidOut) { scrollToPage(page); pendingPage = -1 }
-        listener?.onHistoryChanged(false, false)
+        if (pendingPage < 0) pendingPage = page
+        if (laidOut) { flushPending() }
+    }
+
+    private fun flushPending() {
+        if (pendingPage < 0) return
+        val focus = pendingFocus
+        if (focus != null) focusOn(pendingPage, focus) else scrollToPage(pendingPage)
+        pendingPage = -1; pendingFocus = null
     }
 
     /** New marks (notes, areas, bookmarks, rotations) from the session. */
@@ -201,6 +225,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         val turned = next.rotations != marks.rotations
         marks = next
         if (turned) {
+            clearSelection()
             val keep = currentPage
             val within = pageOffsetFraction(keep)
             relayout()
@@ -305,7 +330,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
             tx = (w - BookUnits.WIDTH * scale) / 2
             ty = 24f * density
             laidOut = true
-            if (pendingPage >= 0) { scrollToPage(pendingPage); pendingPage = -1 }
+            if (doc != null) flushPending()
         } else {
             scale = (scale / oldFit * fitScale).coerceIn(minScale(), maxScale())
         }
@@ -340,6 +365,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         layer.invalidate()
         overlay.invalidate()
         reportArea()
+        reportSelection()
         reportVisiblePage()
     }
 
@@ -467,13 +493,182 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
 
     // ------------------------------------------------------------ history
 
-    fun undo() = touched(history.undo { id -> inks[id.toInt()] })
-    fun redo() = touched(history.redo { id -> inks[id.toInt()] })
+    /** Replays a step from the session's history: forward (redo) or backward (undo). */
+    fun applyEdits(edits: List<PageEdit>, forward: Boolean) {
+        clearSelection()
+        val order = if (forward) edits else edits.asReversed()
+        for (edit in order) {
+            val page = edit.page.toIntOrNull() ?: continue
+            if (page !in 0 until pageCount) continue
+            val ink = inkOf(page)
+            if (forward) ink.apply(edit) else ink.revert(edit)
+        }
+        edits.mapNotNullTo(HashSet()) { it.page.toIntOrNull() }.forEach { listener?.onInkChanged(it) }
+        layer.invalidate(); overlay.invalidate()
+    }
 
-    private fun touched(ids: Set<String>) {
-        for (id in ids) listener?.onInkChanged(id.toInt())
+    /** Applies a new user action and reports it as one undo step. */
+    private fun commit(edits: List<PageEdit>) {
+        val real = edits.filterNot { it.isEmpty }
+        if (real.isEmpty()) return
+        for (edit in real) edit.page.toIntOrNull()?.let { inkOf(it).apply(edit) }
+        listener?.onInkStep(real)
+        real.mapNotNullTo(HashSet()) { it.page.toIntOrNull() }.forEach { listener?.onInkChanged(it) }
+        layer.invalidate(); overlay.invalidate()
+    }
+
+    // ----------------------------------------------------------- selection
+
+    private class Selection(val page: Int, val strokes: Set<Long>, val items: Set<Long>, val bounds: RectF)
+    private var selection: Selection? = null
+    /** Live move/scale of the selection, unrotated page units. */
+    private val drag = Matrix()
+
+    val hasSelection get() = selection != null
+
+    fun clearSelection() {
+        if (selection == null) return
+        selection = null
+        drag.reset()
+        layer.invalidate(); overlay.invalidate()
+        listener?.onSelectionChanged(null)
+    }
+
+    private fun select(page: Int, strokes: Set<Long>, items: Set<Long>) {
+        val b = boundsOf(page, strokes, items)
+        if (b == null) { clearSelection(); return }
+        selection = Selection(page, strokes, items, b)
+        drag.reset()
+        layer.invalidate(); overlay.invalidate()
+        reportSelection()
+    }
+
+    private fun boundsOf(page: Int, strokes: Set<Long>, items: Set<Long>): RectF? {
+        val ink = inkOf(page)
+        var r: RectF? = null
+        for (s in ink.strokes) if (s.id in strokes) r = (r ?: RectF(s.bounds)).also { it.union(s.bounds) }
+        for (o in ink.items) if (o.id in items) { val b = itemBounds(page, o); r = (r ?: RectF(b)).also { it.union(b) } }
+        return r
+    }
+
+    /** Selection frame in view pixels (with the live drag). */
+    private fun selectionViewRect(s: Selection): RectF =
+        RectF(s.bounds).also { drag.mapRect(it); unitToView(s.page).mapRect(it) }
+
+    private fun reportSelection() {
+        val s = selection ?: return
+        listener?.onSelectionChanged(selectionViewRect(s))
+    }
+
+    fun deleteSelection() {
+        val s = selection ?: return
+        clearSelection()
+        commit(listOf(inkOf(s.page).removeEdit(s.page.toString(), s.strokes, s.items)))
+    }
+
+    fun recolorSelection(color: Int) {
+        val s = selection ?: return
+        val ink = inkOf(s.page)
+        val strokes = ink.strokes.filter { it.id in s.strokes }.associate { it.id to it.recolored(color, newId()) }
+        val items = ink.items.filter { it.id in s.items && it is TextItem }.associate { it.id to (it as TextItem).copy(id = newId(), color = color) }
+        commit(listOf(ink.replaceEdit(s.page.toString(), strokes, items)))
+        select(s.page, strokes.values.mapTo(HashSet()) { it.id } + (s.strokes - strokes.keys), items.values.mapTo(HashSet()) { it.id } + (s.items - items.keys))
+    }
+
+    private fun commitDrag() {
+        val s = selection ?: return
+        if (drag.isIdentity) return
+        val ink = inkOf(s.page)
+        val m = Matrix(drag)
+        val strokes = ink.strokes.filter { it.id in s.strokes }.associate { it.id to it.transformed(m, newId()) }
+        val items = ink.items.filter { it.id in s.items }.associate { it.id to it.transformed(m, newId()) }
+        drag.reset()
+        commit(listOf(ink.replaceEdit(s.page.toString(), strokes, items)))
+        select(s.page, strokes.values.mapTo(HashSet()) { it.id }, items.values.mapTo(HashSet()) { it.id })
+    }
+
+    // ---------------------------------------------------------------- text
+
+    /** Adds [item] on [page], or replaces [old] by it; null or blank text deletes [old]. */
+    fun putText(page: Int, item: TextItem?, old: TextItem?) {
+        if (page !in 0 until pageCount) return
+        val ink = inkOf(page)
+        val removed = old?.let { o -> ink.items.indexOfFirst { it.id == o.id }.takeIf { it >= 0 }?.let { listOf(it to ink.items[it]) } } ?: emptyList()
+        val added = if (item == null || item.text.isBlank()) emptyList() else listOf(item)
+        commit(listOf(PageEdit(page.toString(), emptyList(), emptyList(), removed, added)))
+    }
+
+    /** Width for new text at (x, y): to the right page edge as shown, in unrotated units. */
+    fun defaultTextWidth(page: Int, x: Float, y: Float): Float {
+        val p = floatArrayOf(x, y).also { unitToBox[page].mapPoints(it) }
+        return ((BookUnits.WIDTH - p[0] - 40f).coerceAtLeast(180f)) / boxScale[page]
+    }
+
+    /** Scale from page box units to unrotated units of [page] (text looks the same size on any page). */
+    fun boxToUnitScale(page: Int): Float = 1f / boxScale.getOrElse(page) { 1f }
+
+    /** Text is drawn upright on a turned page: turned back about its anchor. */
+    private fun textMatrix(page: Int, t: TextItem): Matrix? =
+        rot.getOrElse(page) { 0 }.takeIf { it != 0 }?.let { r -> Matrix().apply { setRotate(-r.toFloat(), t.x, t.y) } }
+
+    private fun itemBounds(page: Int, item: PageItem): RectF {
+        val b = item.bounds()
+        if (item is TextItem) textMatrix(page, item)?.mapRect(b)
+        return b
+    }
+
+    private fun textAt(page: Int, x: Float, y: Float): TextItem? =
+        inkOf(page).items.asReversed().firstOrNull { it is TextItem && itemBounds(page, it).contains(x, y) } as? TextItem
+
+    private fun drawItem(canvas: Canvas, page: Int, item: PageItem) {
+        val m = (item as? TextItem)?.let { textMatrix(page, it) }
+        if (m == null) { ItemPainter.draw(canvas, item); return }
+        canvas.save(); canvas.concat(m); ItemPainter.draw(canvas, item); canvas.restore()
+    }
+
+    /** Typed text of [page] painted on [canvas] already set to unrotated units (clippings). */
+    fun paintItems(canvas: Canvas, page: Int) {
+        for (it in inkOf(page).items) drawItem(canvas, page, it)
+    }
+
+    // ----------------------------------------------------------- highlight
+
+    private var highlightPage = -1
+    private var highlightRects: List<RectF> = emptyList()
+
+    /**
+     * Marks [rects] (unrotated units) on [page], e.g. a search hit, and
+     * scrolls so they are in view. Stays until [clearHighlight] or a tap.
+     */
+    fun highlight(page: Int, rects: List<RectF>) {
+        val union = rects.fold(null as RectF?) { acc, r -> (acc ?: RectF(r)).also { it.union(r) } }
+        highlightRects = rects.map { RectF(it) }
+        if (pageCount == 0 || !laidOut) {
+            highlightPage = page
+            pendingPage = page; pendingFocus = union
+            return
+        }
+        val p = page.coerceIn(0, pageCount - 1)
+        highlightPage = p
+        if (union != null) focusOn(p, union) else scrollToPage(p)
         layer.invalidate()
-        listener?.onHistoryChanged(history.canUndo, history.canRedo)
+    }
+
+    fun clearHighlight() {
+        if (highlightPage < 0) return
+        highlightPage = -1; highlightRects = emptyList()
+        layer.invalidate()
+    }
+
+    /** Scrolls so [rect] (unrotated units on [page]) sits in the upper third, centred when zoomed in. */
+    private fun focusOn(page: Int, rect: RectF) {
+        if (page !in 0 until pageCount) return
+        flingAnim?.cancel()
+        val w = RectF(rect).also { unitToWorld(page).mapRect(it) }
+        ty = -(w.top * scale) + height * 0.3f
+        if (BookUnits.WIDTH * scale > width) tx = width / 2f - w.centerX() * scale
+        clampAndApply()
+        scheduleDetail()
     }
 
     // ---------------------------------------------------------------- area
@@ -508,7 +703,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
 
     // --------------------------------------------------------------- input
 
-    private enum class Mode { NONE, DRAW, ERASE, PAN, PEN_PAN, AREA, NOTE_TAP, IGNORE }
+    private enum class Mode { NONE, DRAW, ERASE, PAN, PEN_PAN, AREA, NOTE_TAP, LASSO, TEXT_TAP, MOVE_SEL, SCALE_SEL, IGNORE }
     private var mode = Mode.NONE
     private var strokeId: InProgressStrokeId? = null
     private var stylusPointer = -1
@@ -519,6 +714,11 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private var areaByFinger = false
     private var areaStart = FloatArray(2)
     private var downX = 0f; private var downY = 0f
+    private var gesturePage = -1
+    /** Lasso loop in unrotated units of [gesturePage]. */
+    private val lasso = ArrayList<Float>()
+    private var selStart = FloatArray(2)
+    private var selAnchor = FloatArray(2)
 
     // finger pan / pinch
     private var panId = -1
@@ -536,7 +736,29 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         return t == MotionEvent.TOOL_TYPE_STYLUS || t == MotionEvent.TOOL_TYPE_ERASER
     }
 
-    private val penModes = setOf(Mode.DRAW, Mode.ERASE, Mode.PEN_PAN, Mode.AREA, Mode.NOTE_TAP, Mode.IGNORE)
+    private val penModes = setOf(Mode.DRAW, Mode.ERASE, Mode.PEN_PAN, Mode.AREA, Mode.NOTE_TAP, Mode.LASSO, Mode.TEXT_TAP, Mode.MOVE_SEL, Mode.SCALE_SEL, Mode.IGNORE)
+
+    // ---- touch fence: only pointers that went down inside this view ----
+    private val owned = HashSet<Int>()
+
+    override fun dispatchTouchEvent(e: MotionEvent): Boolean {
+        val action = e.actionMasked
+        if (action == MotionEvent.ACTION_DOWN) owned.clear()
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
+            val i = e.actionIndex
+            val x = e.getX(i); val y = e.getY(i)
+            if (x >= 0f && y >= 0f && x < width && y < height) owned += e.getPointerId(i)
+        }
+        val all = (0 until e.pointerCount).all { e.getPointerId(it) in owned }
+        val event = if (all) e else TouchFence.split(e, owned)
+        when (action) {
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> owned.clear()
+            MotionEvent.ACTION_POINTER_UP -> owned -= e.getPointerId(e.actionIndex)
+        }
+        // Only foreign pointers (a hand on the notebook next door): not ours.
+        if (event == null) return false
+        return try { super.dispatchTouchEvent(event) } finally { if (event !== e) event.recycle() }
+    }
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -545,6 +767,9 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         val index = e.actionIndex
         val down = action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN
         if (action == MotionEvent.ACTION_DOWN) { flingAnim?.cancel(); zoomAnim?.cancel() }
+        // Pen or finger on the lasso selection: move or scale it.
+        val restingHand = !isPen(e, index) && SystemClock.uptimeMillis() - lastPenNear < 400
+        if (down && mode == Mode.NONE && selection != null && !restingHand && beginSelectionDrag(e, index)) return true
         // A new pen contact takes over from any finger gesture.
         if (down && isPen(e, index) && (mode == Mode.NONE || mode == Mode.PAN)) {
             if (mode == Mode.PAN) endPan()
@@ -599,6 +824,16 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 lastX = x; lastY = y; startX = x; startY = y; panning = false
             }
             BookTool.AREA, BookTool.NOTE -> beginTool(e, index, byFinger = false)
+            BookTool.LASSO -> {
+                val page = layout.pageAt(toWorld(x, y)[1])
+                if (page < 0) { mode = Mode.IGNORE; clearSelection(); return }
+                inkOf(page)
+                gesturePage = page
+                val u = viewToUnit(page, x, y)
+                lasso.clear(); lasso += u[0]; lasso += u[1]
+                mode = Mode.LASSO
+            }
+            BookTool.TEXT -> mode = Mode.TEXT_TAP
             BookTool.PEN, BookTool.MARKER -> {
                 val page = layout.pageAt(toWorld(x, y)[1])
                 if (page < 0) { mode = Mode.IGNORE; return }
@@ -616,6 +851,46 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 overlay.hide()
             }
             else -> mode = Mode.IGNORE
+        }
+    }
+
+    private fun beginSelectionDrag(e: MotionEvent, index: Int): Boolean {
+        val s = selection ?: return false
+        val frame = selectionViewRect(s)
+        val x = e.getX(index); val y = e.getY(index)
+        val onHandle = hypot(x - frame.right, y - frame.bottom) < 30f * density
+        val pad = 12f * density
+        val inside = x in frame.left - pad..frame.right + pad && y in frame.top - pad..frame.bottom + pad
+        if (!onHandle && !inside) {
+            clearSelection()
+            return false
+        }
+        stylusPointer = e.getPointerId(index)
+        gesturePage = s.page
+        downX = x; downY = y
+        selStart = viewToUnit(s.page, x, y)
+        selAnchor = viewToUnit(s.page, frame.left, frame.top)
+        mode = if (onHandle) Mode.SCALE_SEL else Mode.MOVE_SEL
+        if (isPen(e, index)) lastPenNear = SystemClock.uptimeMillis()
+        return true
+    }
+
+    private fun addLasso(x: Float, y: Float) {
+        val p = viewToUnit(gesturePage, x, y)
+        val n = lasso.size
+        if (n >= 2 && hypot(p[0] - lasso[n - 2], p[1] - lasso[n - 1]) < 2f) return
+        lasso += p[0]; lasso += p[1]
+    }
+
+    private fun finishLasso() {
+        if (lasso.size < 6 || gesturePage < 0) { clearSelection(); return }
+        val poly = lasso.toFloatArray()
+        val ink = inkOf(gesturePage)
+        val strokes = ink.select(poly).first
+        val items = ink.items.filter { val b = itemBounds(gesturePage, it); PageInk.contains(poly, b.centerX(), b.centerY()) }.mapTo(HashSet()) { it.id }
+        if (strokes.isEmpty() && items.isEmpty()) clearSelection() else {
+            performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            select(gesturePage, strokes, items)
         }
     }
 
@@ -661,6 +936,24 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                         if (panning) { panBy(x - lastX, y - lastY); }
                         lastX = x; lastY = y
                     }
+                    Mode.LASSO -> {
+                        for (h in 0 until e.historySize) addLasso(e.getHistoricalX(i, h), e.getHistoricalY(i, h))
+                        addLasso(x, y)
+                        overlay.invalidate()
+                    }
+                    Mode.MOVE_SEL -> {
+                        val p = viewToUnit(gesturePage, x, y)
+                        drag.setTranslate(p[0] - selStart[0], p[1] - selStart[1])
+                        layer.invalidate(); overlay.invalidate(); reportSelection()
+                    }
+                    Mode.SCALE_SEL -> {
+                        val p = viewToUnit(gesturePage, x, y)
+                        val ax = selAnchor[0]; val ay = selAnchor[1]
+                        val d0 = hypot(selStart[0] - ax, selStart[1] - ay).coerceAtLeast(1f)
+                        val f = (hypot(p[0] - ax, p[1] - ay) / d0).coerceIn(0.15f, 8f)
+                        drag.setScale(f, f, ax, ay)
+                        layer.invalidate(); overlay.invalidate(); reportSelection()
+                    }
                     Mode.AREA -> {
                         val a = area ?: return
                         val p = viewToBox(a.page, x, y)
@@ -681,8 +974,14 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 when (mode) {
                     Mode.DRAW -> strokeId?.let { inProgress.finishStroke(e, stylusPointer, it) }
                     Mode.ERASE -> finishErase()
-                    Mode.PEN_PAN -> if (!panning) noteAt(x, y)?.let { listener?.onNoteOpen(it) }
+                    Mode.PEN_PAN -> if (!panning) {
+                        val note = noteAt(x, y)
+                        if (note != null) listener?.onNoteOpen(note) else clearHighlight()
+                    }
                     Mode.AREA -> finishArea()
+                    Mode.LASSO -> finishLasso()
+                    Mode.MOVE_SEL, Mode.SCALE_SEL -> commitDrag()
+                    Mode.TEXT_TAP -> if (tap) textTap(x, y)
                     Mode.NOTE_TAP -> if (tap) {
                         val existing = noteAt(x, y)
                         if (existing != null) listener?.onNoteOpen(existing)
@@ -703,6 +1002,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                     Mode.DRAW -> strokeId?.let { inProgress.cancelStroke(it, e); pending.remove(it) }
                     Mode.ERASE -> finishErase()
                     Mode.AREA -> { area = null; listener?.onAreaChanged(null) }
+                    Mode.MOVE_SEL, Mode.SCALE_SEL -> { drag.reset(); layer.invalidate(); overlay.invalidate(); reportSelection() }
                     else -> Unit
                 }
                 endPen()
@@ -714,7 +1014,16 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         if (mode == Mode.PEN_PAN && panning) scheduleDetail()
         mode = Mode.NONE; strokeId = null; stylusPointer = -1; eraseLast = null
         panning = false; areaByFinger = false
+        lasso.clear()
         overlay.hide()
+    }
+
+    /** Text tool: edit the text under (x, y) or start new text there. */
+    private fun textTap(x: Float, y: Float) {
+        val page = layout.pageAt(toWorld(x, y)[1])
+        if (page < 0) return
+        val u = viewToUnit(page, x, y)
+        listener?.onTextRequest(page, u[0], u[1], textAt(page, u[0], u[1]))
     }
 
     private fun finishArea() {
@@ -746,10 +1055,9 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
 
     private fun finishErase() {
         if (eraseStep.isEmpty()) return
-        history.push(eraseStep.toList())
+        listener?.onInkStep(eraseStep.toList())
         eraseStep.mapTo(HashSet()) { it.page.toInt() }.forEach { listener?.onInkChanged(it) }
         eraseStep.clear()
-        listener?.onHistoryChanged(history.canUndo, history.canRedo)
     }
 
     private fun handOff(strokes: Map<InProgressStrokeId, Stroke>) {
@@ -765,9 +1073,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         // Same frame as the page layer draws them: no flicker at the handoff.
         inProgress.removeFinishedStrokes(strokes.keys)
         if (step.isNotEmpty()) {
-            history.push(step)
+            listener?.onInkStep(step)
             step.mapTo(HashSet()) { it.page.toInt() }.forEach { listener?.onInkChanged(it) }
-            listener?.onHistoryChanged(history.canUndo, history.canRedo)
         }
     }
 
@@ -834,6 +1141,9 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private fun tap(x: Float, y: Float) {
         noteAt(x, y)?.let { listener?.onNoteOpen(it); return }
         if (area != null) { clearArea(); return }
+        if (selection != null) { clearSelection(); return }
+        if (tool == BookTool.TEXT) { textTap(x, y); return }
+        clearHighlight()
         if (tool == BookTool.NOTE) {
             val page = layout.pageAt(toWorld(x, y)[1])
             if (page >= 0) { val u = viewToUnit(page, x, y); listener?.onNoteRequest(page, u[0], u[1]) }
@@ -995,6 +1305,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 drawAreas(canvas, i)
                 ensureInk(i)
                 inks[i]?.let { drawInk(canvas, i, it) }
+                if (i == highlightPage) drawHighlight(canvas, i)
                 canvas.restore()
                 canvas.drawRect(r, edge)
                 if (i in marks.bookmarks) drawRibbon(canvas, r)
@@ -1018,25 +1329,54 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         }
 
         private fun drawInk(canvas: Canvas, page: Int, ink: PageInk) {
-            if (ink.strokes.isEmpty()) return
+            if (ink.strokes.isEmpty() && ink.items.isEmpty()) return
+            // The lifted selection is drawn by the overlay, not here.
+            val sel = selection?.takeIf { it.page == page }
+            val hideS = sel?.strokes ?: emptySet()
+            val hideI = sel?.items ?: emptySet()
             if (Build.VERSION.SDK_INT >= 29 && canvas.isHardwareAccelerated) {
+                val key = ink.revision * 31 + rot[page] * 7 + (sel?.hashCode()?.toLong() ?: 0L)
                 val cached = nodes[page]
                 val node = (cached?.second as? RenderNode) ?: RenderNode("book-ink").also {
                     it.setPosition(0, 0, BookUnits.WIDTH.toInt(), unitH[page].roundToInt().coerceAtLeast(1))
                     it.clipToBounds = false
                 }
-                if (cached == null || cached.first != ink.revision) {
+                if (cached == null || cached.first != key) {
                     val rc = node.beginRecording()
-                    try { paintStrokes(rc, ink) } finally { node.endRecording() }
-                    nodes[page] = ink.revision to node
+                    try { paintInk(rc, page, ink, hideS, hideI) } finally { node.endRecording() }
+                    nodes[page] = key to node
                 }
                 canvas.drawRenderNode(node)
-            } else paintStrokes(canvas, ink)
+            } else paintInk(canvas, page, ink, hideS, hideI)
         }
 
-        private fun paintStrokes(canvas: Canvas, ink: PageInk) {
-            for (s in ink.strokes) if (s.tool == ToolKind.MARKER) renderer.draw(canvas, s.stroke, identity)
-            for (s in ink.strokes) if (s.tool != ToolKind.MARKER) renderer.draw(canvas, s.stroke, identity)
+        /** Markers below ink, typed text on top, like in the notebook. [only] paints just the given ids. */
+        fun paintInk(canvas: Canvas, page: Int, ink: PageInk, ids: Set<Long>, itemIds: Set<Long>, only: Boolean = false) {
+            fun shown(id: Long, set: Set<Long>) = if (only) id in set else id !in set
+            for (s in ink.strokes) if (s.tool == ToolKind.MARKER && shown(s.id, ids)) renderer.draw(canvas, s.stroke, identity)
+            for (s in ink.strokes) if (s.tool != ToolKind.MARKER && shown(s.id, ids)) renderer.draw(canvas, s.stroke, identity)
+            for (it in ink.items) if (shown(it.id, itemIds)) drawItem(canvas, page, it)
+        }
+
+        private val hlFill = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val hlLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+
+        /** Search hit or jump target: a soft marker-like box around the place. */
+        private fun drawHighlight(canvas: Canvas, page: Int) {
+            if (highlightRects.isEmpty()) return
+            canvas.save()
+            canvas.concat(unitToView(page))
+            val px = 1f / (scale * boxScale[page])
+            hlFill.color = (accentColor and 0x00FFFFFF) or (0x38 shl 24)
+            hlLine.color = (accentColor and 0x00FFFFFF) or (0xC8 shl 24)
+            hlLine.strokeWidth = 2f * density * px
+            val pad = 3f * density * px
+            val rr = 4f * density * px
+            for (r in highlightRects) {
+                canvas.drawRoundRect(r.left - pad, r.top - pad, r.right + pad, r.bottom + pad, rr, rr, hlFill)
+                canvas.drawRoundRect(r.left - pad, r.top - pad, r.right + pad, r.bottom + pad, rr, rr, hlLine)
+            }
+            canvas.restore()
         }
 
         private fun drawShadow(canvas: Canvas, r: RectF) {
@@ -1088,6 +1428,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         override fun onDraw(canvas: Canvas) {
             drawNotes(canvas)
             area?.let { drawArea(canvas, it) }
+            drawSelection(canvas)
+            if (mode == Mode.LASSO) drawLasso(canvas)
             if (!visible) return
             if (erasing || tool.erases) {
                 ring.color = 0x99000000.toInt()
@@ -1123,6 +1465,43 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
             canvas.restore()
             dash.color = accentColor
             canvas.drawRoundRect(r, 6f * density, 6f * density, dash)
+        }
+
+        private val selFrame = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE; strokeWidth = 1.5f * density
+            pathEffect = DashPathEffect(floatArrayOf(6f * density, 4f * density), 0f)
+        }
+        private val handle = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val handleRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 2f * density }
+
+        private fun drawLasso(canvas: Canvas) {
+            if (lasso.size < 4 || gesturePage !in 0 until pageCount) return
+            val pts = lasso.toFloatArray().also { unitToView(gesturePage).mapPoints(it) }
+            path.reset()
+            path.moveTo(pts[0], pts[1])
+            var i = 2
+            while (i < pts.size) { path.lineTo(pts[i], pts[i + 1]); i += 2 }
+            dash.color = accentColor
+            canvas.drawPath(path, dash)
+        }
+
+        /** The selection lifted off the page, with its frame and the scale handle. */
+        private fun drawSelection(canvas: Canvas) {
+            val s = selection ?: return
+            if (s.page !in 0 until pageCount) return
+            val ink = inks[s.page] ?: return
+            canvas.save()
+            canvas.concat(unitToView(s.page))
+            canvas.concat(drag)
+            layer.paintInk(canvas, s.page, ink, s.strokes, s.items, only = true)
+            canvas.restore()
+            val r = selectionViewRect(s)
+            r.inset(-6f * density, -6f * density)
+            selFrame.color = accentColor
+            handle.color = accentColor
+            canvas.drawRoundRect(r, 8f * density, 8f * density, selFrame)
+            canvas.drawCircle(r.right, r.bottom, 9f * density, handle)
+            canvas.drawCircle(r.right, r.bottom, 9f * density, handleRing)
         }
 
         private fun drawNotes(canvas: Canvas) {
