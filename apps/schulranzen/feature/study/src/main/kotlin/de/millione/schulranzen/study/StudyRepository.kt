@@ -3,6 +3,14 @@ package de.millione.schulranzen.study
 import android.content.Context
 import androidx.room.withTransaction
 import de.millione.schulranzen.core.study.CardSchedule
+import de.millione.schulranzen.core.study.CardSuggester
+import de.millione.schulranzen.core.study.CardSuggestion
+import de.millione.schulranzen.core.study.LearningPath
+import de.millione.schulranzen.core.study.MockExam
+import de.millione.schulranzen.core.study.MockResult
+import de.millione.schulranzen.core.study.PathInput
+import de.millione.schulranzen.core.study.PathStage
+import de.millione.schulranzen.core.study.PathState
 import de.millione.schulranzen.core.study.PeriodTime
 import de.millione.schulranzen.core.study.Rating
 import de.millione.schulranzen.core.study.Repetition
@@ -12,6 +20,9 @@ import de.millione.schulranzen.core.study.WeekCycle
 import de.millione.schulranzen.study.data.Card
 import de.millione.schulranzen.study.data.Deck
 import de.millione.schulranzen.study.data.DeckCounts
+import de.millione.schulranzen.study.data.DeckProgress
+import de.millione.schulranzen.study.data.MockRun
+import de.millione.schulranzen.study.data.StudyLink
 import de.millione.schulranzen.study.data.Exam
 import de.millione.schulranzen.study.data.Lesson
 import de.millione.schulranzen.study.data.PeriodRow
@@ -25,9 +36,11 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 
 /** Kinds of exams a trainee meets; [label] is shown in the UI. */
 enum class ExamKind(val label: String) {
@@ -74,6 +87,7 @@ data class StudyOverview(val dueToday: Int, val reviewedToday: Int, val streak: 
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class StudyRepository(context: Context) {
+    private val app = context.applicationContext
     private val db = StudyDatabase.get(context)
     private val dao = db.dao()
 
@@ -161,7 +175,11 @@ class StudyRepository(context: Context) {
         return if (deck.id != 0L) deck.id else id
     }
 
-    suspend fun deleteDeck(id: Long) = dao.deleteDeck(id)
+    suspend fun deleteDeck(id: Long) {
+        val images = dao.imagesOfDeck(id)
+        dao.deleteDeck(id)
+        StudyImages.delete(app, images)
+    }
 
     /**
      * Adds a card to the deck called [deckName] (case-insensitive) and creates
@@ -174,13 +192,145 @@ class StudyRepository(context: Context) {
         addCard(deck.id, front, back)
     }
 
-    suspend fun addCard(deckId: Long, front: String, back: String): Long =
-        dao.insertCard(Card(deckId = deckId, front = front.trim(), back = back.trim(), dueEpochDay = LocalDate.now().toEpochDay()))
+    /**
+     * Adds a card. [frontImage]/[backImage] are paths relative to
+     * `filesDir/study` as returned by [StudyImages.import].
+     */
+    suspend fun addCard(deckId: Long, front: String, back: String, frontImage: String? = null, backImage: String? = null): Long =
+        dao.insertCard(
+            Card(deckId = deckId, front = front.trim(), back = back.trim(), frontImage = frontImage, backImage = backImage, dueEpochDay = LocalDate.now().toEpochDay()),
+        )
 
     suspend fun updateCardText(card: Card, front: String, back: String) =
         dao.updateCard(card.copy(front = front.trim(), back = back.trim()))
 
-    suspend fun deleteCard(card: Card) = dao.deleteCard(card)
+    /** Updates text and pictures; pictures that were replaced or removed are deleted. */
+    suspend fun updateCard(card: Card, front: String, back: String, frontImage: String?, backImage: String?) {
+        val fresh = dao.card(card.id) ?: card
+        dao.updateCard(fresh.copy(front = front.trim(), back = back.trim(), frontImage = frontImage, backImage = backImage))
+        StudyImages.delete(app, listOf(fresh.frontImage, fresh.backImage).filter { it != null && it != frontImage && it != backImage })
+    }
+
+    suspend fun deleteCard(card: Card) {
+        dao.deleteCard(card)
+        StudyImages.delete(app, listOf(card.frontImage, card.backImage))
+    }
+
+    /**
+     * Adds a card with an optional picture file (e.g. a cut-out from a
+     * notebook or book page) on the front or back. The file is copied, the
+     * caller may delete it afterwards. Returns the new card's id.
+     */
+    suspend fun addCard(deckId: Long, front: String, back: String, image: java.io.File?, imageOnBack: Boolean = false): Long {
+        val rel = image?.let { StudyImages.import(app, it) }
+        return addCard(deckId, front, back, if (imageOnBack) null else rel, if (imageOnBack) rel else null)
+    }
+
+    /** The deck that belongs to an exam (same subject); created if there is none yet. */
+    suspend fun deckForExam(examId: Long): Long = db.withTransaction {
+        val exam = dao.exam(examId) ?: error("Prüfung fehlt")
+        val all = dao.deckCounts(LocalDate.now().toEpochDay()).first()
+        deckFor(exam, all)?.id ?: dao.upsertDeck(Deck(name = exam.subject, colorIndex = exam.colorIndex, subjectId = exam.subjectId))
+    }
+
+    /** The deck that belongs to an exam, or null; nothing is created. */
+    suspend fun existingDeckForExam(exam: Exam): Long? = deckFor(exam, dao.deckCounts(LocalDate.now().toEpochDay()).first())?.id
+
+    // ---- Exam links (Prüfungsstoff) and the bookmark list ------------------
+
+    /**
+     * Marks a notebook or book place as material for an exam, or puts it
+     * on the bookmark list ("Merkliste") when [examId] is null. Returns the
+     * link's id.
+     */
+    suspend fun addLink(examId: Long?, link: StudyLinkDraft, note: String = ""): Long =
+        dao.insertLink(
+            StudyLink(
+                examId = examId, kind = link.kind.name, targetId = link.targetId, page = link.page,
+                rectX = link.rect?.x, rectY = link.rect?.y, rectW = link.rect?.w, rectH = link.rect?.h,
+                label = link.label.trim().ifEmpty { "${link.kind.label} · S. ${link.page + 1}" }, note = note.trim(),
+            ),
+        )
+
+    /** Material of one exam, oldest first. */
+    fun links(examId: Long): Flow<List<StudyLink>> = dao.links(examId)
+
+    /** Links without an exam, newest first. */
+    val bookmarks: Flow<List<StudyLink>> = dao.bookmarks()
+
+    /** All links, newest first. */
+    val allLinks: Flow<List<StudyLink>> = dao.allLinks()
+
+    /** Links on one notebook or book, e.g. to draw markers on its pages. */
+    fun linksOn(kind: StudyLinkKind, targetId: String): Flow<List<StudyLink>> = dao.linksOn(kind.name, targetId)
+
+    suspend fun setLinkDone(link: StudyLink, done: Boolean) =
+        dao.updateLink(link.copy(doneAt = if (done) System.currentTimeMillis() else null))
+
+    suspend fun moveLink(link: StudyLink, examId: Long?) = dao.updateLink(link.copy(examId = examId))
+
+    suspend fun deleteLink(id: Long) = dao.deleteLink(id)
+
+    // ---- Mock exams --------------------------------------------------------
+
+    /** Cards of the given decks, for building a mock exam. */
+    suspend fun cardsOf(deckIds: Collection<Long>): List<Card> = if (deckIds.isEmpty()) emptyList() else dao.cardsOf(deckIds.toList())
+
+    /** Questions for a mock exam: [count] cards of [deckIds], weak ones more likely. */
+    suspend fun mockQuestions(deckIds: Collection<Long>, count: Int): List<Card> =
+        MockExam.pick(cardsOf(deckIds), count, { it.schedule })
+
+    /**
+     * Stores a finished mock exam and pulls the cards answered wrong (or
+     * left open) forward, so today's review starts with them.
+     */
+    suspend fun saveMockRun(examId: Long, result: MockResult, weakCardIds: Collection<Long>) = db.withTransaction {
+        dao.insertMockRun(
+            MockRun(
+                examId = examId, asked = result.asked, points = result.points, percent = result.percent, grade = result.grade,
+                weakTopics = result.weakTopics.joinToString("\n") { it.topic },
+            ),
+        )
+        if (weakCardIds.isNotEmpty()) dao.pullForward(weakCardIds.toList(), LocalDate.now().toEpochDay())
+    }
+
+    fun mockRuns(examId: Long): Flow<List<MockRun>> = dao.mockRuns(examId)
+
+    // ---- Learning path -----------------------------------------------------
+
+    /** The learning path of an exam, kept up to date with links, cards and mock exams. */
+    fun path(exam: Exam): Flow<PathState> = today.flatMapLatest { day ->
+        val progress: Flow<DeckProgress> = decks.map { deckFor(exam, it)?.id }.distinctUntilChanged().flatMapLatest { id ->
+            if (id == null) flowOf(DeckProgress(0, 0, 0, 0)) else dao.deckProgress(id, day.toEpochDay())
+        }
+        combine(dao.links(exam.id), progress, dao.mockRuns(exam.id)) { links, p, runs ->
+            LearningPath.build(
+                PathInput(
+                    linksTotal = links.size,
+                    linksDone = links.count { it.doneAt != null },
+                    topics = exam.topics.lines().count { it.isNotBlank() },
+                    cards = p.total, cardsSeen = p.seen, cardsSolid = p.solid, cardsDue = p.due,
+                    mockBestPercent = runs.maxOfOrNull { it.percent },
+                    daysLeft = ChronoUnit.DAYS.between(day, LocalDate.ofEpochDay(exam.dateEpochDay)),
+                ),
+            )
+        }
+    }
+
+    /** The next step on the path of the nearest upcoming exam, for the home screen. */
+    val nextStep: Flow<Pair<Exam, PathStage>?> = nextExams.flatMapLatest { list ->
+        val exam = list.firstOrNull()
+        if (exam == null) flowOf(null) else path(exam).map { p -> p.next?.let { exam to it } }
+    }
+
+    // ---- Card suggestions --------------------------------------------------
+
+    /**
+     * Offline card proposals from [text] (notes, a book page, an
+     * explanation). Quick; for very long texts call it off the main thread.
+     * With a key, [StudyAssistant.suggestCards] gives better ones.
+     */
+    fun suggestCards(text: String): List<CardSuggestion> = CardSuggester.suggest(text)
 
     /** Due cards of one deck (or all), in learning order: overdue first, new last. */
     suspend fun studyQueue(deckId: Long?): List<Card> {

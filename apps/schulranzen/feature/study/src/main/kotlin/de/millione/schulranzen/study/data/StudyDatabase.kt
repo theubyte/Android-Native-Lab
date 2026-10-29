@@ -1,6 +1,7 @@
 package de.millione.schulranzen.study.data
 
 import android.content.Context
+import androidx.room.AutoMigration
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Delete
@@ -121,6 +122,62 @@ data class Review(
     val at: Long = System.currentTimeMillis(),
 )
 
+/**
+ * A place in a notebook or book marked as exam material ("Prüfungsstoff"),
+ * or kept on the bookmark list when [examId] is null. [kind] is a
+ * [de.millione.schulranzen.study.StudyLinkKind] name; [targetId] the
+ * notebook or book id of the host app; [page] 0-based. The optional
+ * rectangle is in page fractions (0..1) so it survives zoom and rendering
+ * size. [doneAt] marks the material as worked through (learning path).
+ */
+@Entity(
+    tableName = "study_link",
+    foreignKeys = [ForeignKey(Exam::class, ["id"], ["examId"], onDelete = ForeignKey.SET_NULL)],
+    indices = [Index("examId")],
+)
+data class StudyLink(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val examId: Long?,
+    val kind: String,
+    val targetId: String,
+    val page: Int,
+    val rectX: Float? = null,
+    val rectY: Float? = null,
+    val rectW: Float? = null,
+    val rectH: Float? = null,
+    val label: String,
+    val note: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val doneAt: Long? = null,
+) {
+    val linkKind: de.millione.schulranzen.study.StudyLinkKind get() = de.millione.schulranzen.study.StudyLinkKind.of(kind)
+
+    /** The marked area in page fractions, or null for the whole page. */
+    val rect: de.millione.schulranzen.study.LinkRect?
+        get() = if (rectX != null && rectY != null && rectW != null && rectH != null) de.millione.schulranzen.study.LinkRect(rectX, rectY, rectW, rectH) else null
+}
+
+/** A finished mock exam; the best result drives the learning path. */
+@Entity(
+    tableName = "mock_run",
+    foreignKeys = [ForeignKey(Exam::class, ["id"], ["examId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("examId")],
+)
+data class MockRun(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val examId: Long,
+    val at: Long = System.currentTimeMillis(),
+    val asked: Int,
+    val points: Double,
+    val percent: Double,
+    val grade: Int,
+    /** Weak topics, one per line, weakest first. */
+    val weakTopics: String = "",
+)
+
+/** Card counts of one deck for the learning path. */
+data class DeckProgress(val total: Int, val seen: Int, val solid: Int, val due: Int)
+
 /** Deck with its card counts for a given day. */
 data class DeckCounts(
     val id: Long,
@@ -174,6 +231,9 @@ internal interface StudyDao {
 
     @Query("SELECT * FROM exam WHERE dateEpochDay > :today AND (subject = :subject COLLATE NOCASE OR (:subjectId IS NOT NULL AND subjectId = :subjectId)) ORDER BY dateEpochDay LIMIT 1")
     suspend fun nextExamFor(subject: String, subjectId: Long?, today: Long): Exam?
+
+    @Query("SELECT * FROM exam WHERE id = :id")
+    suspend fun exam(id: Long): Exam?
 
     @Upsert
     suspend fun upsertExam(e: Exam): Long
@@ -242,12 +302,65 @@ internal interface StudyDao {
 
     @Query("SELECT COUNT(*) FROM review WHERE epochDay = :day")
     fun reviewsOn(day: Long): Flow<Int>
+
+    // Cards, more
+    @Query("SELECT * FROM card WHERE deckId IN (:deckIds)")
+    suspend fun cardsOf(deckIds: List<Long>): List<Card>
+
+    @Query(
+        """SELECT COUNT(*) AS total,
+           COALESCE(SUM(CASE WHEN lastReviewEpochDay IS NOT NULL THEN 1 ELSE 0 END), 0) AS seen,
+           COALESCE(SUM(CASE WHEN reps >= 2 THEN 1 ELSE 0 END), 0) AS solid,
+           COALESCE(SUM(CASE WHEN dueEpochDay <= :today THEN 1 ELSE 0 END), 0) AS due
+           FROM card WHERE deckId = :deckId"""
+    )
+    fun deckProgress(deckId: Long, today: Long): Flow<DeckProgress>
+
+    @Query("UPDATE card SET dueEpochDay = :today WHERE id IN (:ids) AND dueEpochDay > :today")
+    suspend fun pullForward(ids: List<Long>, today: Long)
+
+    @Query("SELECT frontImage FROM card WHERE deckId = :deckId AND frontImage IS NOT NULL UNION ALL SELECT backImage FROM card WHERE deckId = :deckId AND backImage IS NOT NULL")
+    suspend fun imagesOfDeck(deckId: Long): List<String>
+
+    // Links
+    @Query("SELECT * FROM study_link WHERE examId = :examId ORDER BY createdAt")
+    fun links(examId: Long): Flow<List<StudyLink>>
+
+    @Query("SELECT * FROM study_link WHERE examId IS NULL ORDER BY createdAt DESC")
+    fun bookmarks(): Flow<List<StudyLink>>
+
+    @Query("SELECT * FROM study_link ORDER BY createdAt DESC")
+    fun allLinks(): Flow<List<StudyLink>>
+
+    @Query("SELECT * FROM study_link WHERE kind = :kind AND targetId = :targetId ORDER BY page, createdAt")
+    fun linksOn(kind: String, targetId: String): Flow<List<StudyLink>>
+
+    @Insert
+    suspend fun insertLink(l: StudyLink): Long
+
+    @Update
+    suspend fun updateLink(l: StudyLink)
+
+    @Query("DELETE FROM study_link WHERE id = :id")
+    suspend fun deleteLink(id: Long)
+
+    // Mock exams
+    @Insert
+    suspend fun insertMockRun(r: MockRun): Long
+
+    @Query("SELECT * FROM mock_run WHERE examId = :examId ORDER BY at DESC")
+    fun mockRuns(examId: Long): Flow<List<MockRun>>
 }
 
 @Database(
-    entities = [PeriodRow::class, Lesson::class, SettingRow::class, Exam::class, Deck::class, Card::class, Review::class],
-    version = 1,
+    entities = [
+        PeriodRow::class, Lesson::class, SettingRow::class, Exam::class, Deck::class, Card::class, Review::class,
+        StudyLink::class, MockRun::class,
+    ],
+    version = 2,
     exportSchema = true,
+    // 1 → 2 only adds the tables for exam links and mock exams.
+    autoMigrations = [AutoMigration(from = 1, to = 2)],
 )
 internal abstract class StudyDatabase : RoomDatabase() {
     abstract fun dao(): StudyDao
