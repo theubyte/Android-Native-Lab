@@ -3,6 +3,18 @@
 Native Android-App (Kotlin, Jetpack Compose, Jetpack Ink) für das Galaxy Tab S7 FE mit S Pen.
 Nachfolger von `apps/digitaler-schulranzen` (V15.0.7, Java). Plan, Design und Phasen: [docs/PLAN.md](docs/PLAN.md).
 
+## Stand 0.3.0 (Phasen 1–8, parallel gebaut)
+
+Neu in 0.3.0:
+- **Arbeitsblätter als Heftseiten:** fotografieren, aus Fotos oder aus PDF (jede Seite ein Blatt), direkt beschreibbar.
+- **Bibliothek:** Suche, Papierkorb (30 Tage), Bücherregal, Tagesleiste mit heutigem Stundenplan, Tasten zu Lernen, Stundenplan, SHK, Sichern.
+- **Bücher** (`feature/books`): PDF-Import, scharfes Zoomen, Inhaltsverzeichnis (eingebettet oder aus dem Text), Schreiben/Markieren/Radieren, Notizen, Lesezeichen, Bereiche merken, **Ausschnitt ins Heft**.
+- **Rechnen** (`feature/rechnen`): schwebender Retro-Taschenrechner im Heft, **„Ausrechnen“** für mit dem Lasso gewählte Handschrift (ML Kit), SHK-Werkzeugkasten mit 21 Schnellrechnern, Einheiten und 32 Formeln.
+- **Lernen** (`feature/study`): Stundenplan als Wochenraster mit A/B-Wochen, Prüfungen mit Countdown und Lernplan, Karteikarten mit Wiederholung (SM-2, prüfungsbewusst).
+- **Sichern** (`feature/backup`): Vollbackup mit Prüfsummen und Wiederherstellung, Unraid-Server (Anmelden, Hochladen, Versionen), **Übernahme aus V15** (Hefte mit allen Seiten, Arbeitsblätter, Bücher, Prüfungen, Karten).
+
+Bekannt offen: Buch und Heft nebeneinander; im SHK-Rechner verdeckt die Tastatur beim Tippen das Ergebnis; Handschrift-Rechnen braucht beim ersten Mal Internet (Modell ~20 MB); V15-Import noch nicht mit einem echten Backup vom Tablet geprüft.
+
 ## Stand 0.2.0 (Phase 1–3)
 
 Neu in 0.2.0 (Phase 3, Heft komplett):

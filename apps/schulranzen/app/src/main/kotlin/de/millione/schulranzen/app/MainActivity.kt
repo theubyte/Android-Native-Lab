@@ -19,6 +19,13 @@ import androidx.compose.ui.unit.dp
 import de.millione.schulranzen.design.RanzenIcon
 import de.millione.schulranzen.design.TactileKey
 import de.millione.schulranzen.study.StudyHome
+import de.millione.schulranzen.books.BookShelf
+import de.millione.schulranzen.books.BookScreen
+import de.millione.schulranzen.app.library.ClipTargetSheet
+import android.widget.Toast
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import kotlinx.coroutines.launch
 import de.millione.schulranzen.rechnen.ShkScreen
 import de.millione.schulranzen.backup.BackupScreen
 import de.millione.schulranzen.core.backup.V15Import
@@ -64,6 +71,7 @@ class RanzenApp : Application() {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val library by lazy { Library(this) }
     val settings by lazy { Settings(this) }
+    val books by lazy { BookShelf(this) }
 }
 
 /**
@@ -136,6 +144,8 @@ class MainActivity : ComponentActivity() {
                                 Spacer(Modifier.width(16.dp))
                             },
                             today = { TodayStrip(Modifier.fillMaxWidth(), onClick = { route = "timetable" }) },
+                            shelf = app.books,
+                            onOpenBook = { route = "book:$it" },
                         )
                         r == "study" -> {
                             BackHandler { route = "lib" }
@@ -151,9 +161,34 @@ class MainActivity : ComponentActivity() {
                             BackupScreen(
                                 onBack = { route = "lib" },
                                 onImportV15 = { lib ->
-                                    V15Import.run(lib, V15Sink(this@MainActivity, app.library, canvas::newId))
+                                    V15Import.run(lib, V15Sink(this@MainActivity, app.library, canvas::newId) { book, subjectId, pdf ->
+                                        if (pdf == null) null else {
+                                            // The shelf imports from a Uri: hand the PDF over through a cache file.
+                                            val tmp = java.io.File(cacheDir, "v15-book.pdf")
+                                            tmp.outputStream().use { pdf.copyTo(it) }
+                                            val info = app.books.import(android.net.Uri.fromFile(tmp))
+                                            tmp.delete()
+                                            if (book.title.isNotBlank()) app.books.rename(info.id, book.title)
+                                            app.books.setSubject(info.id, subjectId)
+                                            info.id
+                                        }
+                                    })
                                 },
                             )
+                        }
+                        r.startsWith("book:") -> {
+                            BackHandler { route = "lib" }
+                            var clip by remember { mutableStateOf<java.io.File?>(null) }
+                            Box(Modifier.fillMaxSize()) {
+                                BookScreen(r.removePrefix("book:"), onBack = { route = "lib" }, onClip = { clip = it })
+                                clip?.let { file ->
+                                    ClipTargetSheet(app.library, onPick = { nb ->
+                                        app.scope.launch { app.library.addImageToNotebook(nb.id, file.name, canvas.newId()) }
+                                        clip = null
+                                        Toast.makeText(this@MainActivity, "Ausschnitt in \u201E${nb.title}\u201C eingefügt", Toast.LENGTH_SHORT).show()
+                                    }, onCancel = { clip = null })
+                                }
+                            }
                         }
                         r.startsWith("nb:") -> {
                             val id = r.removePrefix("nb:")

@@ -19,6 +19,12 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import de.millione.schulranzen.books.BookCover
+import de.millione.schulranzen.books.BookInfo
+import de.millione.schulranzen.books.BookShelf
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -107,6 +113,7 @@ private sealed interface Sheet {
     data class Edit(val notebook: Notebook) : Sheet
     data object NewSubject : Sheet
     data class Trashed(val notebook: Notebook) : Sheet
+    data class EditBook(val book: BookInfo) : Sheet
 }
 
 /** Home: the satchel. Subjects as register tabs, notebooks as real notebooks. */
@@ -119,6 +126,8 @@ fun LibraryScreen(
     tools: @Composable () -> Unit = {},
     /** Strip under the header (today's lessons, next exam). */
     today: @Composable () -> Unit = {},
+    shelf: BookShelf? = null,
+    onOpenBook: (String) -> Unit = {},
 ) {
     val c = Ranzen.colors
     val subjects by library.subjects.collectAsState(initial = emptyList())
@@ -128,6 +137,18 @@ fun LibraryScreen(
     var sheet by remember { mutableStateOf<Sheet>(Sheet.None) }
     var query by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    val books by (shelf?.books ?: kotlinx.coroutines.flow.flowOf(emptyList())).collectAsState(initial = emptyList())
+    var bookMessage by remember { mutableStateOf<String?>(null) }
+    val importBook = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && shelf != null) scope.launch {
+            bookMessage = "Buch wird übernommen …"
+            bookMessage = runCatching { shelf.import(uri) }.fold(
+                { b -> if (filterOf(tab, subjects) != null) shelf.setSubject(b.id, filterOf(tab, subjects)); "\u201E${b.title}\u201C ins Regal gestellt (${b.pageCount} Seiten)" },
+                { it.message ?: "Buch konnte nicht übernommen werden" },
+            )
+            kotlinx.coroutines.delay(3000); bookMessage = null
+        }
+    }
     LaunchedEffect(Unit) { runCatching { library.emptyOldTrash() } }
 
     val trashTab = subjects.size + 1
@@ -135,6 +156,9 @@ fun LibraryScreen(
     val filter: Long? = if (tab == 0 || inTrash) null else subjects.getOrNull(tab - 1)?.id
     val subjectOf = subjects.associateBy { it.id }
     val q = query.trim().lowercase(Locale.GERMANY)
+    val shownBooks = if (inTrash) emptyList() else books.filter { b ->
+        (filter == null || b.subjectId == filter) && (q.isEmpty() || b.title.lowercase(Locale.GERMANY).contains(q))
+    }
     val shown = (if (inTrash) trashed else notebooks).filter { nb ->
         (filter == null || nb.subjectId == filter) &&
             (q.isEmpty() || nb.title.lowercase(Locale.GERMANY).contains(q) ||
@@ -186,7 +210,27 @@ fun LibraryScreen(
                         }
                     }
                     if (!inTrash && q.isEmpty()) item { NewTile { sheet = Sheet.New } }
-                    if (shown.isEmpty() && (inTrash || q.isNotEmpty())) item(span = { GridItemSpan(maxLineSpan) }) {
+                    if (shelf != null && !inTrash) {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            Row(Modifier.padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Bücher", style = Ranzen.type.title, color = c.ink)
+                                Spacer(Modifier.width(12.dp))
+                                Text("%02d".format(shownBooks.size), style = Ranzen.type.mono, color = c.inkMuted)
+                                Spacer(Modifier.weight(1f))
+                                bookMessage?.let { Text(it, style = Ranzen.type.caption, color = c.inkMuted); Spacer(Modifier.width(14.dp)) }
+                                QuietButton("+ Buch (PDF) hinzufügen", { importBook.launch(arrayOf("application/pdf")) }, color = c.ink)
+                            }
+                        }
+                        items(shownBooks, key = { "b:" + it.id }) { b ->
+                            val s = b.subjectId?.let(subjectOf::get)
+                            BookCover(b, onClick = { onOpenBook(b.id) }, onLongClick = { sheet = Sheet.EditBook(b) },
+                                accent = s?.let { SubjectPalette.of(it.colorIndex) }, subject = s?.name)
+                        }
+                        if (shownBooks.isEmpty() && q.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
+                            Text("Schulbücher als PDF hinzufügen: lesen, hineinschreiben, Ausschnitte ins Heft.", style = Ranzen.type.body, color = c.inkMuted)
+                        }
+                    }
+                    if (shown.isEmpty() && shownBooks.isEmpty() && (inTrash || q.isNotEmpty())) item(span = { GridItemSpan(maxLineSpan) }) {
                         Text(if (inTrash) "Der Papierkorb ist leer." else "Nichts gefunden zu \u201E$query\u201C.", style = Ranzen.type.body, color = c.inkMuted)
                     }
                 }
@@ -240,6 +284,15 @@ fun LibraryScreen(
                     }
                 }
             }
+        }
+        AnimatedVisibility(
+            current is Sheet.EditBook,
+            enter = fadeIn() + scaleIn(spring(dampingRatio = 0.7f), initialScale = 0.9f), exit = fadeOut() + scaleOut(targetScale = 0.95f),
+        ) {
+            val b = (current as? Sheet.EditBook)?.book
+            if (b != null && shelf != null) BookSheet(b, subjects, onCancel = { sheet = Sheet.None },
+                onSave = { title, subject -> scope.launch { shelf.rename(b.id, title); shelf.setSubject(b.id, subject) }; sheet = Sheet.None },
+                onDelete = { scope.launch { shelf.delete(b.id) }; sheet = Sheet.None })
         }
         AnimatedVisibility(
             current is Sheet.NewSubject,
@@ -528,6 +581,92 @@ private fun SearchField(query: String, onQuery: (String) -> Unit) {
         }
         if (query.isNotEmpty()) Box(Modifier.clip(CircleShape).clickable { onQuery("") }.padding(4.dp)) {
             RanzenIcon(RanzenIcons.Close, tint = c.inkMuted, size = 18.dp)
+        }
+    }
+}
+
+private fun filterOf(tab: Int, subjects: List<Subject>): Long? = if (tab == 0) null else subjects.getOrNull(tab - 1)?.id
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BookSheet(book: BookInfo, subjects: List<Subject>, onCancel: () -> Unit, onSave: (String, Long?) -> Unit, onDelete: () -> Unit) {
+    val c = Ranzen.colors
+    var title by remember(book) { mutableStateOf(book.title) }
+    var subject by remember(book) { mutableStateOf(book.subjectId) }
+    var confirm by remember(book) { mutableStateOf(false) }
+    PaperPanel(corner = 26.dp) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(30.dp).width(520.dp)) {
+            Text("Buch bearbeiten", style = Ranzen.type.title, color = c.ink)
+            Spacer(Modifier.height(6.dp))
+            Text("${book.pageCount} Seiten", style = Ranzen.type.mono, color = c.inkMuted)
+            Spacer(Modifier.height(20.dp))
+            Text("TITEL", style = Ranzen.type.caption, color = c.inkMuted)
+            Spacer(Modifier.height(8.dp))
+            BasicTextField(
+                title, { title = it }, singleLine = true,
+                textStyle = Ranzen.type.title.copy(color = c.ink), cursorBrush = SolidColor(c.signal),
+                modifier = Modifier.fillMaxWidth()
+                    .drawBehind { drawLine(c.line, Offset(0f, size.height + 6.dp.toPx()), Offset(size.width, size.height + 6.dp.toPx()), 1.5.dp.toPx()) },
+            )
+            Spacer(Modifier.height(24.dp))
+            Text("FACH", style = Ranzen.type.caption, color = c.inkMuted)
+            Spacer(Modifier.height(10.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                subjects.forEach { s ->
+                    val active = s.id == subject
+                    Row(
+                        Modifier.clip(RoundedCornerShape(12.dp)).background(if (active) c.raised else Color.Transparent)
+                            .border(1.dp, if (active) SubjectPalette.of(s.colorIndex) else c.line, RoundedCornerShape(12.dp))
+                            .clickable { subject = if (active) null else s.id }.padding(horizontal = 14.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Lamp(SubjectPalette.of(s.colorIndex), size = 8.dp, glow = active)
+                        Spacer(Modifier.width(8.dp))
+                        Text(s.name, style = Ranzen.type.label, color = if (active) c.ink else c.inkMuted)
+                    }
+                }
+            }
+            Spacer(Modifier.height(28.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                QuietButton(if (confirm) "Wirklich mit Notizen löschen?" else "Buch löschen", { if (confirm) onDelete() else confirm = true }, color = c.signal)
+                Spacer(Modifier.weight(1f))
+                QuietButton("Abbrechen", onCancel)
+                Spacer(Modifier.width(10.dp))
+                SignalButton("Speichern", { onSave(title.trim().ifEmpty { book.title }, subject) })
+            }
+        }
+    }
+}
+
+/** "In welches Heft?" for a clipping from a book. */
+@Composable
+fun ClipTargetSheet(library: Library, onPick: (Notebook) -> Unit, onCancel: () -> Unit) {
+    val c = Ranzen.colors
+    val notebooks by library.notebooks.collectAsState(initial = emptyList())
+    Box(Modifier.fillMaxSize().background(c.desk.copy(alpha = 0.55f)).pointerInput(Unit) { detectTapGestures { onCancel() } }, contentAlignment = Alignment.Center) {
+        PaperPanel(corner = 26.dp) {
+            Column(Modifier.padding(28.dp).width(480.dp)) {
+                Text("Ausschnitt ins Heft", style = Ranzen.type.title, color = c.ink)
+                Spacer(Modifier.height(6.dp))
+                Text("Er kommt auf die zuletzt offene Seite und lässt sich dort mit dem Lasso verschieben.", style = Ranzen.type.caption, color = c.inkMuted)
+                Spacer(Modifier.height(16.dp))
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    notebooks.forEach { nb ->
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onPick(nb) }.padding(horizontal = 10.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RanzenIcon(RanzenIcons.Notebook, size = 22.dp)
+                            Spacer(Modifier.width(14.dp))
+                            Text(nb.title, style = Ranzen.type.body, color = c.ink, modifier = Modifier.weight(1f))
+                            Text("${nb.pageCount} S.", style = Ranzen.type.mono, color = c.inkMuted)
+                        }
+                    }
+                    if (notebooks.isEmpty()) Text("Noch kein Heft angelegt.", style = Ranzen.type.body, color = c.inkMuted)
+                }
+                Spacer(Modifier.height(14.dp))
+                Row { Spacer(Modifier.weight(1f)); QuietButton("Abbrechen", onCancel) }
+            }
         }
     }
 }

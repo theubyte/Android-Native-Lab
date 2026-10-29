@@ -184,6 +184,26 @@ class Library(private val context: Context) {
         name to (src.height.toFloat() / src.width)
     }
 
+    /**
+     * Puts a picture (already in the image folder, e.g. a book clipping) on
+     * the page the notebook was last open at, centred, 60 % page width.
+     */
+    suspend fun addImageToNotebook(notebookId: String, file: String, id: Long) = withContext(Dispatchers.IO) {
+        val nb = dao.notebook(notebookId) ?: return@withContext
+        val pages = dao.pages(notebookId)
+        val page = pages.getOrNull(nb.lastPage) ?: pages.lastOrNull() ?: return@withContext
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(File(imageDir, file).path, opts)
+        val aspect = if (opts.outWidth > 0) opts.outHeight.toFloat() / opts.outWidth else 0.75f
+        val w = de.millione.schulranzen.ink.PageGeometry.WIDTH * 0.6f
+        val h = w * aspect
+        val x = (de.millione.schulranzen.ink.PageGeometry.WIDTH - w) / 2
+        val y = ((de.millione.schulranzen.ink.PageGeometry.HEIGHT - h) / 2).coerceAtLeast(40f)
+        val items = runCatching { ItemCodec.read(itemFile(page.id)) }.getOrDefault(emptyList())
+        ItemCodec.write(itemFile(page.id), items + de.millione.schulranzen.ink.ImageItem(id, x, y, w, h, file))
+        dao.touch(notebookId, System.currentTimeMillis())
+    }
+
     /** Writes the notebook as PDF to [uri] (from the system save dialog). */
     suspend fun exportPdf(pages: List<CanvasPage>, uri: Uri, ruling: Boolean) = withContext(Dispatchers.IO) {
         context.contentResolver.openOutputStream(uri)?.use { PdfExporter.export(pages, it, ruling) }
