@@ -24,6 +24,8 @@ dependencies {
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)
+    // On-device handwriting recognition for circled calculations (model downloaded on first use).
+    implementation("com.google.mlkit:digital-ink-recognition:19.0.0")
     testImplementation(libs.junit)
     testImplementation(kotlin("test"))
 }
