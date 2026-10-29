@@ -14,6 +14,9 @@ import androidx.compose.ui.unit.dp
  * one colour so they take the theme's ink. No stock Material symbols.
  */
 object RanzenIcons {
+    /** Line icon in the house style; feature modules use this for their own icons. */
+    fun line(name: String, block: PathBuilder.() -> Unit): ImageVector = icon(name, block)
+
     private fun icon(name: String, block: PathBuilder.() -> Unit): ImageVector =
         ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
             path(

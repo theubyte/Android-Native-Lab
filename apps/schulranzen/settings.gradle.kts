@@ -7,3 +7,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "Schulranzen"
 include(":core", ":design", ":ink", ":app")
+include(":feature:rechnen", ":feature:books", ":feature:study", ":feature:backup")
