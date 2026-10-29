@@ -414,11 +414,22 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         if (drag.isIdentity) return
         val page = pages[s.page]
         val m = Matrix(drag)
+        // Dropped with its centre on another (unlocked) page: it moves over to that page.
+        val moved = RectF(s.bounds).also { m.mapRect(it) }
+        val target = pageAt(moved.centerY() + pageTop(s.page)).takeIf { it >= 0 && it != s.page && !pages[it].locked }
+        if (target != null) m.postTranslate(0f, pageTop(s.page) - pageTop(target))
         val strokes = page.ink.strokes.filter { it.id in s.strokes }.associate { it.id to it.transformed(m, newId()) }
         val items = page.ink.items.filter { it.id in s.items }.associate { it.id to it.transformed(m, newId()) }
         drag.reset()
-        commit(listOf(page.ink.replaceEdit(page.id, strokes, items)))
-        select(s.page, strokes.values.mapTo(HashSet()) { it.id }, items.values.mapTo(HashSet()) { it.id })
+        if (target == null) {
+            commit(listOf(page.ink.replaceEdit(page.id, strokes, items)))
+        } else {
+            commit(listOf(
+                page.ink.removeEdit(page.id, s.strokes, s.items),
+                PageEdit(pages[target].id, emptyList(), strokes.values.toList(), emptyList(), items.values.toList()),
+            ))
+        }
+        select(target ?: s.page, strokes.values.mapTo(HashSet()) { it.id }, items.values.mapTo(HashSet()) { it.id })
     }
 
     // ---------------------------------------------------------------- text
