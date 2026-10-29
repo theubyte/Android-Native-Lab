@@ -72,6 +72,7 @@ fun TodayStrip(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
     val slots by repo.todaysLessons.collectAsState(initial = emptyList())
     val exams by repo.nextExams.collectAsState(initial = emptyList())
     val today by repo.today.collectAsState(initial = LocalDate.now())
+    val next by repo.nextStep.collectAsState(initial = null)
     val minute = rememberMinuteOfDay()
     val c = Ranzen.colors
 
@@ -99,7 +100,7 @@ fun TodayStrip(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
                 Spacer(Modifier.width(14.dp))
                 Box(Modifier.width(1.dp).height(44.dp).background(c.line))
                 Spacer(Modifier.width(14.dp))
-                ExamTicket(e, today)
+                ExamTicket(e, today, next?.takeIf { it.first.id == e.id }?.second)
             }
         }
     }
@@ -131,7 +132,7 @@ private fun LessonTicket(b: LessonBlock, minute: Int) {
 }
 
 @Composable
-private fun ExamTicket(e: Exam, today: LocalDate) {
+private fun ExamTicket(e: Exam, today: LocalDate, step: de.millione.schulranzen.core.study.PathStage?) {
     val c = Ranzen.colors
     val date = LocalDate.ofEpochDay(e.dateEpochDay)
     val days = Fmt.daysUntil(today, date)
@@ -141,6 +142,8 @@ private fun ExamTicket(e: Exam, today: LocalDate) {
         Column(Modifier.widthIn(max = 220.dp)) {
             Text("${ExamKind.of(e.kind).label} · ${e.subject}", style = Ranzen.type.label, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(Fmt.countdown(today, date).uppercase(Locale.GERMANY), style = Ranzen.type.mono, color = if (days <= 3) c.signal else c.inkMuted)
+            // The next step of the learning path, so the home screen says what to do, not only when.
+            if (step != null) Text("→ " + stageTitle(step.kind), style = Ranzen.type.caption, color = c.inkMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

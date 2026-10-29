@@ -110,6 +110,31 @@ internal object StudyIcons {
         moveTo(12f, 7.5f); lineTo(12f, 12f); lineTo(15f, 14f)
     }
     val Chevron = RanzenIcons.line("chevron") { moveTo(9.5f, 5.5f); lineTo(16f, 12f); lineTo(9.5f, 18.5f) }
+    /** Speech bubble with a spark: the explanation helper. */
+    val Assistant = RanzenIcons.line("assistant") {
+        moveTo(4.5f, 5.5f); lineTo(19.5f, 5.5f); lineTo(19.5f, 16f); lineTo(11f, 16f); lineTo(7f, 19.5f); lineTo(7f, 16f); lineTo(4.5f, 16f); close()
+        moveTo(12f, 8f); lineTo(12f, 13.5f); moveTo(9.25f, 10.75f); lineTo(14.75f, 10.75f)
+    }
+    /** A wand with sparks: cards suggested from text. */
+    val Wand = RanzenIcons.line("wand") {
+        moveTo(4.5f, 19.5f); lineTo(14.5f, 9.5f)
+        moveTo(16.5f, 3.5f); lineTo(16.5f, 6.5f); moveTo(15f, 5f); lineTo(18f, 5f)
+        moveTo(19f, 9.5f); lineTo(19f, 11.5f); moveTo(18f, 10.5f); lineTo(20f, 10.5f)
+        moveTo(10.5f, 3.5f); lineTo(10.5f, 5.5f); moveTo(9.5f, 4.5f); lineTo(11.5f, 4.5f)
+    }
+    /** A sheet with a tick and a clock corner: the mock exam. */
+    val Test = RanzenIcons.line("test") {
+        moveTo(6f, 3.5f); lineTo(15f, 3.5f); lineTo(18.5f, 7f); lineTo(18.5f, 20.5f); lineTo(6f, 20.5f); close()
+        moveTo(9f, 9f); lineTo(15f, 9f); moveTo(9f, 12.5f); lineTo(13f, 12.5f)
+        moveTo(9f, 16.5f); lineTo(10.5f, 18f); lineTo(14f, 14.5f)
+    }
+    /** Stepping stones: the learning path. */
+    val Path = RanzenIcons.line("path") {
+        moveTo(5f, 19f); arcToRelative(1.5f, 1.5f, 0f, true, true, 0f, -0.01f)
+        moveTo(12f, 12f); arcToRelative(1.5f, 1.5f, 0f, true, true, 0f, -0.01f)
+        moveTo(19f, 5f); arcToRelative(1.5f, 1.5f, 0f, true, true, 0f, -0.01f)
+        moveTo(6.5f, 17.5f); lineTo(10.5f, 13.5f); moveTo(13.5f, 10.5f); lineTo(17.5f, 6.5f)
+    }
 }
 
 internal object Fmt {
