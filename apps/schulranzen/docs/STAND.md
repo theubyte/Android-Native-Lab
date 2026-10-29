@@ -6,7 +6,17 @@ Plan und Design im Detail: [PLAN.md](PLAN.md). Regeln für parallele Agenten: [A
 
 Legende: `[x]` erledigt · `[ ]` offen · `[~]` teilweise · **(T)** nur auf dem echten Tablet prüfbar
 
-Letzte Aktualisierung: 29.10.2026, Version **0.3.1**
+Letzte Aktualisierung: 29.10.2026, Version **0.4.0 (in Arbeit)**
+
+## In Arbeit (parallele Agenten, Runde 2)
+
+| Agent | Aufgabe |
+|---|---|
+| Bücher | Volltextsuche, Texterkennung für gescannte Bücher, Lasso + Text im Buch, Rückgängig für alles, kompakte Buchansicht für „nebeneinander“, „Für Prüfung merken“ |
+| Lernen | Prüfungsstoff-Links zu Heft/Buch, Karten mit Bildern, Karte aus Ausschnitt, Lernpfade, Probeprüfung, Erklärhilfe (Claude API), automatische Karten |
+| Sichern | Verschlüsselte Backups, automatisches Backup, Zusammenführen, sauberes Schließen vor Restore, bessere Sync-Fehlermeldungen, „Verbindung testen“ |
+| SHK | Aufmaß, Materiallisten, Schema-Editor mit Symbolen, weitere Tabellen, Handschrift-Modell vorab laden |
+| Schrift | Formerkennung, „Kreis um Rechnung“, Handschrift → Text, Suche in Handschrift |
 
 ---
 
@@ -23,23 +33,25 @@ Letzte Aktualisierung: 29.10.2026, Version **0.3.1**
 - [ ] **(T)** Zwei-Finger-Zoom in Heft und Buch
 - [ ] **(T)** Hochformat
 - [ ] **(T)** V15-Übernahme mit dem echten Backup der alten App
-- [ ] **(T)** Unraid-Sync mit dem echten Server
+- [~] **(T)** Unraid-Sync mit dem echten Server: Anmelden klappt, Sichern/Laden scheiterte.
+      Server-Fehler behoben (Secret-Race zwischen zwei Workern → 401 nach Login). **Du:** Server
+      aktualisieren (Befehl unten) und erneut testen.
 
 ### 2. Aus der alten App (V15) noch nicht da
-- [ ] Buch und Heft nebeneinander (Split mit verschiebbarem Trenner)
+- [x] Buch und Heft nebeneinander (Split mit verschiebbarem Trenner) – 0.4.0
 - [ ] Rechnungen automatisch erkennen beim Schreiben / Kreis-Geste zum Ausrechnen
       (jetzt: Lasso → „Ausrechnen“)
 - [ ] Prüfungsmarkierungen: Heft-/Buchstelle als „prüfungsrelevant“ markieren, aus Lernen dorthin springen
-- [ ] Lineal als echtes verschieb- und drehbares Lineal auf dem Blatt (jetzt: Gerade-Linie-Werkzeug)
-- [ ] Werkzeugnamen anzeigen, wenn der Stift über der Werkzeugleiste schwebt
+- [x] Lineal als echtes verschieb- und drehbares Lineal auf dem Blatt – 0.4.0 (Drehen mit zwei Fingern nur auf dem Tablet prüfbar)
+- [x] Werkzeugnamen anzeigen, wenn der Stift über der Werkzeugleiste schwebt – 0.4.0 **(T)**
 
 ### 3. Lücken in den neuen Bereichen
 - Heft
-  - [ ] Lasso über Seitengrenzen
+  - [x] Lasso über Seitengrenzen: Auswahl auf andere Seite ziehen – 0.4.0 (im Emulator nicht prüfbar)
   - [ ] Formen (Kreis, Pfeil, Rechteck) mit Formerkennung
   - [ ] Handschrift → Text
   - [ ] Suche in der Handschrift
-  - [ ] Neues Heft direkt aus PDF/Arbeitsblatt anlegen
+  - [x] Neues Heft direkt aus PDF anlegen („Heft aus PDF“) – 0.4.0
 - Bücher
   - [ ] Volltextsuche im Buch
   - [ ] Lasso und Text im Buch
@@ -75,6 +87,16 @@ Letzte Aktualisierung: 29.10.2026, Version **0.3.1**
 ---
 
 ## Erledigt
+
+### 0.4.0 (in Arbeit)
+- Buch und Heft nebeneinander: im Heft *Mehr → Buch daneben öffnen*; Trenner ziehen, doppelt tippen = halbe-halbe;
+  Buchausschnitte landen direkt auf der sichtbaren Heftseite. Im Emulator geprüft ([Bild](screens/heft-buch-nebeneinander.png)).
+- Echtes Lineal ([Bild](screens/lineal.png)): mm/cm-Skala, Finger verschieben, zwei Finger drehen (15°-Raster),
+  Stift zieht an beiden Kanten gerade Linien. Verschieben und Kantenlinien im Emulator geprüft.
+- Heft aus PDF in der Bibliothek.
+- Werkzeugnamen beim Schweben des Stifts über der Leiste.
+- Lasso-Auswahl wandert beim Ablegen auf eine andere Seite.
+- Sync-Server: gemeinsames Secret für alle Worker, Timeout 600 s.
 
 ### 0.3.1
 - Fester Signaturschlüssel: neue Versionen installieren sich über die alte, Hefte bleiben erhalten.
@@ -117,3 +139,12 @@ Letzte Aktualisierung: 29.10.2026, Version **0.3.1**
 3. **Einmalig:** Eine Version vor 0.3.1 muss vorher deinstalliert werden (anderer Schlüssel).
    Ab 0.3.1 installiert sich jede neue Version einfach darüber, Hefte bleiben.
 4. Die alte App (V15) bleibt daneben installiert (andere Paket-ID). Übernahme: *Sichern → Aus V15 übernehmen*.
+
+## Unraid-Server aktualisieren
+
+Im Unraid-Terminal:
+
+```
+cd /mnt/user/appdata/digitaler-schulranzen-sync && curl -fsSLO https://raw.githubusercontent.com/theubyte/Android-Native-Lab/main/apps/digitaler-schulranzen/server/unraid-sync/app.py && curl -fsSLO https://raw.githubusercontent.com/theubyte/Android-Native-Lab/main/apps/digitaler-schulranzen/server/unraid-sync/Dockerfile && docker compose up -d --build
+```
+Danach in der App ab- und neu anmelden.
