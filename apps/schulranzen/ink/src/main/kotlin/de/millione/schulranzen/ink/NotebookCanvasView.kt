@@ -459,6 +459,19 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     private var downX = 0f; private var downY = 0f
     private var selStart = FloatArray(2)
 
+    // The ruler lies on the screen (not on the page) like a real one on the
+    // desk: fingers move and turn it, the pen draws along its edges. Centre of
+    // the top edge in view pixels and angle in radians.
+    private var rulerCx = -1f; private var rulerCy = 0f
+    private var rulerAngle = 0f
+    private var rulerRawAngle = 0f
+    private val rulerW get() = 76f * density
+    private val rulerL get() = max(width, 1) * 0.8f
+    /** Offset of the edge the current pen line follows (0 or [rulerW]); NaN = free line. */
+    private var rulerEdge = Float.NaN
+    private var rulerFinger = false
+    private var rfLastX = 0f; private var rfLastY = 0f; private var rfLastA = 0f; private var rfId = -1
+
     // finger pan / pinch
     private var panId = -1
     private var lastX = 0f; private var lastY = 0f
@@ -495,6 +508,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             if (mode == Mode.PAN) endPan()
             return true
         }
+        if (tool == ToolKind.RULER && mode != Mode.PAN && rulerFingerEvent(e)) return true
         fingerEvent(e)
         return true
     }
@@ -555,7 +569,16 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             }
             ToolKind.RULER -> {
                 mode = Mode.RULER
-                rulerA = local; rulerB = local.copyOf()
+                ensureRuler()
+                val (t, d) = rulerCoords(x, y)
+                val grab = 30f * density
+                rulerEdge = if (abs(t) <= rulerL / 2 + grab && d in -grab..rulerW + grab) (if (d < rulerW / 2) 0f else rulerW) else Float.NaN
+                if (!rulerEdge.isNaN()) {
+                    val p = rulerEdgePoint(t, rulerEdge)
+                    rulerA = localOf(page, p[0], p[1]); rulerB = rulerA.copyOf()
+                } else {
+                    rulerA = local; rulerB = local.copyOf()
+                }
             }
             ToolKind.TEXT -> mode = Mode.TEXT
             else -> {
@@ -603,7 +626,10 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                         overlay.invalidate()
                     }
                     Mode.RULER -> {
-                        rulerB = snap(rulerA, localOf(gesturePage, x, y))
+                        rulerB = if (rulerEdge.isNaN()) snap(rulerA, localOf(gesturePage, x, y)) else {
+                            val p = rulerEdgePoint(rulerCoords(x, y).first, rulerEdge)
+                            localOf(gesturePage, p[0], p[1])
+                        }
                         overlay.invalidate()
                     }
                     Mode.MOVE_SEL -> {
@@ -684,6 +710,78 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         if (abs(deg - nearest) > 4.0) return b
         val r = Math.toRadians(nearest)
         return floatArrayOf(a[0] + (cos(r) * len).toFloat(), a[1] + (sin(r) * len).toFloat())
+    }
+
+    private fun ensureRuler() {
+        if (rulerCx < 0f && width > 0) { rulerCx = width / 2f; rulerCy = height * 0.42f }
+    }
+
+    /** View point → (along the ruler from its centre, across from the top edge). */
+    private fun rulerCoords(x: Float, y: Float): Pair<Float, Float> {
+        val dx = x - rulerCx; val dy = y - rulerCy
+        val c = cos(rulerAngle); val s = sin(rulerAngle)
+        return (dx * c + dy * s) to (-dx * s + dy * c)
+    }
+
+    private fun rulerEdgePoint(t: Float, edge: Float): FloatArray {
+        val c = cos(rulerAngle); val s = sin(rulerAngle)
+        return floatArrayOf(rulerCx + c * t - s * edge, rulerCy + s * t + c * edge)
+    }
+
+    private fun onRuler(x: Float, y: Float): Boolean {
+        val (t, d) = rulerCoords(x, y)
+        val pad = 6f * density
+        return abs(t) <= rulerL / 2 + pad && d in -pad..rulerW + pad
+    }
+
+    /** One finger moves the ruler, two turn it; it snaps to 15° steps. */
+    private fun rulerFingerEvent(e: MotionEvent): Boolean {
+        ensureRuler()
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (!onRuler(e.x, e.y)) return false
+                rulerFinger = true
+                rfId = e.getPointerId(0); rfLastX = e.x; rfLastY = e.y
+                rulerRawAngle = rulerAngle
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> if (rulerFinger && e.pointerCount == 2) {
+                rfLastA = atan2(e.getY(1) - e.getY(0), e.getX(1) - e.getX(0))
+                rfLastX = (e.getX(0) + e.getX(1)) / 2; rfLastY = (e.getY(0) + e.getY(1)) / 2
+            }
+            MotionEvent.ACTION_MOVE -> if (rulerFinger) {
+                if (e.pointerCount >= 2) {
+                    val a = atan2(e.getY(1) - e.getY(0), e.getX(1) - e.getX(0))
+                    val mx = (e.getX(0) + e.getX(1)) / 2; val my = (e.getY(0) + e.getY(1)) / 2
+                    var da = a - rfLastA
+                    if (da > Math.PI) da -= (2 * Math.PI).toFloat() else if (da < -Math.PI) da += (2 * Math.PI).toFloat()
+                    rulerRawAngle += da
+                    val step = Math.toRadians(15.0).toFloat()
+                    val nearest = (rulerRawAngle / step).roundToInt() * step
+                    val newAngle = if (abs(rulerRawAngle - nearest) < Math.toRadians(2.0)) nearest else rulerRawAngle
+                    // Turn about the fingers' midpoint, then follow it.
+                    val turn = newAngle - rulerAngle
+                    val c = cos(turn); val s = sin(turn)
+                    val rx = rulerCx - rfLastX; val ry = rulerCy - rfLastY
+                    rulerCx = rfLastX + rx * c - ry * s + (mx - rfLastX)
+                    rulerCy = rfLastY + rx * s + ry * c + (my - rfLastY)
+                    rulerAngle = newAngle
+                    rfLastA = a; rfLastX = mx; rfLastY = my
+                } else {
+                    val i = e.findPointerIndex(rfId).takeIf { it >= 0 } ?: 0
+                    rulerCx += e.getX(i) - rfLastX; rulerCy += e.getY(i) - rfLastY
+                    rfLastX = e.getX(i); rfLastY = e.getY(i)
+                }
+                rulerCx = rulerCx.coerceIn(0f, width.toFloat()); rulerCy = rulerCy.coerceIn(0f, height.toFloat())
+                overlay.invalidate()
+            }
+            MotionEvent.ACTION_POINTER_UP -> if (rulerFinger) {
+                val keep = if (e.actionIndex == 0) 1 else 0
+                rfId = e.getPointerId(keep); rfLastX = e.getX(keep); rfLastY = e.getY(keep)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (rulerFinger) { rulerFinger = false; return true }
+        }
+        return rulerFinger
     }
 
     private fun finishRuler() {
@@ -975,7 +1073,12 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         fun eraserAt(px: Float, py: Float) { x = px; y = py; visible = true; erasing = true; invalidate() }
         fun hide() { if (visible) { visible = false }; invalidate() }
 
+        private val rulerFill = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rulerTick = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1f * density }
+        private val rulerText = Paint(Paint.ANTI_ALIAS_FLAG)
+
         override fun onDraw(canvas: Canvas) {
+            if (tool == ToolKind.RULER) drawPhysicalRuler(canvas)
             drawSelection(canvas)
             when (mode) {
                 Mode.LASSO -> drawLasso(canvas)
@@ -1033,6 +1136,40 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             val by = (pts[3] - 18f * density).coerceAtLeast(30f * density)
             canvas.drawRoundRect(bx - 10f * density, by - label.textSize - 6f * density, bx + tw + 10f * density, by + 8f * density, 8f * density, 8f * density, tag)
             canvas.drawText(text, bx, by, label)
+        }
+
+        /** Translucent ruler with mm/cm scale on the top edge (page millimetres at the current zoom). */
+        private fun drawPhysicalRuler(canvas: Canvas) {
+            ensureRuler()
+            if (rulerCx < 0f) return
+            val l = rulerL; val w = rulerW
+            canvas.save()
+            canvas.translate(rulerCx, rulerCy)
+            canvas.rotate(Math.toDegrees(rulerAngle.toDouble()).toFloat())
+            rulerFill.style = Paint.Style.FILL; rulerFill.color = 0xB8F4EFE4.toInt()
+            canvas.drawRoundRect(-l / 2, 0f, l / 2, w, 10f * density, 10f * density, rulerFill)
+            rulerFill.style = Paint.Style.STROKE; rulerFill.strokeWidth = 1.2f * density; rulerFill.color = 0x661C1B19
+            canvas.drawRoundRect(-l / 2, 0f, l / 2, w, 10f * density, 10f * density, rulerFill)
+            rulerTick.color = 0xCC1C1B19.toInt()
+            rulerText.color = 0xCC1C1B19.toInt(); rulerText.textSize = 11f * density; rulerText.typeface = label.typeface
+            val mm = UNITS_PER_MM * scale
+            val every = if (mm < 3f * density) 5 else 1
+            val start = -l / 2 + 12f * density
+            var i = 0
+            while (start + i * mm <= l / 2 - 12f * density) {
+                val x = start + i * mm
+                val len = when { i % 10 == 0 -> 20f; i % 5 == 0 -> 13f; else -> 8f } * density
+                canvas.drawLine(x, 0f, x, len, rulerTick)
+                canvas.drawLine(x, w, x, w - len * 0.6f, rulerTick)
+                if (i % 10 == 0) canvas.drawText((i / 10).toString(), x + 3f * density, 32f * density, rulerText)
+                i += every
+            }
+            // Angle in the middle, like a protractor readout.
+            val deg = ((-Math.toDegrees(rulerAngle.toDouble())).roundToInt() % 360 + 360) % 360
+            val text = "$deg°"
+            rulerText.textSize = 13f * density
+            canvas.drawText(text, -rulerText.measureText(text) / 2, w - 14f * density, rulerText)
+            canvas.restore()
         }
 
         private fun drawSelection(canvas: Canvas) {
