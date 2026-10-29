@@ -43,6 +43,8 @@ class CanvasPage(
     val ink: PageInk,
     var bookmarked: Boolean = false,
     var locked: Boolean = false,
+    /** Worksheet page: picture file (app image folder) printed on the sheet instead of ruling. */
+    var background: String? = null,
 )
 
 /** What the side button did while the pen hovered (no contact). */

@@ -149,6 +149,10 @@ object RanzenIcons {
         moveTo(6.5f, 14.5f); arcToRelative(2.5f, 2.5f, 0f, true, true, 0f, 5f); arcToRelative(2.5f, 2.5f, 0f, true, true, 0f, -5f)
         moveTo(8.6f, 8.4f); lineTo(20f, 17.5f); moveTo(8.6f, 15.6f); lineTo(20f, 6.5f)
     }
+    val Camera = icon("camera") {
+        moveTo(4f, 8f); lineTo(7.5f, 8f); lineTo(9f, 5.5f); lineTo(15f, 5.5f); lineTo(16.5f, 8f); lineTo(20f, 8f); lineTo(20f, 19f); lineTo(4f, 19f); close()
+        moveTo(12f, 10f); arcToRelative(3.3f, 3.3f, 0f, true, true, 0f, 6.6f); arcToRelative(3.3f, 3.3f, 0f, true, true, 0f, -6.6f)
+    }
     val ArrowUp = icon("up") { moveTo(12f, 19f); lineTo(12f, 5f); moveTo(6.5f, 10.5f); lineTo(12f, 5f); lineTo(17.5f, 10.5f) }
     val ArrowDown = icon("down") { moveTo(12f, 5f); lineTo(12f, 19f); moveTo(6.5f, 13.5f); lineTo(12f, 19f); lineTo(17.5f, 13.5f) }
 }

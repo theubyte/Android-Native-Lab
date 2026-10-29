@@ -124,6 +124,19 @@ object ItemPainter {
         BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample })?.also { images.put(file, it) }
     }
 
+    /**
+     * A worksheet filling the sheet: scaled to fit A4 with its aspect kept,
+     * centred, so a photo or PDF page sits like a printed handout.
+     */
+    fun drawSheet(canvas: Canvas, file: String) {
+        val bmp = image(file) ?: return
+        val pw = PageGeometry.WIDTH; val ph = PageGeometry.HEIGHT
+        val s = minOf(pw / bmp.width, ph / bmp.height)
+        val w = bmp.width * s; val h = bmp.height * s
+        val l = (pw - w) / 2; val t = (ph - h) / 2
+        canvas.drawBitmap(bmp, null, RectF(l, t, l + w, t + h), bitmapPaint)
+    }
+
     fun draw(canvas: Canvas, item: PageItem) {
         when (item) {
             is TextItem -> {

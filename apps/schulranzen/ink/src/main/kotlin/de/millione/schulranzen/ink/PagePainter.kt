@@ -23,7 +23,13 @@ object PagePainter {
         hideStrokes: Set<Long> = emptySet(),
         hideItems: Set<Long> = emptySet(),
     ) {
-        PaperPainter.draw(canvas, if (ruling) page.paper else PaperStyle.BLANK)
+        val sheet = page.background
+        if (sheet != null) {
+            PaperPainter.draw(canvas, PaperStyle.BLANK)
+            ItemPainter.drawSheet(canvas, sheet)
+        } else {
+            PaperPainter.draw(canvas, if (ruling) page.paper else PaperStyle.BLANK)
+        }
         val items = page.ink.items
         for (it in items) if (it is ImageItem && it.id !in hideItems) ItemPainter.draw(canvas, it)
         val strokes = page.ink.strokes

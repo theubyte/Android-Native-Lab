@@ -110,6 +110,18 @@ fun NotebookScreen(session: NotebookSession, settings: Settings, onBack: () -> U
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) session.insertImage(uri)
     }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val pickWorksheets = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(30)) { uris ->
+        session.addWorksheetImages(uris)
+    }
+    val pickWorksheetPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) session.addWorksheetPdf(uri)
+    }
+    var cameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val u = cameraUri
+        if (ok && u != null) session.addWorksheetImages(listOf(u))
+    }
     var pdfRuling by remember { mutableStateOf(true) }
     val savePdf = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
         if (uri != null) session.exportPdf(uri, pdfRuling)
@@ -180,6 +192,16 @@ fun NotebookScreen(session: NotebookSession, settings: Settings, onBack: () -> U
             exit = fadeOut() + scaleOut(targetScale = 0.95f)) {
             MorePanel(session, settings, pdfRuling, { pdfRuling = it },
                 onImage = { panel = Panel.NONE; pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onWorksheetPhotos = { panel = Panel.NONE; pickWorksheets.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onWorksheetPdf = { panel = Panel.NONE; pickWorksheetPdf.launch(arrayOf("application/pdf")) },
+                onWorksheetCamera = {
+                    panel = Panel.NONE
+                    val dir = java.io.File(context.cacheDir, "camera").also { it.mkdirs() }
+                    val file = java.io.File(dir, "blatt-${System.currentTimeMillis()}.jpg")
+                    val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", file)
+                    cameraUri = uri
+                    runCatching { takePhoto.launch(uri) }.onFailure { session.say("Keine Kamera-App gefunden") }
+                },
                 onPdf = { panel = Panel.NONE; savePdf.launch(session.title.ifBlank { "Heft" } + ".pdf") })
         }
         AnimatedVisibility(panel == Panel.PAGES, Modifier.align(Alignment.CenterEnd),
@@ -202,6 +224,19 @@ fun NotebookScreen(session: NotebookSession, settings: Settings, onBack: () -> U
             ToolRingOverlay(r, session.tool, color,
                 onPick = { session.pick(it); session.closeRing() },
                 onDismiss = session::closeRing)
+        }
+
+        // Longer work (PDF pages, photos)
+        session.busy?.let { msg ->
+            Box(Modifier.fillMaxSize().background(c.desk.copy(alpha = 0.3f)).pointerInput(Unit) { detectTapGestures { } }, contentAlignment = Alignment.Center) {
+                PaperPanel(corner = 18.dp) {
+                    Row(Modifier.padding(horizontal = 24.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.CircularProgressIndicator(Modifier.size(22.dp), color = c.signal, strokeWidth = 2.5.dp)
+                        Spacer(Modifier.width(16.dp))
+                        Text(msg, style = Ranzen.type.label, color = c.ink)
+                    }
+                }
+            }
         }
 
         // Short messages
@@ -424,6 +459,9 @@ private fun MorePanel(
     pdfRuling: Boolean,
     onPdfRuling: (Boolean) -> Unit,
     onImage: () -> Unit,
+    onWorksheetPhotos: () -> Unit,
+    onWorksheetPdf: () -> Unit,
+    onWorksheetCamera: () -> Unit,
     onPdf: () -> Unit,
 ) {
     val c = Ranzen.colors
@@ -447,7 +485,13 @@ private fun MorePanel(
             ToggleRow("Lesezeichen auf dieser Seite", page?.bookmarked == true) { session.toggleBookmark() }
             ToggleRow("Seite sperren", page?.locked == true) { session.toggleLock() }
             Spacer(Modifier.height(16.dp))
-            Text("Einfügen", style = Ranzen.type.heading, color = c.ink)
+            Text("Arbeitsblatt als neue Seite", style = Ranzen.type.heading, color = c.ink)
+            Spacer(Modifier.height(4.dp))
+            ActionRow(RanzenIcons.Camera, "Fotografieren", onWorksheetCamera)
+            ActionRow(RanzenIcons.Image, "Aus Fotos (auch mehrere)", onWorksheetPhotos)
+            ActionRow(RanzenIcons.Paper, "Aus PDF – jede Seite wird ein Blatt", onWorksheetPdf)
+            Spacer(Modifier.height(16.dp))
+            Text("Auf diese Seite", style = Ranzen.type.heading, color = c.ink)
             Spacer(Modifier.height(4.dp))
             ActionRow(RanzenIcons.Image, "Bild aus der Galerie", onImage)
             if (session.clip != null) ActionRow(RanzenIcons.Copy, "Kopierte Auswahl einfügen", session::paste)

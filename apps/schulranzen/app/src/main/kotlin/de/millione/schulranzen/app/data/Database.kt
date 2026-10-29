@@ -48,6 +48,8 @@ data class Page(
     val paper: String,
     val bookmarked: Boolean = false,
     val locked: Boolean = false,
+    /** Worksheet picture (file in the image folder) or null for ruled paper. */
+    val background: String? = null,
 )
 
 @Dao
@@ -136,7 +138,7 @@ interface LibraryDao {
     }
 }
 
-@Database(entities = [Subject::class, Notebook::class, Page::class], version = 2, exportSchema = true)
+@Database(entities = [Subject::class, Notebook::class, Page::class], version = 3, exportSchema = true)
 abstract class RanzenDatabase : RoomDatabase() {
     abstract fun library(): LibraryDao
 
@@ -149,10 +151,17 @@ abstract class RanzenDatabase : RoomDatabase() {
             }
         }
 
+        /** 0.3: worksheet pages. */
+        val V2_TO_V3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE page ADD COLUMN background TEXT")
+            }
+        }
+
         @Volatile private var instance: RanzenDatabase? = null
         fun get(context: Context): RanzenDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, RanzenDatabase::class.java, "ranzen.db")
-                .addMigrations(V1_TO_V2)
+                .addMigrations(V1_TO_V2, V2_TO_V3)
                 .build().also { instance = it }
         }
     }

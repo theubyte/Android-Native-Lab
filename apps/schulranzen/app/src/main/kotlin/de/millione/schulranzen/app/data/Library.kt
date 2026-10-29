@@ -70,7 +70,8 @@ class Library(private val context: Context) {
             val strokes = runCatching { InkCodec.read(inkFile(p.id)) }.getOrDefault(emptyList())
             val items = runCatching { ItemCodec.read(itemFile(p.id)) }.getOrDefault(emptyList())
             items.filterIsInstance<de.millione.schulranzen.ink.ImageItem>().forEach { ItemPainter.image(it.file) }
-            CanvasPage(p.id, PaperStyle.of(p.paper), PageInk(strokes, items), p.bookmarked, p.locked)
+            p.background?.let { ItemPainter.image(it) }
+            CanvasPage(p.id, PaperStyle.of(p.paper), PageInk(strokes, items), p.bookmarked, p.locked, p.background)
         }
     }
 
@@ -87,13 +88,53 @@ class Library(private val context: Context) {
         return CanvasPage(page.id, paper, PageInk())
     }
 
+    /**
+     * Worksheets as new pages from [position] on, one page per picture
+     * file (already in the image folder). Returns the pages in order.
+     */
+    suspend fun addWorksheetPages(notebookId: String, position: Int, files: List<String>): List<CanvasPage> =
+        files.mapIndexed { i, file ->
+            val page = Page(UUID.randomUUID().toString(), notebookId, position + i, PaperStyle.BLANK.name, background = file)
+            dao.insertPageAt(page)
+            CanvasPage(page.id, PaperStyle.BLANK, PageInk(), background = file)
+        }.also { dao.touch(notebookId, System.currentTimeMillis()) }
+
+    /**
+     * Renders every page of a PDF (a worksheet from the teacher) at print
+     * quality (A4 at 200 dpi) into the image folder. [progress] gets
+     * (done, total).
+     */
+    suspend fun importPdfPages(uri: Uri, progress: (Int, Int) -> Unit = { _, _ -> }): List<String> = withContext(Dispatchers.IO) {
+        val out = ArrayList<String>()
+        context.contentResolver.openFileDescriptor(uri, "r")?.use { fd ->
+            android.graphics.pdf.PdfRenderer(fd).use { pdf ->
+                for (i in 0 until pdf.pageCount) {
+                    pdf.openPage(i).use { page ->
+                        val scale = 1654f / max(page.width, 1)      // 8.27 in × 200 dpi
+                        val w = (page.width * scale).toInt(); val h = (page.height * scale).toInt()
+                        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        bmp.eraseColor(android.graphics.Color.WHITE)
+                        page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
+                        val name = UUID.randomUUID().toString() + ".jpg"
+                        File(imageDir, name).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 88, it) }
+                        bmp.recycle()
+                        out += name
+                    }
+                    progress(i + 1, pdf.pageCount)
+                }
+            }
+        } ?: error("PDF konnte nicht geöffnet werden")
+        out
+    }
+
     /** A new page right after [source] with a copy of its content. */
     suspend fun duplicatePage(notebookId: String, position: Int, source: CanvasPage, idFor: () -> Long): CanvasPage {
-        val copy = addPage(notebookId, position, source.paper)
+        val copy = source.background?.let { addWorksheetPages(notebookId, position, listOf(it)).first() }
+            ?: addPage(notebookId, position, source.paper)
         val m = android.graphics.Matrix()
         val ink = PageInk(source.ink.strokes.map { it.transformed(m, idFor()) }, source.ink.items.map { it.transformed(m, idFor()) })
         savePage(notebookId, copy.id, ink.strokes, ink.items)
-        return CanvasPage(copy.id, source.paper, ink)
+        return CanvasPage(copy.id, source.paper, ink, background = source.background)
     }
 
     suspend fun removePage(notebookId: String, pageId: String, remaining: List<String>) = withContext(Dispatchers.IO) {

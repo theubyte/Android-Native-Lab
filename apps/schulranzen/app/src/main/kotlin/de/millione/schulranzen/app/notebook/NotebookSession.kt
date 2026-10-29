@@ -61,6 +61,8 @@ class NotebookSession(
     var textDraft by mutableStateOf<TextDraft?>(null); private set
     /** Short message at the bottom ("Seite ist gesperrt"). */
     var toast by mutableStateOf<String?>(null); private set
+    /** Longer work in progress ("Seite 3 von 8 …"), or null. */
+    var busy by mutableStateOf<String?>(null); private set
     /** Bumped when page flags or order change, so the overview redraws. */
     var pagesVersion by mutableIntStateOf(0); private set
     /** Tool before the side button toggled the eraser, to switch back. */
@@ -168,6 +170,46 @@ class NotebookSession(
             say("Bild eingefügt – mit dem Rahmen verschieben und skalieren")
         }
     }
+
+    // ---- worksheets as pages ----
+
+    /** Photos (gallery or camera) become new pages after the current one. */
+    fun addWorksheetImages(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        scope.launch {
+            busy = "Arbeitsblatt wird eingefügt …"
+            val files = uris.mapIndexedNotNull { i, u ->
+                busy = "Bild ${i + 1} von ${uris.size} …"
+                library.importImage(u)?.first
+            }
+            insertWorksheets(files)
+        }
+    }
+
+    /** Every page of a PDF becomes a page of the notebook to write on. */
+    fun addWorksheetPdf(uri: Uri) {
+        scope.launch {
+            busy = "PDF wird gelesen …"
+            val files = runCatching { library.importPdfPages(uri) { done, total -> busy = "PDF-Seite $done von $total …" } }
+                .getOrElse { busy = null; say("PDF konnte nicht gelesen werden: ${it.message}"); return@launch }
+            insertWorksheets(files)
+        }
+    }
+
+    private suspend fun insertWorksheets(files: List<String>) {
+        if (files.isEmpty()) { busy = null; say("Nichts eingefügt"); return }
+        flushAll()
+        val at = page + 1
+        val pages = library.addWorksheetPages(notebookId, at, files)
+        pages.forEachIndexed { i, p -> canvas.addPage(p, at + i) }
+        pageCount = canvas.pageCount
+        pagesVersion++
+        busy = null
+        canvas.scrollToPage(at)
+        say(if (files.size == 1) "Arbeitsblatt als Seite ${at + 1} eingefügt" else "${files.size} Arbeitsblatt-Seiten ab Seite ${at + 1} eingefügt")
+    }
+
+    private fun flushAll() { for (id in saves.keys.toList()) flush(id) }
 
     fun exportPdf(uri: Uri, ruling: Boolean) {
         val pages = canvas.allPages.toList()

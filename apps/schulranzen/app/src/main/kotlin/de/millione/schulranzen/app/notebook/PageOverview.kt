@@ -113,7 +113,7 @@ private fun Thumb(page: CanvasPage, index: Int, chosen: Boolean, version: Int, o
     val widthPx = with(LocalDensity.current) { 150.dp.roundToPx() }
     // Snapshot on the main thread, draw in the background.
     val snapshot = remember(page, page.ink.revision, page.paper, version) {
-        CanvasPage(page.id, page.paper, PageInk(page.ink.strokes.toList(), page.ink.items.toList()))
+        CanvasPage(page.id, page.paper, PageInk(page.ink.strokes.toList(), page.ink.items.toList()), background = page.background)
     }
     val bmp by produceState<Bitmap?>(null, snapshot) { value = withContext(Dispatchers.Default) { PagePainter.thumbnail(snapshot, widthPx) } }
     val shape = RoundedCornerShape(6.dp)
