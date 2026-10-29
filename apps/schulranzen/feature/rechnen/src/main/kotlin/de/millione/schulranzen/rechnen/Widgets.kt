@@ -4,6 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
@@ -14,6 +19,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -64,6 +70,7 @@ internal fun FormulaCategory.accent(): Color = when (this) {
     FormulaCategory.PIPES -> SubjectPalette.of(0)
     FormulaCategory.ELECTRIC -> SubjectPalette.of(2)
     FormulaCategory.BASICS -> SubjectPalette.of(4)
+    FormulaCategory.DESIGN -> SubjectPalette.of(5)
 }
 
 /** Numeric input in a recessed well with its unit beside it. Accepts expressions like "2·15". */
@@ -75,6 +82,7 @@ internal fun NumberField(
     modifier: Modifier = Modifier,
     placeholder: String = "",
     error: Boolean = false,
+    keyboard: KeyboardType = KeyboardType.Decimal,
 ) {
     val c = Ranzen.colors
     Row(
@@ -95,7 +103,7 @@ internal fun NumberField(
                 singleLine = true,
                 textStyle = Ranzen.type.mono.copy(fontSize = 18.sp, color = c.ink),
                 cursorBrush = SolidColor(c.signal),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
+                keyboardOptions = KeyboardOptions(keyboardType = keyboard, imeAction = ImeAction.Next),
             )
         }
         if (unit.isNotEmpty()) {
@@ -152,4 +160,85 @@ internal fun Caption(text: String, modifier: Modifier = Modifier, color: Color =
 @Composable
 internal fun KeyText(text: String, style: TextStyle, color: Color) {
     Text(text, style = style, color = color, maxLines = 1)
+}
+
+/** Plain text input in a recessed well (names, labels, notes). */
+@Composable
+internal fun TextLine(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String = "",
+    style: TextStyle = Ranzen.type.body,
+) {
+    val c = Ranzen.colors
+    Box(modifier.defaultMinSize(minHeight = 52.dp).recessed(12.dp).padding(horizontal = 14.dp, vertical = 14.dp), contentAlignment = Alignment.CenterStart) {
+        if (value.isEmpty() && placeholder.isNotEmpty()) Text(placeholder, style = style, color = c.inkFaint, maxLines = 1)
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            textStyle = style.copy(color = c.ink),
+            cursorBrush = SolidColor(c.signal),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** A small tactile tool key with an icon and a short label beneath (toolbars). */
+@Composable
+internal fun ToolKey(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    selected: Boolean = false,
+    enabled: Boolean = true,
+    tint: Color? = null,
+) {
+    val c = Ranzen.colors
+    androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 3.dp)) {
+        de.millione.schulranzen.design.TactileKey(
+            onClick = { if (enabled) onClick() }, selected = selected, size = 48.dp, corner = 14.dp, contentDescription = label,
+        ) {
+            de.millione.schulranzen.design.RanzenIcon(icon, tint = (tint ?: c.ink).copy(alpha = if (enabled) 1f else 0.35f), size = 22.dp)
+        }
+        Text(label, style = Ranzen.type.caption, color = if (selected) c.ink else c.inkMuted, maxLines = 1)
+    }
+}
+
+/**
+ * Panel that slides in from the right edge over a dimmed backdrop: the house
+ * replacement for dialogs and pickers. Tapping the backdrop closes it.
+ */
+@Composable
+internal fun SidePanel(
+    title: String,
+    onDismiss: () -> Unit,
+    width: Dp = 440.dp,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    val c = Ranzen.colors
+    androidx.activity.compose.BackHandler(onBack = onDismiss)
+    Box(Modifier.fillMaxSize()) {
+        Box(
+            Modifier.fillMaxSize().background(Color.Black.copy(alpha = if (c.isDark) 0.45f else 0.18f))
+                .clickable(remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = onDismiss),
+        )
+        de.millione.schulranzen.design.PaperPanel(
+            Modifier.align(Alignment.CenterEnd).fillMaxHeight().widthIn(max = width).fillMaxWidth(0.92f).padding(vertical = 12.dp, horizontal = 12.dp),
+            corner = 22.dp,
+        ) {
+            androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().padding(start = 22.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, style = Ranzen.type.heading, color = c.ink, modifier = Modifier.weight(1f))
+                    de.millione.schulranzen.design.TactileKey(onClick = onDismiss, size = 48.dp, contentDescription = "Schließen") {
+                        de.millione.schulranzen.design.RanzenIcon(de.millione.schulranzen.design.RanzenIcons.Close, size = 20.dp)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                content()
+            }
+        }
+    }
 }
