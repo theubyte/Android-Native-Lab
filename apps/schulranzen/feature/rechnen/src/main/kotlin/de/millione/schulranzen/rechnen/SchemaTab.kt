@@ -487,7 +487,7 @@ private fun SymbolPalette(modifier: Modifier, compact: Boolean, armed: SymbolTyp
                         ) {
                             val tile = remember(def.type) { Schema("tile", "", symbols = listOf(SchemaSymbol("t", def.type, Pt(0.0, 0.0)))) }
                             Canvas(Modifier.size(56.dp)) { drawSchemaFitted(tile, style.copy(paper = Color.Transparent), size.width, size.height, 2f) }
-                            Text(def.title, style = Ranzen.type.caption.copy(fontSize = 11.sp, lineHeight = 13.sp), color = if (active) c.signal else c.ink, maxLines = 2)
+                            Text(def.title, style = Ranzen.type.caption.copy(fontSize = 11.sp, lineHeight = 13.sp, hyphens = androidx.compose.ui.text.style.Hyphens.Auto), color = if (active) c.signal else c.ink, maxLines = 2)
                         }
                     }
                 }

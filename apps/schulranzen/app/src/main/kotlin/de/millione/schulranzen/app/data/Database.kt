@@ -87,6 +87,21 @@ interface LibraryDao {
     @Query("SELECT * FROM notebook WHERE id = :id")
     suspend fun notebook(id: String): Notebook?
 
+    @Query("SELECT * FROM notebook")
+    suspend fun allNotebooks(): List<Notebook>
+
+    @Query("SELECT * FROM subject")
+    suspend fun allSubjects(): List<Subject>
+
+    /** Replaces a notebook with all its pages (merging a backup from another device). */
+    @Transaction
+    suspend fun replaceNotebook(n: Notebook, pages: List<Page>) {
+        deleteNotebook(n.id)
+        insertNotebook(n)
+        pages.forEach { insertPage(it) }
+        recount(n.id)
+    }
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertNotebook(n: Notebook)
 

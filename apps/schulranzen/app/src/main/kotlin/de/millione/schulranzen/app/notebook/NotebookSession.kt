@@ -21,6 +21,18 @@ import de.millione.schulranzen.ink.TextItem
 import de.millione.schulranzen.ink.ToolKind
 import de.millione.schulranzen.core.math.MathResult
 import de.millione.schulranzen.rechnen.MathInk
+import de.millione.schulranzen.rechnen.InkSolve
+import de.millione.schulranzen.rechnen.InkModelStatus
+import de.millione.schulranzen.handwriting.HandwritingIndex
+import de.millione.schulranzen.handwriting.HandwritingRecognizer
+import de.millione.schulranzen.handwriting.InkInput
+import de.millione.schulranzen.core.shapes.ShapeRecognizer
+import de.millione.schulranzen.ink.PageStroke
+import de.millione.schulranzen.study.LinkRect
+import de.millione.schulranzen.study.StudyLinkDraft
+import de.millione.schulranzen.study.StudyLinkKind
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -43,6 +55,13 @@ class NotebookSession(
     private val library: Library,
     private val settings: Settings,
     private val scope: CoroutineScope,
+    /** Search index over the handwriting (null in tests or when not wanted). */
+    private val handwriting: HandwritingIndex? = null,
+    private val recognizer: HandwritingRecognizer? = null,
+    /** Open at this page instead of the last one (jump from a search hit or exam link). */
+    private val startPage: Int? = null,
+    /** Area to mark briefly after opening, page units. */
+    private val startFlash: RectF? = null,
 ) : NotebookCanvasView.Listener {
 
     var title by mutableStateOf("")
@@ -68,6 +87,15 @@ class NotebookSession(
     var mathResult by mutableStateOf<Pair<MathResult, RectF>?>(null); private set
     private var mathInk: MathInk? = null
 
+    /** Sheets for the learning features, shown by the screen while non-null. */
+    var markDraft by mutableStateOf<StudyLinkDraft?>(null)
+    var cardClip by mutableStateOf<Pair<java.io.File, StudyLinkDraft?>?>(null)
+    /** Handwriting → text: Some(null) while reading, Some(text) when done. */
+    var convert by mutableStateOf<ConvertState?>(null)
+    var explainText by mutableStateOf<String?>(null)
+    var suggestText by mutableStateOf<String?>(null)
+    class ConvertState(val text: String?)
+
     /** Longer work in progress ("Seite 3 von 8 …"), or null. */
     var busy by mutableStateOf<String?>(null); private set
     /** Bumped when page flags or order change, so the overview redraws. */
@@ -89,7 +117,9 @@ class NotebookSession(
             val pages = library.loadPages(notebookId)
             canvas.setPages(pages)
             pageCount = pages.size
-            if (nb.lastPage > 0) canvas.scrollToPage(nb.lastPage)
+            val target = startPage ?: nb.lastPage
+            if (target > 0) canvas.scrollToPage(target.coerceAtMost(pages.size - 1))
+            if (startFlash != null) canvas.flash(target.coerceIn(0, pages.size - 1), startFlash)
             loaded = true
         }
     }
@@ -153,14 +183,99 @@ class NotebookSession(
         val ink = mathInk ?: MathInk(canvas.context).also { mathInk = it }
         scope.launch {
             busy = "Rechnung wird erkannt …"
-            val result = runCatching { ink.solve(strokes) }.getOrNull()
+            val result = runCatching { ink.solveOrExplain(strokes) }.getOrNull()
             busy = null
-            if (result == null) say("Keine Rechnung erkannt – deutlicher schreiben oder Rechner nutzen")
-            else mathResult = result to RectF(frame)
+            when (result) {
+                is InkSolve.Solved -> mathResult = result.result to RectF(frame)
+                is InkSolve.Unavailable -> say(result.message)
+                else -> say("Keine Rechnung erkannt – deutlicher schreiben oder Rechner nutzen")
+            }
         }
     }
 
     fun dismissMath() { mathResult = null }
+
+    // ---- learning: exam marks, cards, text ----
+
+    /** Link to the selection (or the visible page) for the study features. */
+    private fun linkDraft(): StudyLinkDraft {
+        val info = canvas.selectionInfo()
+        val p = info?.first ?: page
+        val rect = info?.second?.let { r ->
+            LinkRect(r.left / PageGeometry.WIDTH, r.top / PageGeometry.HEIGHT, r.width() / PageGeometry.WIDTH, r.height() / PageGeometry.HEIGHT)
+        }
+        return StudyLinkDraft(StudyLinkKind.NOTEBOOK_PAGE, notebookId, p, rect, "$title, S. ${p + 1}" + if (rect != null) " (Auswahl)" else "")
+    }
+
+    fun markForExam() { markDraft = linkDraft() }
+
+    /** The selection as a picture for a flash card. */
+    fun cardFromSelection() {
+        val bmp = canvas.renderSelection() ?: run { say("Erst mit dem Lasso etwas auswählen"); return }
+        val link = linkDraft()
+        scope.launch {
+            val file = withContext(Dispatchers.IO) {
+                val f = java.io.File(canvas.context.cacheDir, "karte-${System.currentTimeMillis()}.png")
+                f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                bmp.recycle(); f
+            }
+            cardClip = file to link
+        }
+    }
+
+    private suspend fun selectionText(): String? {
+        val r = recognizer ?: return null
+        val strokes = canvas.selectedStrokePoints()
+        if (strokes.isEmpty()) { say("Keine Handschrift ausgewählt"); return null }
+        return runCatching { r.recognize(strokes) }.getOrNull()
+    }
+
+    fun convertSelection() {
+        convert = ConvertState(null)
+        scope.launch {
+            val text = selectionText()
+            if (text == null) { convert = null; say("Keine Schrift erkannt – Handschrift-Modell geladen?") } else convert = ConvertState(text)
+        }
+    }
+
+    /** Replaces the selected handwriting by typed [text] (one undo step). */
+    fun insertConverted(text: String) {
+        convert = null
+        val (_, bounds) = canvas.selectionInfo() ?: return
+        val item = InkInput.textItem(canvas.newId(), text.trim(), bounds, text.trim().lines().size, penColor)
+        canvas.replaceSelection(listOf(item))
+    }
+
+    fun explainSelection() { scope.launch { selectionText()?.let { explainText = it } ?: say("Keine Schrift erkannt") } }
+    fun suggestFromSelection() { scope.launch { selectionText()?.let { suggestText = it } ?: say("Keine Schrift erkannt") } }
+
+    // ---- shapes and circled calculations ----
+
+    override fun transformStroke(page: Int, stroke: PageStroke): List<PageStroke>? {
+        if (!settings.shapes) return null
+        val pts = InkInput.points(stroke)
+        if (!ShapeRecognizer.heldAtEnd(pts)) return null
+        val shape = ShapeRecognizer.recognize(pts) ?: return null
+        return InkInput.shapeStrokes(shape, stroke, canvas::newId).ifEmpty { null }
+    }
+
+    override fun onStrokeAdded(page: Int, stroke: PageStroke) {
+        if (!settings.circleSolve || MathInk.modelStatus.value != InkModelStatus.Ready) return
+        val p = canvas.page(page) ?: return
+        val others = p.ink.strokes.filter { it.id != stroke.id && it.tool == ToolKind.PEN }
+        if (others.isEmpty()) return
+        val inside = ShapeRecognizer.enclosedBy(InkInput.points(stroke), others.map { InkInput.bounds(it) })
+        if (inside.isEmpty()) return
+        val ids = inside.mapTo(HashSet()) { others[it].id }
+        val points = canvas.strokePoints(page, ids)
+        val loop = RectF(stroke.minX, stroke.minY, stroke.maxX, stroke.maxY)
+        val ink = mathInk ?: MathInk(canvas.context).also { mathInk = it }
+        scope.launch {
+            // Only a real calculation answers; a circle around words stays quiet.
+            val r = runCatching { ink.solveOrExplain(points) }.getOrNull() as? InkSolve.Solved ?: return@launch
+            mathResult = r.result to canvas.viewRectOf(page, loop)
+        }
+    }
 
     // ---- text ----
 
@@ -295,6 +410,7 @@ class NotebookSession(
         if (canvas.pageCount <= 1) { say("Ein Heft braucht mindestens eine Seite"); return }
         val removed = canvas.removePage(index) ?: return
         saves.remove(removed.id)?.cancel()
+        handwriting?.let { h -> scope.launch { h.remove(removed.id) } }
         pageCount = canvas.pageCount
         pagesVersion++
         scope.launch { library.removePage(notebookId, removed.id, canvas.allPages.map { it.id }) }
@@ -358,6 +474,7 @@ class NotebookSession(
         val strokes = p.ink.strokes.toList()
         val items = p.ink.items.toList()
         scope.launch { library.savePage(notebookId, p.id, strokes, items) }
+        handwriting?.schedule(notebookId, p.id, strokes)
     }
 
     override fun onHistoryChanged(canUndo: Boolean, canRedo: Boolean) {

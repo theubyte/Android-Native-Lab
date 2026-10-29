@@ -128,6 +128,8 @@ fun LibraryScreen(
     today: @Composable () -> Unit = {},
     shelf: BookShelf? = null,
     onOpenBook: (String) -> Unit = {},
+    /** More results for a search (hits in the handwriting). */
+    searchExtra: @Composable (String) -> Unit = {},
 ) {
     val c = Ranzen.colors
     val subjects by library.subjects.collectAsState(initial = emptyList())
@@ -226,6 +228,7 @@ fun LibraryScreen(
                         }
                     }
                     if (!inTrash && q.isEmpty()) item { NewTile { sheet = Sheet.New } }
+                    if (q.isNotEmpty() && !inTrash) item(span = { GridItemSpan(maxLineSpan) }) { searchExtra(query.trim()) }
                     if (shelf != null && !inTrash) {
                         item(span = { GridItemSpan(maxLineSpan) }) {
                             Row(Modifier.padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically) {

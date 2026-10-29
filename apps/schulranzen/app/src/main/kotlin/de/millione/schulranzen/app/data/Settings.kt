@@ -38,6 +38,16 @@ class Settings(context: Context) {
         get() = prefs.getInt("markerColor", 0xFFF2D04B.toInt())
         set(v) = prefs.edit().putInt("markerColor", v).apply()
 
+    /** Pen held still at the end of a stroke straightens it into a shape. */
+    var shapes: Boolean
+        get() = prefs.getBoolean("shapes", true)
+        set(v) = prefs.edit().putBoolean("shapes", v).apply()
+
+    /** A loop drawn around a calculation solves it (needs the handwriting model). */
+    var circleSolve: Boolean
+        get() = prefs.getBoolean("circleSolve", true)
+        set(v) = prefs.edit().putBoolean("circleSolve", v).apply()
+
     var markerSize: Float
         get() = prefs.getFloat("markerSize", 18f)
         set(v) = prefs.edit().putFloat("markerSize", v).apply()

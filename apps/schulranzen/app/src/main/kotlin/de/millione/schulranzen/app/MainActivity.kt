@@ -21,6 +21,19 @@ import de.millione.schulranzen.design.TactileKey
 import de.millione.schulranzen.study.StudyHome
 import de.millione.schulranzen.books.BookShelf
 import de.millione.schulranzen.books.BookScreen
+import de.millione.schulranzen.books.BookPane
+import de.millione.schulranzen.books.BookLink
+import de.millione.schulranzen.study.StudyLinkDraft
+import de.millione.schulranzen.study.StudyLinkKind
+import de.millione.schulranzen.study.LinkRect
+import de.millione.schulranzen.study.MarkForExamSheet
+import de.millione.schulranzen.ink.PageGeometry
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.runtime.LaunchedEffect
 import de.millione.schulranzen.app.notebook.SplitWithBook
 import de.millione.schulranzen.app.notebook.BookPickerSheet
 import de.millione.schulranzen.app.library.ClipTargetSheet
@@ -32,6 +45,8 @@ import de.millione.schulranzen.rechnen.ShkScreen
 import de.millione.schulranzen.backup.BackupScreen
 import de.millione.schulranzen.core.backup.V15Import
 import de.millione.schulranzen.app.data.V15Sink
+import de.millione.schulranzen.app.data.appBackupHooks
+import de.millione.schulranzen.app.data.appMergeParticipants
 import de.millione.schulranzen.study.StudySubject
 import de.millione.schulranzen.study.TimetableScreen
 import de.millione.schulranzen.study.TodayStrip
@@ -74,6 +89,44 @@ class RanzenApp : Application() {
     val library by lazy { Library(this) }
     val settings by lazy { Settings(this) }
     val books by lazy { BookShelf(this) }
+    val recognizer by lazy { de.millione.schulranzen.handwriting.HandwritingRecognizer(this) }
+    val handwriting by lazy { de.millione.schulranzen.handwriting.HandwritingIndex(this, recognizer) }
+}
+
+/**
+ * Route of a notebook: "nb:<id>", optionally "|page:<n>" (open there),
+ * "|flash:l,t,r,b" (mark that area, page units) and "|book:<id>" (book beside).
+ */
+data class NotebookRoute(val id: String, val page: Int? = null, val flash: android.graphics.RectF? = null, val book: String? = null) {
+    fun encode() = buildString {
+        append("nb:").append(id)
+        page?.let { append("|page:").append(it) }
+        flash?.let { append("|flash:${it.left},${it.top},${it.right},${it.bottom}") }
+        book?.let { append("|book:").append(it) }
+    }
+    companion object {
+        fun parse(r: String): NotebookRoute {
+            val parts = r.removePrefix("nb:").split("|")
+            fun v(k: String) = parts.firstOrNull { it.startsWith("$k:") }?.substringAfter(":")
+            val f = v("flash")?.split(",")?.mapNotNull { it.toFloatOrNull() }?.takeIf { it.size == 4 }
+            return NotebookRoute(parts[0], v("page")?.toIntOrNull(), f?.let { android.graphics.RectF(it[0], it[1], it[2], it[3]) }, v("book"))
+        }
+    }
+}
+
+/** Book route: "book:<id>", optionally "|page:<n>|flash:l,t,r,b". */
+data class BookRoute(val id: String, val page: Int? = null, val flash: android.graphics.RectF? = null) {
+    fun encode() = buildString {
+        append("book:").append(id)
+        page?.let { append("|page:").append(it) }
+        flash?.let { append("|flash:${it.left},${it.top},${it.right},${it.bottom}") }
+    }
+    companion object {
+        fun parse(r: String): BookRoute {
+            val n = NotebookRoute.parse("nb:" + r.removePrefix("book:"))
+            return BookRoute(n.id, n.page, n.flash)
+        }
+    }
 }
 
 /**
@@ -118,6 +171,18 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 LaunchedEffect(Unit) { app.library.seed() }
+                // Pages written while the handwriting model was missing get indexed once it is there.
+                LaunchedEffect(Unit) {
+                    app.recognizer.refreshStatus()
+                    app.recognizer.status.collect { st ->
+                        if (st == de.millione.schulranzen.handwriting.ModelState.Ready) runCatching {
+                            app.handwriting.indexPending { ref ->
+                                app.library.loadPages(ref.notebookId).firstOrNull { it.id == ref.pageId }
+                                    ?.let { de.millione.schulranzen.handwriting.InkInput.handwriting(it.ink.strokes) }
+                            }
+                        }
+                    }
+                }
                 // Where we are, as a saveable string: "lib", "nb:<id>", "study", "timetable".
                 var route by rememberSaveable { mutableStateOf("lib") }
                 val subjects by app.library.subjects.collectAsState(initial = emptyList())
@@ -150,10 +215,34 @@ class MainActivity : ComponentActivity() {
                             today = { TodayStrip(Modifier.fillMaxWidth(), onClick = { route = "timetable" }) },
                             shelf = app.books,
                             onOpenBook = { route = "book:$it" },
+                            searchExtra = { q ->
+                                val notebooks by app.library.notebooks.collectAsState(initial = emptyList())
+                                var hits by remember { mutableStateOf(emptyList<de.millione.schulranzen.handwriting.Hit>()) }
+                                LaunchedEffect(q) { kotlinx.coroutines.delay(250); hits = runCatching { app.handwriting.search(q) }.getOrDefault(emptyList()) }
+                                de.millione.schulranzen.handwriting.HandwritingSearchResults(
+                                    hits,
+                                    onOpen = { hit ->
+                                        app.scope.launch {
+                                            val index = app.library.pageIndex(hit.notebookId, hit.pageId)
+                                            route = NotebookRoute(hit.notebookId, index, hit.rect).encode()
+                                        }
+                                    },
+                                    titleOf = { id -> notebooks.firstOrNull { it.id == id }?.title ?: "Heft" },
+                                )
+                            },
                         )
                         r == "study" -> {
                             BackHandler { route = "lib" }
-                            StudyHome(onBack = { route = "lib" }, onOpenTimetable = { route = "timetable" }, subjects = studySubjects)
+                            StudyHome(onBack = { route = "lib" }, onOpenTimetable = { route = "timetable" }, subjects = studySubjects,
+                                onOpenLink = { link ->
+                                    val r = link.rect
+                                    route = when (link.linkKind) {
+                                        StudyLinkKind.BOOK_PAGE -> BookRoute(link.targetId, link.page,
+                                            r?.let { android.graphics.RectF(it.x * 1000f, it.y * 1000f, (it.x + it.w) * 1000f, (it.y + it.h) * 1000f) }).encode()
+                                        StudyLinkKind.NOTEBOOK_PAGE -> NotebookRoute(link.targetId, link.page,
+                                            r?.let { android.graphics.RectF(it.x * PageGeometry.WIDTH, it.y * PageGeometry.HEIGHT, (it.x + it.w) * PageGeometry.WIDTH, (it.y + it.h) * PageGeometry.HEIGHT) }).encode()
+                                    }
+                                })
                         }
                         r == "timetable" -> {
                             BackHandler { route = "lib" }
@@ -164,6 +253,9 @@ class MainActivity : ComponentActivity() {
                             BackHandler { route = "lib" }
                             BackupScreen(
                                 onBack = { route = "lib" },
+                                // The notebook saves itself when it closes, so nothing is pending here.
+                                hooks = remember { appBackupHooks(this@MainActivity) {} },
+                                mergeParticipants = remember { appMergeParticipants(this@MainActivity) },
                                 onImportV15 = { lib ->
                                     V15Import.run(lib, V15Sink(this@MainActivity, app.library, canvas::newId) { book, subjectId, pdf ->
                                         if (pdf == null) null else {
@@ -183,8 +275,12 @@ class MainActivity : ComponentActivity() {
                         r.startsWith("book:") -> {
                             BackHandler { route = "lib" }
                             var clip by remember { mutableStateOf<java.io.File?>(null) }
+                            var mark by remember { mutableStateOf<StudyLinkDraft?>(null) }
+                            val br = BookRoute.parse(r)
                             Box(Modifier.fillMaxSize()) {
-                                BookScreen(r.removePrefix("book:"), onBack = { route = "lib" }, onClip = { clip = it })
+                                BookScreen(br.id, onBack = { route = "lib" }, onClip = { clip = it },
+                                    onMarkForExam = { mark = it.toDraft() }, startPage = br.page, highlight = br.flash)
+                                mark?.let { d -> MarkForExamSheet(d, onDone = { mark = null }, onCancel = { mark = null }) }
                                 clip?.let { file ->
                                     ClipTargetSheet(app.library, onPick = { nb ->
                                         app.scope.launch {
@@ -198,10 +294,12 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         r.startsWith("nb:") -> {
-                            // "nb:<id>" or "nb:<id>|book:<bookId>" (book beside the notebook)
-                            val id = r.removePrefix("nb:").substringBefore("|")
-                            val sideBook = r.substringAfter("|book:", "").ifEmpty { null }
-                            val session = remember(id) { NotebookSession(id, canvas, app.library, app.settings, app.scope) }
+                            val nr = NotebookRoute.parse(r)
+                            val id = nr.id
+                            val sideBook = nr.book
+                            val session = remember(id) {
+                                NotebookSession(id, canvas, app.library, app.settings, app.scope, app.handwriting, app.recognizer, nr.page, nr.flash)
+                            }
                             DisposableEffect(session) {
                                 session.open()
                                 this@MainActivity.session = session
@@ -221,10 +319,14 @@ class MainActivity : ComponentActivity() {
                                         onBookBeside = { pickBook = true }, compact = compact)
                                 },
                                 book = { bookId ->
-                                    BookScreen(bookId, onBack = { route = "nb:$id" }, onClip = { session.insertImageFile(it) })
+                                    Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.End + WindowInsetsSides.Bottom))) {
+                                        BookPane(bookId, Modifier.fillMaxSize(), onClip = { session.insertImageFile(it) },
+                                            onClose = { route = NotebookRoute(id).encode() },
+                                            onMarkForExam = { session.markDraft = it.toDraft() })
+                                    }
                                 },
                             )
-                            if (pickBook) BookPickerSheet(app.books, onPick = { b -> pickBook = false; route = "nb:$id|book:${b.id}" }, onCancel = { pickBook = false })
+                            if (pickBook) BookPickerSheet(app.books, onPick = { b -> pickBook = false; route = NotebookRoute(id, book = b.id).encode() }, onCancel = { pickBook = false })
                         }
                     }
                 }
@@ -270,3 +372,10 @@ class MainActivity : ComponentActivity() {
         return super.dispatchGenericMotionEvent(ev)
     }
 }
+
+/** Book places are stored with both axes divided by the page width (book units are 1000 wide). */
+private fun BookLink.toDraft() = StudyLinkDraft(
+    StudyLinkKind.BOOK_PAGE, bookId, page,
+    rect?.let { LinkRect(it.left / 1000f, it.top / 1000f, it.width() / 1000f, it.height() / 1000f) },
+    label,
+)

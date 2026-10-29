@@ -94,6 +94,13 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         /** Text tool tapped a page: new text at (x, y) or [existing] to edit. */
         fun onTextRequest(page: Int, x: Float, y: Float, existing: TextItem?) {}
         fun onLockedPageTouched() {}
+        /**
+         * A finished pen stroke before it lands on [page]: return replacement
+         * strokes (e.g. a straightened shape) or null to keep it. Same undo step.
+         */
+        fun transformStroke(page: Int, stroke: PageStroke): List<PageStroke>? = null
+        /** A pen stroke was added to [page] (after [transformStroke]). */
+        fun onStrokeAdded(page: Int, stroke: PageStroke) {}
     }
 
     var listener: Listener? = null
@@ -360,10 +367,54 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
      */
     fun selectedStrokePoints(): List<FloatArray> {
         val s = selection ?: return emptyList()
+        return strokePoints(s.page, s.strokes)
+    }
+
+    /** Page and bounds (page units) of the selection, or null. */
+    fun selectionInfo(): Pair<Int, RectF>? = selection?.let { it.page to RectF(it.bounds) }
+
+    /** Page-unit rectangle on [page] in view pixels (for bubbles next to ink). */
+    fun viewRectOf(page: Int, r: RectF): RectF = toView(page, r)
+
+    /** Replaces the selection by [items] (e.g. typed text for handwriting) in one undo step. */
+    fun replaceSelection(items: List<PageItem>) {
+        val s = selection ?: return
+        val page = pages[s.page]
+        clearSelection()
+        commit(listOf(page.ink.removeEdit(page.id, s.strokes, s.items), PageEdit(page.id, emptyList(), emptyList(), emptyList(), items)))
+        select(s.page, emptySet(), items.mapTo(HashSet()) { it.id })
+    }
+
+    /** The selection as a picture (white paper), at most [maxPx] wide or tall. */
+    fun renderSelection(maxPx: Int = 1600): android.graphics.Bitmap? {
+        val s = selection ?: return null
+        val page = pages[s.page]
+        val b = RectF(s.bounds).apply { inset(-12f, -12f) }
+        val f = maxPx / max(b.width(), b.height()).coerceAtLeast(1f)
+        val bmp = android.graphics.Bitmap.createBitmap((b.width() * f).toInt().coerceAtLeast(1), (b.height() * f).toInt().coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.WHITE)
+        c.scale(f, f); c.translate(-b.left, -b.top)
+        PagePainter.paintSome(c, page, s.strokes, s.items)
+        return bmp
+    }
+
+    /** Briefly marks [rect] (page units) on [page], e.g. a search hit or a marked passage. */
+    fun flash(page: Int, rect: RectF) {
+        flashPage = page; flashRect = RectF(rect); flashUntil = SystemClock.uptimeMillis() + 2200
+        overlay.invalidate()
+        postDelayed({ overlay.invalidate() }, 2300)
+    }
+    private var flashPage = -1
+    private var flashRect: RectF? = null
+    private var flashUntil = 0L
+
+    /** Points of strokes [ids] on [page] for recognisers (x, y, t). */
+    fun strokePoints(page: Int, ids: Set<Long>): List<FloatArray> {
         var offset = 0L
         val out = ArrayList<FloatArray>()
-        for (st in pages[s.page].ink.strokes) {
-            if (st.id !in s.strokes || st.tool == ToolKind.MARKER) continue
+        for (st in pages[page].ink.strokes) {
+            if (st.id !in ids || st.tool == ToolKind.MARKER) continue
             val inputs = st.stroke.inputs
             if (inputs.size == 0) continue
             val arr = FloatArray(inputs.size * 3)
@@ -834,9 +885,12 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             val p = pending.remove(id) ?: continue
             val page = pageById(p.page) ?: continue
             val s = PageStroke(newId(), p.tool, p.color, p.size, stroke)
-            page.ink.add(s)
-            step += PageEdit(p.page, emptyList(), listOf(s))
-            layer.dirty(indexOf(p.page))
+            val index = indexOf(p.page)
+            val final = (if (p.tool == ToolKind.PEN) runCatching { listener?.transformStroke(index, s) }.getOrNull() else null) ?: listOf(s)
+            final.forEach { page.ink.add(it) }
+            step += PageEdit(p.page, emptyList(), final)
+            layer.dirty(index)
+            if (p.tool == ToolKind.PEN) final.forEach { listener?.onStrokeAdded(index, it) }
         }
         layer.invalidate()
         // Same frame as the page layer draws them: no flicker at the handoff.
@@ -1088,7 +1142,16 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         private val rulerTick = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1f * density }
         private val rulerText = Paint(Paint.ANTI_ALIAS_FLAG)
 
+        private val flashPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x55F2D04B }
+        private val flashEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2.5f * density; color = 0xFFD9542F.toInt() }
+
         override fun onDraw(canvas: Canvas) {
+            val fr = flashRect
+            if (fr != null && SystemClock.uptimeMillis() < flashUntil && flashPage in pages.indices) {
+                val r = toView(flashPage, RectF(fr).apply { inset(-8f, -8f) })
+                canvas.drawRoundRect(r, 10f * density, 10f * density, flashPaint)
+                canvas.drawRoundRect(r, 10f * density, 10f * density, flashEdge)
+            }
             if (tool == ToolKind.RULER) drawPhysicalRuler(canvas)
             drawSelection(canvas)
             when (mode) {

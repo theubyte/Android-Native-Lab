@@ -375,7 +375,8 @@ class BackupManager(context: Context, var hooks: BackupHooks = BackupHooks.None)
         private const val WORK_DB = "androidx.work.workdb"
 
         /** Prefs bound to this device (Keystore keys, folder permissions). */
-        private val devicePrefs = listOf(SyncAccount.PREFS + ".xml", BackupSettings.PREFS + ".xml")
+        // study_assistant: the Claude key is Keystore-encrypted and cannot be read on another device.
+        private val devicePrefs = listOf(SyncAccount.PREFS + ".xml", BackupSettings.PREFS + ".xml", "study_assistant.xml")
 
         fun messageOf(e: Throwable): String = when (e) {
             is WrongPasswordException -> "Falsches Passwort. Bitte noch einmal versuchen."

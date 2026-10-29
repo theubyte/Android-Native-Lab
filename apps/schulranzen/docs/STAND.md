@@ -6,17 +6,8 @@ Plan und Design im Detail: [PLAN.md](PLAN.md). Regeln für parallele Agenten: [A
 
 Legende: `[x]` erledigt · `[ ]` offen · `[~]` teilweise · **(T)** nur auf dem echten Tablet prüfbar
 
-Letzte Aktualisierung: 29.10.2026, Version **0.4.0 (in Arbeit)**
+Letzte Aktualisierung: 29.10.2026, Version **0.4.0**
 
-## In Arbeit (parallele Agenten, Runde 2)
-
-| Agent | Aufgabe |
-|---|---|
-| Bücher | Volltextsuche, Texterkennung für gescannte Bücher, Lasso + Text im Buch, Rückgängig für alles, kompakte Buchansicht für „nebeneinander“, „Für Prüfung merken“ |
-| Lernen | Prüfungsstoff-Links zu Heft/Buch, Karten mit Bildern, Karte aus Ausschnitt, Lernpfade, Probeprüfung, Erklärhilfe (Claude API), automatische Karten |
-| Sichern | Verschlüsselte Backups, automatisches Backup, Zusammenführen, sauberes Schließen vor Restore, bessere Sync-Fehlermeldungen, „Verbindung testen“ |
-| SHK | Aufmaß, Materiallisten, Schema-Editor mit Symbolen, weitere Tabellen, Handschrift-Modell vorab laden |
-| Schrift | Formerkennung, „Kreis um Rechnung“, Handschrift → Text, Suche in Handschrift |
 
 ---
 
@@ -39,56 +30,64 @@ Letzte Aktualisierung: 29.10.2026, Version **0.4.0 (in Arbeit)**
 
 ### 2. Aus der alten App (V15) noch nicht da
 - [x] Buch und Heft nebeneinander (Split mit verschiebbarem Trenner) – 0.4.0
-- [ ] Rechnungen automatisch erkennen beim Schreiben / Kreis-Geste zum Ausrechnen
-      (jetzt: Lasso → „Ausrechnen“)
-- [ ] Prüfungsmarkierungen: Heft-/Buchstelle als „prüfungsrelevant“ markieren, aus Lernen dorthin springen
+- [x] Kreis um eine Rechnung → Ergebnis erscheint daneben (abschaltbar, braucht das Handschrift-Modell) – 0.4.0 **(T)**
+- [x] Prüfungsmarkierungen aus Heft (Auswahl oder Seite) und Buch; aus Lernen zurückspringen mit Markierung – 0.4.0
 - [x] Lineal als echtes verschieb- und drehbares Lineal auf dem Blatt – 0.4.0 (Drehen mit zwei Fingern nur auf dem Tablet prüfbar)
 - [x] Werkzeugnamen anzeigen, wenn der Stift über der Werkzeugleiste schwebt – 0.4.0 **(T)**
 
 ### 3. Lücken in den neuen Bereichen
 - Heft
   - [x] Lasso über Seitengrenzen: Auswahl auf andere Seite ziehen – 0.4.0 (im Emulator nicht prüfbar)
-  - [ ] Formen (Kreis, Pfeil, Rechteck) mit Formerkennung
-  - [ ] Handschrift → Text
-  - [ ] Suche in der Handschrift
+  - [x] Formerkennung: am Strichende kurz halten → Linie/Pfeil/Kreis/Rechteck/Dreieck – 0.4.0 **(T: Schwellen am Tablet einstellen)**
+  - [x] Handschrift → Text (Lasso → Lernen → Als Text) – 0.4.0 **(T)**
+  - [x] Suche in der Handschrift (Bibliothekssuche, Treffer springt zur Stelle) – 0.4.0 **(T)**
   - [x] Neues Heft direkt aus PDF anlegen („Heft aus PDF“) – 0.4.0
 - Bücher
-  - [ ] Volltextsuche im Buch
-  - [ ] Lasso und Text im Buch
-  - [ ] Inhaltsverzeichnis für gescannte Bücher (Texterkennung)
-  - [ ] Rückgängig für Notizen, Bereiche, Drehen
+  - [x] Volltextsuche im Buch – 0.4.0
+  - [x] Lasso und Text im Buch – 0.4.0
+  - [x] Texterkennung + Inhaltsverzeichnis für gescannte Bücher – 0.4.0
+  - [x] Rückgängig für alles im Buch – 0.4.0
 - Lernen
-  - [ ] Karteikarten mit Bildern
-  - [ ] Karte direkt aus Heft-/Buchausschnitt anlegen
-  - [ ] Quellen einer Prüfung als Sprung-Links statt Freitext
+  - [x] Karteikarten mit Bildern – 0.4.0
+  - [x] Bildkarte aus Lasso-Auswahl im Heft – 0.4.0 (aus dem Buch: noch über Ausschnitt → Heft)
+  - [x] Prüfungsstoff als Sprung-Links – 0.4.0
 - Rechnen
   - [x] SHK-Rechner: Tastatur verdeckte das Ergebnis → Ergebnis steht jetzt neben den Feldern (0.3.1)
-  - [ ] Handschrift-Rechnen braucht beim ersten Mal Internet (ML-Kit-Modell ~20 MB) – Hinweis/Vorab-Download
+  - [x] Handschrift-Modell vorab laden (SHK-Schnellrechner, Heft → Mehr) – 0.4.0
 - Sichern
-  - [ ] Backups auf dem Server verschlüsseln
-  - [ ] Automatisches Backup (z. B. täglich im WLAN)
-  - [ ] Zusammenführen statt Ersetzen bei mehreren Geräten
-  - [ ] Datenbanken vor dem Wiederherstellen sauber schließen (`beforeRestore`-Hook verdrahten)
+  - [x] Verschlüsselte Backups (AES-256, Passwort) – 0.4.0
+  - [x] Automatisches Backup (täglich/wöchentlich, Ordner und/oder Unraid) – 0.4.0 **(T)**
+  - [~] Zusammenführen: Hefte, Bilder, Bücher, SHK – 0.4.0. **Offen:** Lerndaten (study.db braucht IDs + Änderungszeit)
+  - [x] Datenbanken vor dem Wiederherstellen schließen, App startet neu – 0.4.0
 - Bibliothek
-  - [ ] Suche auch im Inhalt (Text, später Handschrift)
+  - [x] Suche in der Handschrift der Hefte – 0.4.0
+
+### 3b. Feinschliff (in 0.4.0 gesehen)
+- [ ] SHK-Schema: Rohrbeschriftungen überlappen an kurzen Stücken
+- [ ] Sheets (Karte, Prüfung) im Split nur über der Heft-Hälfte – ggf. ganz zentrieren
+- [ ] Rohrknicke nachträglich verschieben, T-Stücke als Formteil (Schema)
+- [ ] Bildkarten: Zoom/Verschieben im Bild
+- [ ] Erklärhilfe mit Streaming
+- [ ] Lerndaten zusammenführen (study.db: UUID + updatedAt)
+- [ ] Beim ersten Start alle vorhandenen Seiten für die Handschriftsuche indexieren
 
 ### 4. SHK-Ausbau (schon in V15 offen)
-- [ ] Digitales Aufmaß
-- [ ] Automatische Materiallisten
-- [ ] Schema-Editor mit Symbolbibliothek (Pumpe, MAG, Speicher, Ventile, Wärmeerzeuger, Rohrnetz), mit Berechnungen verknüpft
-- [ ] Weitere Tabellen und Auslegungshilfen
+- [x] Digitales Aufmaß (CSV/PDF) – 0.4.0
+- [x] Automatische Materiallisten – 0.4.0
+- [x] Schema-Editor mit 17 Symbolen, mit Rechnern verknüpft ([Bild](screens/shk-schema.png)) – 0.4.0
+- [x] 8 Auslegungsrechner, 14 Tabellen – 0.4.0 (Werte vereinfacht, vom Ausbilder gegenlesen lassen)
 
 ### 5. Zukunft (Phase 9)
-- [ ] Lernpfade
-- [ ] Probeprüfungen aus eigenen Heften und Büchern
-- [ ] Erklärhilfe / Lernassistent
-- [ ] Automatisch erzeugte Karteikarten
+- [x] Lernpfade je Prüfung – 0.4.0
+- [~] Probeprüfungen aus Karteikarten mit Note und Schwächen – 0.4.0. **Offen:** Fragen direkt aus Heft-/Buchtext
+- [x] Erklärhilfe mit Claude (eigener API-Schlüssel in Lernen → Einstellungen) – 0.4.0 **(T)**
+- [x] Kartenvorschläge aus Text/Handschrift (offline + mit Claude) – 0.4.0
 
 ---
 
 ## Erledigt
 
-### 0.4.0 (in Arbeit)
+### 0.4.0
 - Buch und Heft nebeneinander: im Heft *Mehr → Buch daneben öffnen*; Trenner ziehen, doppelt tippen = halbe-halbe;
   Buchausschnitte landen direkt auf der sichtbaren Heftseite. Im Emulator geprüft ([Bild](screens/heft-buch-nebeneinander.png)).
 - Echtes Lineal ([Bild](screens/lineal.png)): mm/cm-Skala, Finger verschieben, zwei Finger drehen (15°-Raster),
@@ -97,6 +96,13 @@ Letzte Aktualisierung: 29.10.2026, Version **0.4.0 (in Arbeit)**
 - Werkzeugnamen beim Schweben des Stifts über der Leiste.
 - Lasso-Auswahl wandert beim Ablegen auf eine andere Seite.
 - Sync-Server: gemeinsames Secret für alle Worker, Timeout 600 s.
+- Agenten Runde 2 eingebaut (Bücher, Lernen, Sichern, SHK, Schrift), siehe Häkchen oben. Im Emulator geprüft:
+  kompakte Buchansicht neben dem Heft ([Bild](screens/buch-kompakt-nebeneinander.png)), Bildkarte aus Lasso
+  ([Bild](screens/bildkarte-aus-auswahl.png)) und Lernmodus, Lernen-Startseite, SHK-Schema mit Beispiel,
+  Sichern-Bildschirm ([Bild](screens/sichern-0.4.png)). Kein Absturz.
+- Nur gebaut, nicht im Emulator geprüft: Handschrift→Text, Erklärhilfe, Kartenvorschläge, Formerkennung,
+  Kreis-Ausrechnen (alles braucht echten Stift bzw. ML-Kit-Modell/Netz), Prüfungs-Sprünge, Zusammenführen,
+  Auto-Backup, Verschlüsselung, Buch-Volltextsuche/Texterkennung.
 
 ### 0.3.1
 - Fester Signaturschlüssel: neue Versionen installieren sich über die alte, Hefte bleiben erhalten.

@@ -83,6 +83,10 @@ class Library(private val context: Context) {
 
     suspend fun notebook(id: String) = dao.notebook(id)
 
+    /** 0-based position of page [pageId] in its notebook, or 0. */
+    suspend fun pageIndex(notebookId: String, pageId: String): Int =
+        dao.pages(notebookId).indexOfFirst { it.id == pageId }.coerceAtLeast(0)
+
     suspend fun rename(n: Notebook, title: String, subjectId: Long?) =
         dao.updateNotebook(n.copy(title = title.trim().ifEmpty { n.title }, subjectId = subjectId, updatedAt = System.currentTimeMillis()))
 

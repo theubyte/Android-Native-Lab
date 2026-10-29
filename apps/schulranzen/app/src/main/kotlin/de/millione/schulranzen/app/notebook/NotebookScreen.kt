@@ -90,6 +90,12 @@ import de.millione.schulranzen.ink.PaperStyle
 import de.millione.schulranzen.ink.TextItem
 import de.millione.schulranzen.ink.ToolKind
 import de.millione.schulranzen.rechnen.CalculatorWindow
+import de.millione.schulranzen.handwriting.ConvertToTextSheet
+import de.millione.schulranzen.handwriting.HandwritingModelCard
+import de.millione.schulranzen.study.MarkForExamSheet
+import de.millione.schulranzen.study.CardFromClipSheet
+import de.millione.schulranzen.study.ExplainSheet
+import de.millione.schulranzen.study.SuggestCardsSheet
 import de.millione.schulranzen.rechnen.ResultBubble
 import kotlin.math.roundToInt
 
@@ -244,6 +250,19 @@ fun NotebookScreen(
             }
         }
 
+        // Learning sheets (from the selection bar or the More panel)
+        session.convert?.let { cs ->
+            Box(Modifier.fillMaxSize().background(c.desk.copy(alpha = 0.45f)).pointerInput(Unit) { detectTapGestures { session.convert = null } }
+                .windowInsetsPadding(WindowInsets.safeDrawing.union(WindowInsets.ime)), contentAlignment = Alignment.Center) {
+                ConvertToTextSheet(cs.text, onInsert = session::insertConverted, onCopy = { session.convert = null; session.say("Text kopiert") },
+                    onCancel = { session.convert = null })
+            }
+        }
+        session.markDraft?.let { d -> MarkForExamSheet(d, onDone = { session.markDraft = null; session.say("Für die Prüfung gemerkt") }, onCancel = { session.markDraft = null }) }
+        session.cardClip?.let { (file, link) -> CardFromClipSheet(file, link, onDone = { session.cardClip = null; file.delete(); session.say("Karteikarte angelegt") }, onCancel = { session.cardClip = null; file.delete() }) }
+        session.explainText?.let { q -> ExplainSheet(q, onClose = { session.explainText = null }) }
+        session.suggestText?.let { t -> SuggestCardsSheet(t, onDone = { session.suggestText = null; session.say("Karten gespeichert") }, onCancel = { session.suggestText = null }) }
+
         // Tool ring around the pen tip
         session.ring?.let { r ->
             val color = if (session.tool == ToolKind.MARKER) session.markerColor else session.penColor
@@ -386,6 +405,7 @@ private fun SelectionBar(session: NotebookSession, frame: android.graphics.RectF
     val density = LocalDensity.current
     var size by remember { mutableStateOf(IntSize.Zero) }
     var colors by remember { mutableStateOf(false) }
+    var learn by remember { mutableStateOf(false) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val w = constraints.maxWidth; val h = constraints.maxHeight
         val gap = with(density) { 14.dp.toPx() }
@@ -400,7 +420,15 @@ private fun SelectionBar(session: NotebookSession, frame: android.graphics.RectF
                     BarButton(RanzenIcons.Pages, "Duplizieren", session::duplicate)
                     BarButton(null, "Farbe", { colors = !colors }) { Lamp(Color(session.penColor), size = 14.dp) }
                     BarButton(CalcIcon, "Ausrechnen", session::solveSelection)
+                    BarButton(RanzenIcons.More, "Lernen", { learn = !learn; colors = false }, tint = if (learn) c.signal else c.ink)
                     BarButton(RanzenIcons.Trash, "Löschen", session::delete, tint = c.signal)
+                }
+                if (learn) Row(Modifier.padding(start = 6.dp, end = 6.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BarButton(RanzenIcons.Text, "Als Text", session::convertSelection)
+                    BarButton(RanzenIcons.Search, "Erklären", session::explainSelection)
+                    BarButton(RanzenIcons.Copy, "Karten", session::suggestFromSelection)
+                    BarButton(RanzenIcons.Image, "Bildkarte", session::cardFromSelection)
+                    BarButton(RanzenIcons.Bookmark, "Prüfung", session::markForExam)
                 }
                 if (colors) Row(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     InkPalette.pen.forEach { argb ->
@@ -563,6 +591,10 @@ private fun MorePanel(
             ActionRow(RanzenIcons.Image, "Bild aus der Galerie", onImage)
             if (session.clip != null) ActionRow(RanzenIcons.Copy, "Kopierte Auswahl einfügen", session::paste)
             Spacer(Modifier.height(16.dp))
+            Text("Lernen", style = Ranzen.type.heading, color = c.ink)
+            Spacer(Modifier.height(4.dp))
+            ActionRow(RanzenIcons.Bookmark, "Diese Seite für eine Prüfung merken", session::markForExam)
+            Spacer(Modifier.height(16.dp))
             if (onBookBeside != null) {
                 Text("Nebeneinander", style = Ranzen.type.heading, color = c.ink)
                 Spacer(Modifier.height(4.dp))
@@ -584,6 +616,12 @@ private fun MorePanel(
             ToggleRow("Mit dem Finger schreiben", fingerDraws) {
                 fingerDraws = it; settings.fingerDraws = it; session.canvas.fingerDraws = it
             }
+            var shapes by remember { mutableStateOf(settings.shapes) }
+            ToggleRow("Formen begradigen (am Ende kurz halten)", shapes) { shapes = it; settings.shapes = it }
+            var circle by remember { mutableStateOf(settings.circleSolve) }
+            ToggleRow("Eingekreiste Rechnung ausrechnen", circle) { circle = it; settings.circleSolve = it }
+            Spacer(Modifier.height(10.dp))
+            HandwritingModelCard((androidx.compose.ui.platform.LocalContext.current.applicationContext as de.millione.schulranzen.app.RanzenApp).recognizer)
             Spacer(Modifier.height(8.dp))
             Text(
                 "Seitentaste im Schweben lang halten öffnet den Werkzeugring. Kurz drücken wechselt zum Radierer und zurück.",
