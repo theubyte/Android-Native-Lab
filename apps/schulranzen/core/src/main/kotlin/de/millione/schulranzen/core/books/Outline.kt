@@ -27,13 +27,18 @@ data class Outline(
     val pageCount: Int = 0,
     /** False when no page had a text layer (a scanned book). */
     val hasText: Boolean = false,
+    /** Built from on-device text recognition (a scanned book). */
+    val recognized: Boolean = false,
     val version: Int = VERSION,
 ) {
+    private val via get() = if (recognized) " (Texterkennung)" else ""
+
     /** Short German line for the panel header. */
     fun summary(): String = when {
         source == OutlineSource.EMBEDDED -> "$pageCount Seiten · ${entries.size} Lesezeichen aus dem PDF"
-        source == OutlineSource.PRINTED_TOC -> "$pageCount Seiten · Inhaltsverzeichnis erkannt"
-        source == OutlineSource.HEADINGS -> "$pageCount Seiten · ${entries.size} Kapitel erkannt"
+        source == OutlineSource.PRINTED_TOC -> "$pageCount Seiten · Inhaltsverzeichnis erkannt" + via
+        source == OutlineSource.HEADINGS -> "$pageCount Seiten · ${entries.size} Kapitel erkannt" + via
+        recognized -> "$pageCount Seiten · Text erkannt, keine sicheren Kapitel"
         !hasText -> "$pageCount Seiten · keine Textschicht (gescannt)"
         else -> "$pageCount Seiten · keine sicheren Kapitel gefunden"
     }

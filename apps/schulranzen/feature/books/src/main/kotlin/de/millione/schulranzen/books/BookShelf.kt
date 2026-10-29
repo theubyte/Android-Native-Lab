@@ -133,7 +133,7 @@ class BookShelf(context: Context) {
     suspend fun setSubject(id: String, subjectId: Long?) = store.update(id) { it.copy(subjectId = subjectId) }
 
     /** Removes the book with its ink, notes and marks. */
-    suspend fun delete(id: String) = store.delete(id)
+    suspend fun delete(id: String) { BookIndexer.forget(id); store.delete(id) }
 
     internal val internal: ShelfStore get() = store
 }
@@ -165,6 +165,9 @@ internal class ShelfStore private constructor(private val context: Context) {
     fun inkDir(id: String) = File(dir(id), "ink")
     fun cover(id: String) = File(dir(id), "cover.png")
     fun outlineFile(id: String) = File(dir(id), "outline.json")
+    /** Searchable text of the book (words with boxes), see [BookIndexer]. */
+    fun indexFile(id: String) = File(dir(id), "text.idx")
+    val appContext: Context get() = context
     private fun marksFile(id: String) = File(dir(id), "marks.json")
     private fun sizesFile(id: String) = File(dir(id), "pages.json")
 
@@ -245,6 +248,10 @@ internal class ShelfStore private constructor(private val context: Context) {
             ?.takeIf { it.widths.size == renderer.pageCount }?.let { return it }
         return measure(renderer).also { runCatching { writeAtomically(sizesFile(id), json.encodeToString(it)) } }
     }
+
+    /** Page sizes from the cache file, without opening the PDF; null when missing. */
+    fun cachedPageSizes(id: String): PageSizes? =
+        runCatching { json.decodeFromString<PageSizes>(sizesFile(id).readText()) }.getOrNull()
 
     private fun measure(renderer: PdfRenderer): PageSizes {
         val w = ArrayList<Float>(renderer.pageCount); val h = ArrayList<Float>(renderer.pageCount)
