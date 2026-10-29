@@ -139,6 +139,17 @@ fun LibraryScreen(
     val scope = rememberCoroutineScope()
     val books by (shelf?.books ?: kotlinx.coroutines.flow.flowOf(emptyList())).collectAsState(initial = emptyList())
     var bookMessage by remember { mutableStateOf<String?>(null) }
+    var pdfProgress by remember { mutableStateOf<String?>(null) }
+    val notebookFromPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            pdfProgress = "PDF wird gelesen …"
+            val id = runCatching {
+                library.createNotebookFromPdf(uri, filterOf(tab, subjects)) { done, total -> pdfProgress = "Seite $done von $total …" }
+            }.onFailure { pdfProgress = it.message ?: "PDF konnte nicht gelesen werden"; kotlinx.coroutines.delay(3000) }.getOrNull()
+            pdfProgress = null
+            if (id != null) onOpen(id)
+        }
+    }
     val importBook = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null && shelf != null) scope.launch {
             bookMessage = "Buch wird übernommen …"
@@ -199,7 +210,12 @@ fun LibraryScreen(
                             Text("%02d".format(shown.size), style = Ranzen.type.mono, color = c.inkMuted)
                             Spacer(Modifier.weight(1f))
                             if (inTrash) Text("Hefte im Papierkorb werden nach 30 Tagen gelöscht.", style = Ranzen.type.caption, color = c.inkMuted)
-                            else SignalButton("Neues Heft", { sheet = Sheet.New }, icon = RanzenIcons.Plus)
+                            else {
+                                pdfProgress?.let { Text(it, style = Ranzen.type.caption, color = c.inkMuted); Spacer(Modifier.width(14.dp)) }
+                                QuietButton("Heft aus PDF", { notebookFromPdf.launch(arrayOf("application/pdf")) }, color = c.ink)
+                                Spacer(Modifier.width(10.dp))
+                                SignalButton("Neues Heft", { sheet = Sheet.New }, icon = RanzenIcons.Plus)
+                            }
                         }
                     }
                     items(shown, key = { it.id }) { nb ->

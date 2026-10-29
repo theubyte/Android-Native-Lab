@@ -11,9 +11,20 @@ BACKUPS.mkdir(exist_ok=True)
 MAX_VERSIONS = int(os.environ.get("MAX_VERSIONS", "20"))
 MAX_UPLOAD = int(os.environ.get("MAX_UPLOAD_MB", "1024")) * 1024 * 1024
 
-if not SECRET_FILE.exists():
-    SECRET_FILE.write_text(secrets.token_hex(64))
-SECRET = SECRET_FILE.read_text().strip().encode()
+# Several gunicorn workers import this at the same time: only one may create
+# the secret, and all must use the file's content. Otherwise each worker signs
+# with its own key and a login from one worker is rejected (401) by the other,
+# which breaks upload and download right after a successful login.
+try:
+    fd = os.open(SECRET_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(secrets.token_hex(64))
+except FileExistsError:
+    pass
+for _ in range(50):
+    SECRET = SECRET_FILE.read_text().strip().encode()
+    if SECRET: break
+    time.sleep(0.1)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD

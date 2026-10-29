@@ -1,5 +1,9 @@
 package de.millione.schulranzen.app.notebook
 
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -284,22 +288,38 @@ private fun ToolRail(
     onBack: () -> Unit,
 ) {
     val c = Ranzen.colors
+    // Tool name next to the key the pen hovers over: name and key centre in window pixels.
+    var hovered by remember { mutableStateOf<Pair<String, Offset>?>(null) }
+    @Composable
+    fun Named(name: String, content: @Composable () -> Unit) {
+        var centre by remember { mutableStateOf(Offset.Zero) }
+        Box(
+            Modifier.onGloballyPositioned { centre = it.boundsInWindow().center }
+                .onHover { on -> hovered = if (on) name to centre else hovered?.takeIf { it.first != name } },
+        ) { content() }
+    }
     @Composable
     fun toolKey(kind: ToolKind, icon: ImageVector, name: String, onClick: () -> Unit = { session.select(kind) }, active: Boolean = session.tool == kind) {
-        TactileKey(onClick, selected = active, contentDescription = name) {
-            RanzenIcon(icon, tint = if (active) c.signal else c.ink)
+        Named(name) {
+            TactileKey(onClick, selected = active, contentDescription = name) {
+                RanzenIcon(icon, tint = if (active) c.signal else c.ink)
+            }
         }
     }
     @Composable
     fun items() {
-        TactileKey(onBack, contentDescription = "Zurück zur Bibliothek") { RanzenIcon(RanzenIcons.Back) }
+        Named("Zurück zur Bibliothek") { TactileKey(onBack, contentDescription = "Zurück zur Bibliothek") { RanzenIcon(RanzenIcons.Back) } }
         Gap(vertical, 12)
-        TactileKey(session::undo, contentDescription = "Rückgängig") {
-            RanzenIcon(RanzenIcons.Undo, tint = if (session.canUndo) c.ink else c.inkFaint)
+        Named("Rückgängig") {
+            TactileKey(session::undo, contentDescription = "Rückgängig") {
+                RanzenIcon(RanzenIcons.Undo, tint = if (session.canUndo) c.ink else c.inkFaint)
+            }
         }
         Gap(vertical, 6)
-        TactileKey(session::redo, contentDescription = "Wiederholen") {
-            RanzenIcon(RanzenIcons.Redo, tint = if (session.canRedo) c.ink else c.inkFaint)
+        Named("Wiederholen") {
+            TactileKey(session::redo, contentDescription = "Wiederholen") {
+                RanzenIcon(RanzenIcons.Redo, tint = if (session.canRedo) c.ink else c.inkFaint)
+            }
         }
         Gap(vertical, 12)
         toolKey(ToolKind.PEN, RanzenIcons.Pen, "Stift")
@@ -317,23 +337,42 @@ private fun ToolRail(
         Gap(vertical, 6)
         toolKey(ToolKind.TEXT, RanzenIcons.Text, "Text")
         Gap(vertical, 6)
-        TactileKey({ session.showCalculator = !session.showCalculator }, selected = session.showCalculator, contentDescription = "Taschenrechner") {
-            RanzenIcon(CalcIcon, tint = if (session.showCalculator) c.signal else c.ink)
+        Named("Taschenrechner") {
+            TactileKey({ session.showCalculator = !session.showCalculator }, selected = session.showCalculator, contentDescription = "Taschenrechner") {
+                RanzenIcon(CalcIcon, tint = if (session.showCalculator) c.signal else c.ink)
+            }
         }
         Gap(vertical, 12)
         val color = Color(if (session.tool == ToolKind.MARKER) session.markerColor else session.penColor)
-        TactileKey(onStyle, contentDescription = "Farbe und Dicke") {
-            val size = if (session.tool == ToolKind.MARKER) 18.dp else (6 + session.penSize * 1.6f).dp.coerceAtMost(20.dp)
-            Box(Modifier.size(size).clip(CircleShape).background(color))
+        Named("Farbe und Dicke") {
+            TactileKey(onStyle, contentDescription = "Farbe und Dicke") {
+                val size = if (session.tool == ToolKind.MARKER) 18.dp else (6 + session.penSize * 1.6f).dp.coerceAtMost(20.dp)
+                Box(Modifier.size(size).clip(CircleShape).background(color))
+            }
         }
         Gap(vertical, 12)
-        TactileKey(onPages, contentDescription = "Seiten") { RanzenIcon(RanzenIcons.Pages) }
+        Named("Seiten") { TactileKey(onPages, contentDescription = "Seiten") { RanzenIcon(RanzenIcons.Pages) } }
         Gap(vertical, 6)
-        TactileKey(onMore, contentDescription = "Mehr") { RanzenIcon(RanzenIcons.More) }
+        Named("Mehr") { TactileKey(onMore, contentDescription = "Mehr") { RanzenIcon(RanzenIcons.More) } }
     }
-    PaperPanel(modifier, corner = 26.dp, depth = 0.8f) {
+    PaperPanel(modifier.penHoverZone("rail"), corner = 26.dp, depth = 0.8f) {
         if (vertical) Column(Modifier.padding(9.dp), horizontalAlignment = Alignment.CenterHorizontally) { items() }
         else Row(Modifier.padding(9.dp), verticalAlignment = Alignment.CenterVertically) { items() }
+    }
+    // The name label, beside a vertical rail or below a horizontal one.
+    hovered?.let { (name, centre) ->
+        val d = LocalDensity.current.density
+        // Popup anchors at the screen's top-left box, so window pixels work as offset.
+        Popup(
+            offset = if (vertical) IntOffset((centre.x + 44 * d).roundToInt(), (centre.y - 18 * d).roundToInt())
+                     else IntOffset((centre.x - 40 * d).roundToInt(), (centre.y + 40 * d).roundToInt()),
+            properties = PopupProperties(focusable = false, clippingEnabled = false),
+        ) {
+            Text(
+                name, style = Ranzen.type.label, color = c.paper,
+                modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(c.ink.copy(alpha = 0.92f)).padding(horizontal = 12.dp, vertical = 7.dp),
+            )
+        }
     }
 }
 

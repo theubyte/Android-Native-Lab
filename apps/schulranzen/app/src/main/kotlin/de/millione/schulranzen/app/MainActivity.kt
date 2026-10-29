@@ -258,8 +258,10 @@ class MainActivity : ComponentActivity() {
         if (::canvas.isInitialized && canvas.visibility == View.VISIBLE && ev.pointerCount > 0) {
             val t = ev.getToolType(0)
             val loc = IntArray(2).also { canvas.getLocationInWindow(it) }
-            // With a book beside the notebook, only hover over the notebook half is ours.
-            val inside = ev.x >= loc[0] && ev.x < loc[0] + canvas.width
+            // With a book beside the notebook, only hover over the notebook half is ours;
+            // over the tool rail the pen belongs to Compose (tool names).
+            val inside = ev.x >= loc[0] && ev.x < loc[0] + canvas.width &&
+                !de.millione.schulranzen.app.notebook.PenHoverZones.contains(ev.x, ev.y)
             if (inside && (t == MotionEvent.TOOL_TYPE_STYLUS || t == MotionEvent.TOOL_TYPE_ERASER)) {
                 val local = MotionEvent.obtain(ev).apply { offsetLocation(-loc[0].toFloat(), -loc[1].toFloat()) }
                 try { if (canvas.handleHover(local)) return true } finally { local.recycle() }

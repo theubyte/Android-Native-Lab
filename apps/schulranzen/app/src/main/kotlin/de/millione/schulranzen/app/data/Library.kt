@@ -59,6 +59,28 @@ class Library(private val context: Context) {
         return id
     }
 
+    /**
+     * A whole notebook from a PDF (e.g. a stack of worksheets): one page per
+     * PDF page, titled after the file. Returns the new notebook's id.
+     */
+    suspend fun createNotebookFromPdf(uri: Uri, subjectId: Long?, progress: (Int, Int) -> Unit): String {
+        val name = withContext(Dispatchers.IO) {
+            runCatching {
+                context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getString(0) else null
+                }
+            }.getOrNull()
+        }?.substringBeforeLast('.')?.replace('_', ' ')?.trim().orEmpty()
+        val files = importPdfPages(uri, progress)
+        if (files.isEmpty()) error("Das PDF hat keine Seiten")
+        val id = createNotebook(name.ifEmpty { "Arbeitsblätter" }, subjectId, PaperStyle.BLANK)
+        val blank = dao.pages(id)
+        addWorksheetPages(id, 0, files)
+        // The empty first page createNotebook made is not wanted here.
+        blank.forEach { p -> removePage(id, p.id, dao.pages(id).map { it.id }.filter { it != p.id }) }
+        return id
+    }
+
     suspend fun notebook(id: String) = dao.notebook(id)
 
     suspend fun rename(n: Notebook, title: String, subjectId: Long?) =
