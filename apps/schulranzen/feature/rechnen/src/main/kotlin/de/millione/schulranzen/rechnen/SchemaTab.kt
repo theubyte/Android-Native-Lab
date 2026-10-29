@@ -512,6 +512,7 @@ private fun PropertiesPanel(
     val label = schema.labels.firstOrNull { it.id == selected }
     var picking by remember { mutableStateOf(false) }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp)) {
         when {
             sym != null -> {
@@ -569,9 +570,6 @@ private fun PropertiesPanel(
                     session.commit(SchemaOps.updatePipe(schema, pipe.id) { it.copy(props = it.props + (key to v)) }, "pprop_${pipe.id}_$key")
                 }
                 LiveResult(SchemaLinks.forPipe(pipe), pipe.props, onCalculate)
-                if (picking) PipePicker(pipe.pipeId, pressureOnly = false, onDismiss = { picking = false }) { id ->
-                    session.commit(SchemaOps.updatePipe(schema, pipe.id) { it.copy(pipeId = id) }); onPipeChosen(id); picking = false
-                }
             }
             label != null -> {
                 Caption("Beschriftung")
@@ -580,6 +578,11 @@ private fun PropertiesPanel(
             }
             else -> SchemaInfo(session, onDeleteSchema)
         }
+    }
+    // Outside the scrolling column: the picker needs bounded height for its list.
+    if (picking && pipe != null) PipePicker(pipe.pipeId, pressureOnly = false, onDismiss = { picking = false }) { id ->
+        session.commit(SchemaOps.updatePipe(schema, pipe.id) { it.copy(pipeId = id) }); onPipeChosen(id); picking = false
+    }
     }
 }
 

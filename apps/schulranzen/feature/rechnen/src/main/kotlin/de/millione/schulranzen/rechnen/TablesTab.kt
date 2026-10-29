@@ -101,6 +101,7 @@ internal fun Grid(columns: List<String>, rows: List<List<String>>, highlight: In
             val longest = (rows.map { it.getOrElse(i) { "" } } + columns[i]).maxOf { it.length }
             (longest * 9 + 36).coerceIn(90, 340).dp
         }
+        val rowWidth = widths.fold(24.dp) { a, b -> a + b }
         Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             columns.forEachIndexed { i, h -> Caption(h, Modifier.width(widths[i])) }
         }
@@ -122,7 +123,7 @@ internal fun Grid(columns: List<String>, rows: List<List<String>>, highlight: In
                     }
                 }
             }
-            if (r < rows.size - 1) Box(Modifier.padding(horizontal = 12.dp).fillMaxWidth().height(0.75.dp).background(c.line.copy(alpha = 0.7f)))
+            if (r < rows.size - 1) Box(Modifier.padding(horizontal = 12.dp).width(rowWidth).height(0.75.dp).background(c.line.copy(alpha = 0.7f)))
         }
     }
 }
