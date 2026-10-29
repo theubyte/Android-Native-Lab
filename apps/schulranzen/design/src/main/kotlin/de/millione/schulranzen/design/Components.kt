@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -160,8 +161,13 @@ fun RegisterTabs(
                 Modifier
                     .padding(top = lift, end = 6.dp)
                     .clip(shape)
-                    .background(if (active) c.paper else c.raised.copy(alpha = if (c.isDark) 0.6f else 0.7f))
-                    .border(0.5.dp, c.line, shape)
+                    .background(if (active) c.paper else c.line.copy(alpha = if (c.isDark) 0.55f else 0.5f))
+                    .border(0.5.dp, if (active) c.line else Color.Transparent, shape)
+                    // The open tab joins the drawer below it: hide its bottom edge.
+                    .drawWithContent {
+                        drawContent()
+                        if (active) drawRect(c.paper, topLeft = Offset(0.5.dp.toPx(), size.height - 2.dp.toPx()), size = androidx.compose.ui.geometry.Size(size.width - 1.dp.toPx(), 2.dp.toPx()))
+                    }
                     .clickable { onSelect(i) }
                     .padding(horizontal = 18.dp, vertical = 11.dp),
             ) {

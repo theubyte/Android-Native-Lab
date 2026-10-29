@@ -14,8 +14,15 @@ Nachfolger von `apps/digitaler-schulranzen` (V15.0.7, Java). Plan, Design und Ph
 - Seitentaste: beim Schreiben Radierer; im Schweben kurz = Radierer an/aus, lang = **Werkzeugring** um die Stiftspitze.
 - Automatisches Speichern je Seite.
 
-**Nicht auf dem Tablet getestet.** Gebaut und Geometrie-Tests grün; Schreibgefühl, Werkzeugring
-(Air Command!) und Optik müssen auf dem Tab S7 FE geprüft werden.
+**Im Emulator geprüft** (2560 × 1600, 320 dpi wie das Tab S7 FE): Bibliothek, Heft anlegen, Schreiben
+mit simuliertem Stift, Teilradierer, Marker, Farben/Dicken, Papierwahl, Seite hinzufügen, Scrollen,
+Speichern und Wiederöffnen, Werkzeugring (über einen Debug-Zugang, da der Emulator keine
+Stift-Seitentaste hat), hell und dunkel. Bilder: [docs/screens](docs/screens).
+
+**Nicht auf dem Tablet getestet:** Schreibgefühl mit echtem S Pen (Druck, Latenz), Hand-Ablage,
+Pinch-Zoom und ob die Seitentaste im Schweben ankommt (Air Command). Debug-Zugang zum Ring:
+`adb shell am start -n de.millione.schulranzen.neu/de.millione.schulranzen.app.MainActivity --es ring open --ef x 1200 --ef y 700`
+(weitere: `move`, `release`, `cancel`).
 
 ## Bauen
 

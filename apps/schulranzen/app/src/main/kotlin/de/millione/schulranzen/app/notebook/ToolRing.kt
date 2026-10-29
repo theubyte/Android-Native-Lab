@@ -4,6 +4,17 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -112,8 +123,17 @@ fun ToolRingOverlay(
                 val hole = ToolRingGeometry.HOLE.dp.toPx()
                 val inner = ToolRingGeometry.INNER.dp.toPx()
                 val outer = ToolRingGeometry.OUTER.dp.toPx()
-                // Shadow and paper discs
-                drawCircle(c.bevelShadow.copy(alpha = 0.35f * alpha), outer + 6.dp.toPx(), centre + Offset(0f, 5.dp.toPx()))
+                // Soft shadow and paper discs
+                val shadowR = outer + 22.dp.toPx()
+                drawCircle(
+                    Brush.radialGradient(
+                        0f to c.bevelShadow.copy(alpha = 0.55f * alpha),
+                        (outer / shadowR) to c.bevelShadow.copy(alpha = 0.35f * alpha),
+                        1f to Color.Transparent,
+                        center = centre + Offset(0f, 6.dp.toPx()), radius = shadowR,
+                    ),
+                    shadowR, centre + Offset(0f, 6.dp.toPx()),
+                )
                 drawCircle(c.paper.copy(alpha = 0.97f * alpha), outer, centre)
                 drawCircle(c.raised.copy(alpha = alpha), inner, centre)
                 drawCircle(c.line.copy(alpha = alpha), inner, centre, style = Stroke(1.dp.toPx()))
@@ -164,7 +184,33 @@ fun ToolRingOverlay(
                 drawCircle(c.signal.copy(alpha = alpha), 3.dp.toPx(), centre)
             }
         }
+        // Name of what the pen points at, under the ring
+        val label = when (hovered) {
+            is RingItem.Tool -> toolName(hovered.kind)
+            is RingItem.Swatch -> colorName(hovered.color)
+            null -> toolName(current)
+        }
+        val below = (ToolRingGeometry.OUTER + 18) * density
+        Box(
+            Modifier
+                .offset { IntOffset((state.x - 70 * density).toInt(), (state.y + below).toInt()) }
+                .width(140.dp)
+                .graphicsLayer { alpha = open.value.coerceIn(0f, 1f) },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label, style = Ranzen.type.label, color = c.paper,
+                modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(c.ink.copy(alpha = 0.86f)).padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
     }
+}
+
+fun toolName(kind: ToolKind) = when (kind) {
+    ToolKind.PEN -> "Stift"
+    ToolKind.MARKER -> "Marker"
+    ToolKind.ERASER -> "Radierer"
+    ToolKind.STROKE_ERASER -> "Strichradierer"
 }
 
 private fun DrawScope.drawArcSegment(centre: Offset, r0: Float, r1: Float, startDeg: Float, sweepDeg: Float, color: Color) {
@@ -174,4 +220,19 @@ private fun DrawScope.drawArcSegment(centre: Offset, r0: Float, r1: Float, start
     path.arcTo(androidx.compose.ui.geometry.Rect(centre, r0), start + sweepDeg, -sweepDeg, false)
     path.close()
     drawPath(path, color)
+}
+
+private fun colorName(argb: Int): String = when (argb) {
+    InkPalette.pen[0] -> "Tinte"
+    InkPalette.pen[1] -> "Königsblau"
+    InkPalette.pen[2] -> "Korrekturrot"
+    InkPalette.pen[3] -> "Tannengrün"
+    InkPalette.pen[4] -> "Pflaume"
+    InkPalette.pen[5] -> "Ocker"
+    InkPalette.marker[0] -> "Gelb"
+    InkPalette.marker[1] -> "Grün"
+    InkPalette.marker[2] -> "Rosa"
+    InkPalette.marker[3] -> "Blau"
+    InkPalette.marker[4] -> "Orange"
+    else -> "Farbe"
 }

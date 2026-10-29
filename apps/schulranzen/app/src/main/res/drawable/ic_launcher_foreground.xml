@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A school notebook: ink-black cover, signal-orange stitched spine, label plate. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#331C1B19" android:pathData="M38,32h33a5,5 0,0 1,5 5v41a5,5 0,0 1,-5 5h-33z" />
+    <path android:fillColor="#1C1B19" android:pathData="M36,29h33a5,5 0,0 1,5 5v41a5,5 0,0 1,-5 5h-33z" />
+    <path android:fillColor="#D9542F" android:pathData="M33,29h8v51h-8a2,2 0,0 1,-2 -2v-47a2,2 0,0 1,2 -2z" />
+    <path android:strokeColor="#FFF8F0" android:strokeWidth="1" android:strokeLineCap="round"
+        android:pathData="M36,33v3M36,39v3M36,45v3M36,51v3M36,57v3M36,63v3M36,69v3M36,75v2" />
+    <path android:fillColor="#F8F5EE" android:pathData="M47,38h20a2,2 0,0 1,2 2v10a2,2 0,0 1,-2 2h-20a2,2 0,0 1,-2 -2v-10a2,2 0,0 1,2 -2z" />
+    <path android:strokeColor="#1C1B19" android:strokeWidth="1.6" android:strokeLineCap="round" android:pathData="M49,43h14M49,47h9" />
+</vector>

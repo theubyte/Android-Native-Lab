@@ -487,9 +487,18 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     // ------------------------------------------------------------- rendering
 
     private inner class PageLayer : View(context) {
-        private val shadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.TRANSPARENT
-            setShadowLayer(18f, 0f, 6f, 0x33000000)
+        private val shadow = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val shadowRect = RectF()
+
+        /** Soft paper shadow: a few widening, fading rings below-right of the sheet. */
+        private fun drawShadow(canvas: Canvas, r: RectF) {
+            val d = resources.displayMetrics.density
+            for (k in 1..6) {
+                val grow = k * 1.6f * d
+                shadowRect.set(r.left - grow * 0.5f, r.top - grow * 0.3f + 2f * d, r.right + grow * 0.5f, r.bottom + grow + 2f * d)
+                shadow.color = Color.argb(14 - k * 2, 60, 45, 20)
+                canvas.drawRoundRect(shadowRect, grow, grow, shadow)
+            }
         }
         private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f; color = 0x1F000000 }
         private val nodes = HashMap<String, Pair<Long, Any>>()   // page id -> (revision+paper key, RenderNode)
@@ -510,7 +519,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                 val top = pageTop(i)
                 rect.set(0f, top, WIDTH, top + HEIGHT)
                 view.mapRect(rect)
-                canvas.drawRect(rect, shadow)
+                drawShadow(canvas, rect)
                 m.set(view); m.preTranslate(0f, top)
                 canvas.save()
                 canvas.concat(m)

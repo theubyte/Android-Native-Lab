@@ -19,6 +19,8 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -28,11 +30,20 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -55,6 +66,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
@@ -114,7 +126,7 @@ fun LibraryScreen(library: Library, onOpen: (String) -> Unit, onToggleTheme: () 
             Spacer(Modifier.height(28.dp))
             Header(onToggleTheme)
             Spacer(Modifier.height(26.dp))
-            Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.Bottom) {
+            Row(Modifier.zIndex(1f).offset(y = 1.dp).padding(start = 22.dp).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.Bottom) {
                 RegisterTabs(
                     tabs = listOf("Alle" to null) + subjects.map { it.name to SubjectPalette.of(it.colorIndex) },
                     selected = tab,
@@ -155,8 +167,9 @@ fun LibraryScreen(library: Library, onOpen: (String) -> Unit, onToggleTheme: () 
             Box(Modifier.fillMaxSize().background(c.desk.copy(alpha = 0.55f)).pointerInput(Unit) { detectTapGestures { sheet = Sheet.None } })
         }
         val current = sheet
+        Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.union(WindowInsets.ime)).padding(24.dp), contentAlignment = Alignment.Center) {
         AnimatedVisibility(
-            current is Sheet.New || current is Sheet.Edit, Modifier.align(Alignment.Center),
+            current is Sheet.New || current is Sheet.Edit,
             enter = fadeIn() + scaleIn(spring(dampingRatio = 0.7f), initialScale = 0.9f), exit = fadeOut() + scaleOut(targetScale = 0.95f),
         ) {
             val editing = (current as? Sheet.Edit)?.notebook
@@ -176,13 +189,14 @@ fun LibraryScreen(library: Library, onOpen: (String) -> Unit, onToggleTheme: () 
             )
         }
         AnimatedVisibility(
-            current is Sheet.NewSubject, Modifier.align(Alignment.Center),
+            current is Sheet.NewSubject,
             enter = fadeIn() + scaleIn(spring(dampingRatio = 0.7f), initialScale = 0.9f), exit = fadeOut() + scaleOut(targetScale = 0.95f),
         ) {
             SubjectSheet(nextColor = subjects.size, onCancel = { sheet = Sheet.None }) { name, color ->
                 scope.launch { library.addSubject(name, color, subjects.size) }
                 sheet = Sheet.None
             }
+        }
         }
     }
 }
@@ -305,6 +319,7 @@ private fun NewTile(onClick: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NotebookSheet(
     subjects: List<Subject>,
@@ -319,15 +334,18 @@ private fun NotebookSheet(
     var subject by remember(editing) { mutableStateOf(editing?.subjectId ?: presetSubject ?: subjects.firstOrNull()?.id) }
     var paper by remember(editing) { mutableStateOf(PaperStyle.of(editing?.paper)) }
     val focus = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     PaperPanel(corner = 26.dp) {
-        Column(Modifier.padding(30.dp).width(520.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(30.dp).width(520.dp)) {
             Text(if (editing == null) "Neues Heft" else "Heft bearbeiten", style = Ranzen.type.title, color = c.ink)
             Spacer(Modifier.height(22.dp))
             Text("TITEL", style = Ranzen.type.caption, color = c.inkMuted)
             Spacer(Modifier.height(8.dp))
             BasicTextField(
                 title, { title = it }, singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
                 textStyle = Ranzen.type.title.copy(color = c.ink),
                 cursorBrush = SolidColor(c.signal),
                 modifier = Modifier.fillMaxWidth().focusRequester(focus)
@@ -340,7 +358,7 @@ private fun NotebookSheet(
             Spacer(Modifier.height(26.dp))
             Text("FACH", style = Ranzen.type.caption, color = c.inkMuted)
             Spacer(Modifier.height(10.dp))
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 subjects.forEach { s ->
                     val active = s.id == subject
                     Row(
@@ -389,13 +407,16 @@ private fun SubjectSheet(nextColor: Int, onCancel: () -> Unit, onSave: (String, 
     var name by remember { mutableStateOf("") }
     var color by remember { mutableStateOf(nextColor % SubjectPalette.colors.size) }
     val focus = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     PaperPanel(corner = 26.dp) {
-        Column(Modifier.padding(30.dp).width(440.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(30.dp).width(440.dp)) {
             Text("Neues Fach", style = Ranzen.type.title, color = c.ink)
             Spacer(Modifier.height(20.dp))
             BasicTextField(
                 name, { name = it }, singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
                 textStyle = Ranzen.type.title.copy(color = c.ink), cursorBrush = SolidColor(c.signal),
                 modifier = Modifier.fillMaxWidth().focusRequester(focus)
                     .drawBehind { drawLine(c.line, Offset(0f, size.height + 6.dp.toPx()), Offset(size.width, size.height + 6.dp.toPx()), 1.5.dp.toPx()) },

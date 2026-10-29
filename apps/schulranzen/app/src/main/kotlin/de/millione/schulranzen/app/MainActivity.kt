@@ -1,6 +1,7 @@
 package de.millione.schulranzen.app
 
 import android.app.Application
+import android.content.Intent
 import android.os.Bundle
 import android.view.MotionEvent
 import android.view.View
@@ -26,6 +27,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.view.WindowCompat
 import de.millione.schulranzen.app.data.Library
 import de.millione.schulranzen.app.data.Settings
 import de.millione.schulranzen.app.library.LibraryScreen
@@ -35,6 +37,7 @@ import de.millione.schulranzen.design.Ranzen
 import de.millione.schulranzen.design.RanzenTheme
 import de.millione.schulranzen.design.ThemeMode
 import de.millione.schulranzen.ink.NotebookCanvasView
+import de.millione.schulranzen.ink.RingEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,6 +57,8 @@ class RanzenApp : Application() {
  */
 class MainActivity : ComponentActivity() {
     private lateinit var canvas: NotebookCanvasView
+    /** The open notebook, for the debug hooks below. */
+    private var session: NotebookSession? = null
     private val app get() = application as RanzenApp
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -73,7 +78,15 @@ class MainActivity : ComponentActivity() {
             val mode by app.settings.theme.collectAsState()
             RanzenTheme(mode) {
                 val desk = Ranzen.colors.desk
-                SideEffect { root.setBackgroundColor(desk.toArgb()) }
+                val dark = Ranzen.colors.isDark
+                SideEffect {
+                    root.setBackgroundColor(desk.toArgb())
+                    // The app's own light/dark switch, not the system's, decides the bar icons.
+                    WindowCompat.getInsetsController(window, root).apply {
+                        isAppearanceLightStatusBars = !dark
+                        isAppearanceLightNavigationBars = !dark
+                    }
+                }
                 LaunchedEffect(Unit) { app.library.seed() }
                 var open by rememberSaveable { mutableStateOf<String?>(null) }
                 AnimatedContent(
@@ -94,8 +107,10 @@ class MainActivity : ComponentActivity() {
                         val session = remember(id) { NotebookSession(id, canvas, app.library, app.settings, app.scope) }
                         DisposableEffect(session) {
                             session.open()
+                            this@MainActivity.session = session
                             canvas.visibility = View.VISIBLE
                             onDispose {
+                                this@MainActivity.session = null
                                 session.close()
                                 canvas.visibility = View.GONE
                             }
@@ -104,6 +119,24 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Debug builds only: drive the tool ring from adb, since emulators have
+     * no pen side button, e.g.
+     * `am start -n <app>/.MainActivity --es ring open --ef x 1200 --ef y 700`.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (!BuildConfig.DEBUG) return
+        val s = session ?: return
+        val x = intent.getFloatExtra("x", 0f); val y = intent.getFloatExtra("y", 0f)
+        when (intent.getStringExtra("ring")) {
+            "open" -> s.onRing(RingEvent.Open(x, y))
+            "move" -> s.onRing(RingEvent.Move(x, y))
+            "release" -> s.onRing(RingEvent.Release(x, y))
+            "cancel" -> s.onRing(RingEvent.Cancel)
         }
     }
 

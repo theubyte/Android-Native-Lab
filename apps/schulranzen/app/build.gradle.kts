@@ -25,7 +25,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 }
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }

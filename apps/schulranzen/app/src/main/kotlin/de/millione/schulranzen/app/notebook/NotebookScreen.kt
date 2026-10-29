@@ -218,7 +218,7 @@ private fun StylePanel(session: NotebookSession) {
                         { if (marker) session.setMarker(session.markerColor, s) else session.setPen(session.penColor, s) },
                         selected = selected, size = 46.dp,
                     ) {
-                        val dot = if (marker) (8 + s / 2).dp else (3 + s * 1.5f).dp
+                        val dot = if (marker) (6 + s * 0.7f).dp else (4 + s * 2.2f).dp
                         Box(Modifier.size(dot).clip(CircleShape).background(Color(if (marker) session.markerColor else session.penColor)))
                     }
                 }
@@ -269,7 +269,10 @@ private fun ToggleRow(label: String, value: Boolean, onChange: (Boolean) -> Unit
     val c = Ranzen.colors
     Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, style = Ranzen.type.body, color = c.ink, modifier = Modifier.weight(1f))
-        Switch(value, onChange, colors = SwitchDefaults.colors(checkedTrackColor = c.signal, checkedThumbColor = c.onSignal))
+        Switch(value, onChange, colors = SwitchDefaults.colors(
+            checkedTrackColor = c.signal, checkedThumbColor = c.onSignal, checkedBorderColor = c.signal,
+            uncheckedTrackColor = c.line.copy(alpha = 0.5f), uncheckedThumbColor = c.inkFaint, uncheckedBorderColor = c.line,
+        ))
     }
 }
 

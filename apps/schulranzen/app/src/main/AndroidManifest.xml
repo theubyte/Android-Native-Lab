@@ -3,11 +3,14 @@
     <application
         android:name=".RanzenApp"
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Schulranzen"
         android:supportsRtl="true"
         android:theme="@style/Theme.Ranzen">
         <activity
             android:name=".MainActivity"
+            android:launchMode="singleTop"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|density|uiMode"
             android:windowSoftInputMode="adjustResize">
