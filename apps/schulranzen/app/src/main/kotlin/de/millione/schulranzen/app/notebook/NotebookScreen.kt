@@ -1,5 +1,6 @@
 package de.millione.schulranzen.app.notebook
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -167,7 +168,7 @@ fun NotebookScreen(
 
         // Tool rail
         val railModifier = if (landscape) safe.padding(start = 14.dp).align(Alignment.CenterStart) else safe.padding(top = 64.dp).align(Alignment.TopCenter)
-        ToolRail(session, vertical = landscape, modifier = railModifier,
+        ToolRail(session, vertical = landscape, modifier = railModifier, dense = landscape && maxHeight < 820.dp,
             onStyle = { panel = if (panel == Panel.STYLE) Panel.NONE else Panel.STYLE },
             onPages = { panel = if (panel == Panel.PAGES) Panel.NONE else Panel.PAGES },
             onMore = { panel = if (panel == Panel.MORE) Panel.NONE else Panel.MORE },
@@ -250,6 +251,19 @@ fun NotebookScreen(
             }
         }
 
+        // Once on Samsung tablets: how to keep Air Command out of the way of the tool ring.
+        var airHint by remember { mutableStateOf(AirCommand.isSamsung && !settings.airHintSeen) }
+        if (airHint && panel == Panel.NONE) {
+            Box(safe.fillMaxSize().padding(bottom = 24.dp), contentAlignment = Alignment.BottomCenter) {
+                PaperPanel(corner = 18.dp) {
+                    Column(Modifier.padding(18.dp).width(460.dp)) {
+                        AirCommandHint()
+                        Row { Spacer(Modifier.weight(1f)); SignalButton("Verstanden", { airHint = false; settings.airHintSeen = true }) }
+                    }
+                }
+            }
+        }
+
         // Tool ring around the pen tip
         session.ring?.let { r ->
             val color = if (session.tool == ToolKind.MARKER) session.markerColor else session.penColor
@@ -292,8 +306,11 @@ private fun ToolRail(
     onPages: () -> Unit,
     onMore: () -> Unit,
     onBack: () -> Unit,
+    /** Smaller keys and gaps when the screen is too short for the full rail. */
+    dense: Boolean = false,
 ) {
     val c = Ranzen.colors
+    val keySize = if (dense) 42.dp else 48.dp
     // Tool name next to the key the pen hovers over: name and key centre in window pixels.
     var hovered by remember { mutableStateOf<Pair<String, Offset>?>(null) }
     @Composable
@@ -307,63 +324,64 @@ private fun ToolRail(
     @Composable
     fun toolKey(kind: ToolKind, icon: ImageVector, name: String, onClick: () -> Unit = { session.select(kind) }, active: Boolean = session.tool == kind) {
         Named(name) {
-            TactileKey(onClick, selected = active, contentDescription = name) {
+            TactileKey(onClick, size = keySize, selected = active, contentDescription = name) {
                 RanzenIcon(icon, tint = if (active) c.signal else c.ink)
             }
         }
     }
     @Composable
     fun items() {
-        Named("Zurück zur Bibliothek") { TactileKey(onBack, contentDescription = "Zurück zur Bibliothek") { RanzenIcon(RanzenIcons.Back) } }
-        Gap(vertical, 12)
+        Named("Zurück zur Bibliothek") { TactileKey(onBack, size = keySize, contentDescription = "Zurück zur Bibliothek") { RanzenIcon(RanzenIcons.Back) } }
+        Gap(vertical, if (dense) 8 else 12)
         Named("Rückgängig") {
-            TactileKey(session::undo, contentDescription = "Rückgängig") {
+            TactileKey(session::undo, size = keySize, contentDescription = "Rückgängig") {
                 RanzenIcon(RanzenIcons.Undo, tint = if (session.canUndo) c.ink else c.inkFaint)
             }
         }
-        Gap(vertical, 6)
+        Gap(vertical, if (dense) 4 else 6)
         Named("Wiederholen") {
-            TactileKey(session::redo, contentDescription = "Wiederholen") {
+            TactileKey(session::redo, size = keySize, contentDescription = "Wiederholen") {
                 RanzenIcon(RanzenIcons.Redo, tint = if (session.canRedo) c.ink else c.inkFaint)
             }
         }
-        Gap(vertical, 12)
+        Gap(vertical, if (dense) 8 else 12)
         toolKey(ToolKind.PEN, RanzenIcons.Pen, "Stift")
-        Gap(vertical, 6)
+        Gap(vertical, if (dense) 4 else 6)
         toolKey(ToolKind.MARKER, RanzenIcons.Marker, "Marker")
-        Gap(vertical, 6)
+        Gap(vertical, if (dense) 4 else 6)
         // Second tap on the eraser switches between partial and whole-stroke erasing.
         toolKey(ToolKind.ERASER, if (session.tool == ToolKind.STROKE_ERASER) RanzenIcons.Trash else RanzenIcons.Eraser, "Radierer",
             onClick = { session.select(if (session.tool == ToolKind.ERASER) ToolKind.STROKE_ERASER else ToolKind.ERASER) },
             active = session.tool.erases)
-        Gap(vertical, 6)
+        Gap(vertical, if (dense) 4 else 6)
         toolKey(ToolKind.LASSO, RanzenIcons.Lasso, "Lasso")
-        Gap(vertical, 6)
+        Gap(vertical, if (dense) 4 else 6)
         toolKey(ToolKind.RULER, RanzenIcons.Ruler, "Lineal")
-        Gap(vertical, 6)
+        Gap(vertical, if (dense) 4 else 6)
         toolKey(ToolKind.TEXT, RanzenIcons.Text, "Text")
-        Gap(vertical, 6)
+        Gap(vertical, if (dense) 4 else 6)
         Named("Taschenrechner") {
-            TactileKey({ session.showCalculator = !session.showCalculator }, selected = session.showCalculator, contentDescription = "Taschenrechner") {
+            TactileKey({ session.showCalculator = !session.showCalculator }, size = keySize, selected = session.showCalculator, contentDescription = "Taschenrechner") {
                 RanzenIcon(CalcIcon, tint = if (session.showCalculator) c.signal else c.ink)
             }
         }
-        Gap(vertical, 12)
+        Gap(vertical, if (dense) 8 else 12)
         val color = Color(if (session.tool == ToolKind.MARKER) session.markerColor else session.penColor)
         Named("Farbe und Dicke") {
-            TactileKey(onStyle, contentDescription = "Farbe und Dicke") {
+            TactileKey(onStyle, size = keySize, contentDescription = "Farbe und Dicke") {
                 val size = if (session.tool == ToolKind.MARKER) 18.dp else (6 + session.penSize * 1.6f).dp.coerceAtMost(20.dp)
                 Box(Modifier.size(size).clip(CircleShape).background(color))
             }
         }
-        Gap(vertical, 12)
-        Named("Seiten") { TactileKey(onPages, contentDescription = "Seiten") { RanzenIcon(RanzenIcons.Pages) } }
-        Gap(vertical, 6)
-        Named("Mehr") { TactileKey(onMore, contentDescription = "Mehr") { RanzenIcon(RanzenIcons.More) } }
+        Gap(vertical, if (dense) 8 else 12)
+        Named("Seiten") { TactileKey(onPages, size = keySize, contentDescription = "Seiten") { RanzenIcon(RanzenIcons.Pages) } }
+        Gap(vertical, if (dense) 4 else 6)
+        Named("Mehr") { TactileKey(onMore, size = keySize, contentDescription = "Mehr") { RanzenIcon(RanzenIcons.More) } }
     }
     PaperPanel(modifier.penHoverZone("rail"), corner = 26.dp, depth = 0.8f) {
-        if (vertical) Column(Modifier.padding(9.dp), horizontalAlignment = Alignment.CenterHorizontally) { items() }
-        else Row(Modifier.padding(9.dp), verticalAlignment = Alignment.CenterVertically) { items() }
+        // Scrolls only when the screen is too short for all keys (large display size setting).
+        if (vertical) Column(Modifier.verticalScroll(rememberScrollState()).padding(9.dp), horizontalAlignment = Alignment.CenterHorizontally) { items() }
+        else Row(Modifier.horizontalScroll(rememberScrollState()).padding(9.dp), verticalAlignment = Alignment.CenterVertically) { items() }
     }
     // The name label, beside a vertical rail or below a horizontal one.
     hovered?.let { (name, centre) ->
@@ -614,6 +632,10 @@ private fun MorePanel(
                 "Seitentaste im Schweben lang halten öffnet den Werkzeugring. Kurz drücken wechselt zum Radierer und zurück.",
                 style = Ranzen.type.caption, color = c.inkMuted,
             )
+            if (AirCommand.isSamsung) {
+                Spacer(Modifier.height(10.dp))
+                AirCommandHint()
+            }
         }
     }
 }

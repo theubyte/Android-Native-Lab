@@ -53,6 +53,11 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("hwIndexedAll", false)
         set(v) = prefs.edit().putBoolean("hwIndexedAll", v).apply()
 
+    /** The Air Command hint was read once (Samsung). */
+    var airHintSeen: Boolean
+        get() = prefs.getBoolean("airHintSeen", false)
+        set(v) = prefs.edit().putBoolean("airHintSeen", v).apply()
+
     var markerSize: Float
         get() = prefs.getFloat("markerSize", 18f)
         set(v) = prefs.edit().putFloat("markerSize", v).apply()

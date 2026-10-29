@@ -157,6 +157,7 @@ class MainActivity : ComponentActivity() {
         root.addView(canvas, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         root.addView(ui, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         setContentView(root)
+        hideTaskBar()
 
         ui.setContent {
             val mode by app.settings.theme.collectAsState()
@@ -342,6 +343,22 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * The tablet's task bar and navigation bar stay hidden (swipe up from the
+     * bottom edge shows them briefly); the status bar with clock stays.
+     */
+    private fun hideTaskBar() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideTaskBar()
     }
 
     /**

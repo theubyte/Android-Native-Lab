@@ -213,10 +213,12 @@ private fun BookReader(
         if (panel == Panel.NONE) {
             session.areaFrame?.let { frame ->
                 FloatingBar(frame) {
-                    BarButton(RanzenIcons.Scissors, "Ins Heft", { session.clipArea(onClip) }, tint = c.signal)
-                    BarButton(BookIcons.Star, "Merken", session::keepArea)
-                    if (onMarkForExam != null) BarButton(BookIcons.Exam, "Prüfung", { session.markForExam(onMarkForExam, area = true) })
-                    BarButton(RanzenIcons.Close, "Abbrechen", session::cancelArea)
+                    Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        BarButton(RanzenIcons.Scissors, "Ins Heft", { session.clipArea(onClip) }, tint = c.signal)
+                        BarButton(BookIcons.Star, "Merken", session::keepArea)
+                        if (onMarkForExam != null) BarButton(BookIcons.Exam, "Prüfung", { session.markForExam(onMarkForExam, area = true) })
+                        BarButton(RanzenIcons.Close, "Abbrechen", session::cancelArea)
+                    }
                 }
             }
             session.selectionFrame?.let { frame -> SelectionBar(session, frame) }

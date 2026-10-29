@@ -6,7 +6,7 @@ Plan und Design im Detail: [PLAN.md](PLAN.md). Regeln für parallele Agenten: [A
 
 Legende: `[x]` erledigt · `[ ]` offen · `[~]` teilweise · **(T)** nur auf dem echten Tablet prüfbar
 
-Letzte Aktualisierung: 29.10.2026, Version **0.4.1**
+Letzte Aktualisierung: 29.10.2026, Version **0.4.2**
 
 
 ---
@@ -20,7 +20,9 @@ Letzte Aktualisierung: 29.10.2026, Version **0.4.1**
 - [ ] **(T)** Erste Installation auf dem Tab S7 FE (Anleitung unten)
 - [ ] **(T)** S Pen: Druck, Neigung, Verzögerung, Schreibgefühl
 - [ ] **(T)** Hand-Ablage beim Schreiben
-- [ ] **(T)** Seitentaste im Schweben → Werkzeugring (oder fängt Air Command sie ab?)
+- [~] **(T)** Seitentaste im Schweben → Werkzeugring. **Ergebnis vom Tablet:** Air Command fängt die Taste ab.
+      Samsung erlaubt Apps nicht, das abzuschalten. **Du:** Einstellungen → Erweiterte Funktionen → S Pen →
+      Air Command → „Air Command mit Stifttaste öffnen“ aus (Knopf dafür im Heft unter … und einmaliger Hinweis). Danach testen.
 - [ ] **(T)** Zwei-Finger-Zoom in Heft und Buch
 - [ ] **(T)** Hochformat
 - [ ] **(T)** V15-Übernahme mit dem echten Backup der alten App
@@ -86,6 +88,14 @@ Letzte Aktualisierung: 29.10.2026, Version **0.4.1**
 ---
 
 ## Erledigt
+
+### 0.4.2 – Tablet-Rückmeldung
+- Taskleiste/Navigationsleiste des Tablets ausgeblendet (vom unteren Rand wischen zeigt sie kurz) ([Bild](screens/heft-vollbild.png)).
+- Werkzeugleiste im Heft: wird bei wenig Höhe kompakter und scrollt notfalls – „…“ (Mehr) ist immer erreichbar.
+- Buch: Bereichsleiste (Ins Heft, Merken, Prüfung, Abbrechen) lag übereinander – jetzt nebeneinander ([Bild](screens/buch-bereichsleiste.png)).
+- Air Command: einmaliger Hinweis im Heft + Knopf „S-Pen-Einstellungen öffnen“ (unter … → Stift). Abschalten kann nur der Nutzer.
+- Bibliothek: kein kurzes „Hefte 00“ mehr beim Start; Titel bricht bei großer Anzeigegröße nicht mehr um.
+- Im Emulator geprüft (auch mit großer Anzeigegröße). Air-Command-Hinweis nur auf Samsung sichtbar → **(T)**.
 
 ### 0.4.1 – Feinschliff
 - SHK-Schema: Rohrbeschriftungen werden neben dem Rohr platziert, wo sie weder andere Beschriftungen noch

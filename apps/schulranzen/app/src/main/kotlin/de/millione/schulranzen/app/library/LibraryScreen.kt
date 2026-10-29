@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import de.millione.schulranzen.books.BookCover
@@ -132,8 +133,12 @@ fun LibraryScreen(
     searchExtra: @Composable (String) -> Unit = {},
 ) {
     val c = Ranzen.colors
-    val subjects by library.subjects.collectAsState(initial = emptyList())
-    val notebooks by library.notebooks.collectAsState(initial = emptyList())
+    // Null until the database answered: no empty "Hefte 00" flash at start.
+    val subjectsOrNull by library.subjects.collectAsState(initial = null)
+    val notebooksOrNull by library.notebooks.collectAsState(initial = null)
+    val subjects = subjectsOrNull ?: emptyList()
+    val notebooks = notebooksOrNull ?: emptyList()
+    val ready = subjectsOrNull != null && notebooksOrNull != null
     val trashed by library.trashed.collectAsState(initial = emptyList())
     var tab by remember { mutableStateOf(0) }
     var sheet by remember { mutableStateOf<Sheet>(Sheet.None) }
@@ -185,7 +190,7 @@ fun LibraryScreen(
             Spacer(Modifier.height(14.dp))
             today()
             Spacer(Modifier.height(14.dp))
-            Row(Modifier.zIndex(1f).offset(y = 1.dp).padding(start = 22.dp).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.Bottom) {
+            if (ready) Row(Modifier.zIndex(1f).offset(y = 1.dp).padding(start = 22.dp).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.Bottom) {
                 RegisterTabs(
                     tabs = listOf("Alle" to null) + subjects.map { it.name to SubjectPalette.of(it.colorIndex) } +
                         (("Papierkorb" + if (trashed.isEmpty()) "" else " · ${trashed.size}") to null),
@@ -197,7 +202,7 @@ fun LibraryScreen(
                 ) { RanzenIcon(RanzenIcons.Plus, tint = c.inkMuted, size = 20.dp) }
             }
             // The open drawer of the satchel
-            PaperPanel(Modifier.fillMaxSize().padding(bottom = 24.dp), corner = 26.dp) {
+            if (ready) PaperPanel(Modifier.fillMaxSize().padding(bottom = 24.dp), corner = 26.dp) {
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(176.dp),
                     contentPadding = PaddingValues(28.dp),
@@ -334,8 +339,9 @@ private fun Header(onToggleTheme: () -> Unit, query: String, onQuery: (String) -
     val day = remember(now) { SimpleDateFormat("EEEE · dd.MM.yyyy", Locale.GERMANY).format(now).uppercase(Locale.GERMANY) }
     val time = remember(now) { SimpleDateFormat("HH:mm", Locale.GERMANY).format(now) }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("Schulranzen", style = Ranzen.type.hero, color = c.ink)
+        // The title keeps its width; the search field gives way on narrow screens.
+        Column {
+            Text("Schulranzen", style = Ranzen.type.hero, color = c.ink, maxLines = 1, softWrap = false)
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Lamp(c.signal, size = 8.dp)
@@ -343,7 +349,8 @@ private fun Header(onToggleTheme: () -> Unit, query: String, onQuery: (String) -
                 Text(day, style = Ranzen.type.mono, color = c.inkMuted)
             }
         }
-        SearchField(query, onQuery)
+        Spacer(Modifier.width(24.dp))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { SearchField(query, onQuery) }
         Spacer(Modifier.width(16.dp))
         tools()
         // A small retro display for the time
@@ -582,7 +589,7 @@ private fun SearchField(query: String, onQuery: (String) -> Unit) {
     val c = Ranzen.colors
     val focus = LocalFocusManager.current
     Row(
-        Modifier.width(300.dp).height(48.dp).clip(RoundedCornerShape(14.dp)).background(c.raised)
+        Modifier.widthIn(max = 300.dp).fillMaxWidth().height(48.dp).clip(RoundedCornerShape(14.dp)).background(c.raised)
             .border(1.dp, c.line, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
