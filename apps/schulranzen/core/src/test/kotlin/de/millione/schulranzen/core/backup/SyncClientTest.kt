@@ -114,7 +114,7 @@ class SyncClientTest {
         assertEquals(email.lowercase(), s.email)
         assertEquals(SyncError.EXISTS, assertFailsWith<SyncException> { c.register(email, "123456") }.error)
         assertEquals(SyncError.WRONG_LOGIN, assertFailsWith<SyncException> { c.login(email, "654321") }.error)
-        assertEquals("E-Mail oder PIN falsch.", assertFailsWith<SyncException> { c.login(email, "654321") }.message)
+        assertEquals("E-Mail oder PIN falsch. (HTTP 401)", assertFailsWith<SyncException> { c.login(email, "654321") }.message)
         c.token = null
         c.login(email, "123456")
 
@@ -151,7 +151,52 @@ class SyncClientTest {
         val c = SyncClient(url, token = "falsch")
         val e = assertFailsWith<SyncException> { c.versions() }
         assertEquals(SyncError.SESSION_EXPIRED, e.error)
+        assertEquals(401, e.httpCode)
+        assertEquals("Anmeldung abgelehnt (HTTP 401: 401 Unauthorized). Bitte neu anmelden.", e.message)
         assertEquals(SyncError.SESSION_EXPIRED, assertFailsWith<SyncException> { SyncClient(url).versions() }.error)
+    }
+
+    @Test fun reloginOnceAfterRejectedToken() {
+        SyncClient(url).register("r@b.de", "111111")
+        val c = SyncClient(url, token = "alt-und-falsch")
+        var logins = 0
+        val v = c.withRelogin("r@b.de", "111111", onLogin = { logins++ }) { it.versions() }
+        assertTrue(v.isEmpty())
+        assertEquals(1, logins)
+        assertEquals("tok-1", c.token)
+        // Without stored credentials the 401 goes through.
+        val d = SyncClient(url, token = "falsch")
+        assertEquals(SyncError.SESSION_EXPIRED, assertFailsWith<SyncException> { d.withRelogin(null, null) { it.versions() } }.error)
+        // Wrong PIN: the login error is reported, not a loop.
+        assertEquals(SyncError.WRONG_LOGIN, assertFailsWith<SyncException> { d.withRelogin("r@b.de", "999999") { it.versions() } }.error)
+    }
+
+    @Test fun uploadWithRejectedTokenNamesTheCode() {
+        val c = SyncClient(url, token = "falsch")
+        val big = tmp.newFile("big.zip").apply { writeBytes(ByteArray(3_000_000)) }
+        val e = assertFailsWith<SyncException> { c.upload(big) }
+        assertEquals(SyncError.SESSION_EXPIRED, e.error)
+        assertTrue("HTTP 401" in e.message!!, e.message)
+    }
+
+    @Test fun diagnoseShowsEachStep() {
+        SyncClient(url).register("d@b.de", "222222")
+        val ok = SyncClient(url).diagnose("d@b.de", "222222")
+        assertEquals(listOf(true, true, true), ok.map { it.ok })
+        assertTrue(ok[2].detail.contains("Noch keine Backups"))
+        val wrong = SyncClient(url).diagnose("d@b.de", "000000")
+        assertEquals(listOf(true, false), wrong.map { it.ok })
+        assertTrue(wrong[1].detail.contains("HTTP 401"))
+        val port = ServerSocket(0).use { it.localPort }
+        val down = SyncClient("127.0.0.1:$port", connectTimeoutMs = 2000).diagnose("d@b.de", "222222")
+        assertEquals(1, down.size)
+        assertTrue(down[0].detail.startsWith("Server nicht erreichbar"))
+    }
+
+    @Test fun networkErrorsNameTheCause() {
+        assertTrue(SyncClient.networkError(java.net.SocketException("Connection reset")).message!!.startsWith("Verbindung vom Server zurückgesetzt. [Connection reset]"))
+        assertTrue(SyncClient.networkError(java.net.SocketException("Broken pipe")).message!!.startsWith("Verbindung abgebrochen"))
+        assertTrue(SyncClient.networkError(java.net.SocketTimeoutException("Read timed out")).message!!.contains("Zeitüberschreitung"))
     }
 
     @Test fun inputIsCheckedBeforeTheNetwork() {

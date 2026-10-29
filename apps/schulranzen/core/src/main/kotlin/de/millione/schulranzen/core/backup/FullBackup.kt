@@ -21,8 +21,8 @@ class BackupRoot(val name: String, val dir: File, val exclude: (String) -> Boole
     init { require(ZipPaths.isSafe(name) && !name.contains('/')) { "Ungültiger Wurzelname: $name" } }
 }
 
-/** What kind of ZIP a user picked. */
-enum class ArchiveKind { OWN, V15, UNKNOWN }
+/** What kind of file a user picked. [ENCRYPTED] needs a password first ([BackupCrypto]). */
+enum class ArchiveKind { OWN, V15, ENCRYPTED, UNKNOWN }
 
 /**
  * Full backup and restore as plain file operations, independent of Android,
@@ -55,6 +55,7 @@ object FullBackup {
         zip.setLevel(Deflater.BEST_SPEED)
         val buf = ByteArray(64 * 1024)
         for ((path, file) in files) {
+            val modified = file.lastModified()
             val input = try { file.inputStream() } catch (_: FileNotFoundException) { continue }
             val md = MessageDigest.getInstance("SHA-256")
             var size = 0L
@@ -70,7 +71,7 @@ object FullBackup {
                 }
             }
             zip.closeEntry()
-            entries += BackupEntry(path, size, Hashing.hex(md.digest()))
+            entries += BackupEntry(path, size, Hashing.hex(md.digest()), modified)
         }
         val manifest = info.copy(format = BackupManifest.FORMAT, app = BackupManifest.APP_ID, entries = entries)
         zip.putNextEntry(ZipEntry(BackupManifest.FILE_NAME))
@@ -99,7 +100,7 @@ object FullBackup {
     }
 
     /** Looks at a ZIP without extracting it. */
-    fun detect(zip: File): ArchiveKind = try {
+    fun detect(zip: File): ArchiveKind = if (BackupCrypto.isEncrypted(zip)) ArchiveKind.ENCRYPTED else try {
         ZipFile(zip).use { z ->
             when {
                 z.getEntry(BackupManifest.FILE_NAME) != null -> ArchiveKind.OWN
@@ -190,6 +191,9 @@ object FullBackup {
                 if (size != exp.size || !Hashing.hex(md.digest()).equals(exp.sha256, ignoreCase = true)) {
                     throw BackupException("Prüfsumme stimmt nicht: $name. Das Backup ist beschädigt.")
                 }
+                // Keep the original time: merging decides by it.
+                val time = if (exp.modified > 0) exp.modified else entry.time
+                if (time > 0) dest.setLastModified(time)
             }
             val missing = expected.keys - got
             if (missing.isNotEmpty()) throw BackupException("Backup unvollständig, es fehlt: ${missing.first()}")
