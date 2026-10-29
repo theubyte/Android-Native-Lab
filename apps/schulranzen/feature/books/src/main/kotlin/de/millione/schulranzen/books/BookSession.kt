@@ -16,17 +16,25 @@ import de.millione.schulranzen.core.books.BookUnits
 import de.millione.schulranzen.core.books.Outline
 import de.millione.schulranzen.core.books.PageRotation
 import de.millione.schulranzen.core.books.RenderMath
+import de.millione.schulranzen.core.books.SearchHit
+import de.millione.schulranzen.core.books.TextSearch
+import de.millione.schulranzen.core.books.UndoStack
 import de.millione.schulranzen.design.InkPalette
 import de.millione.schulranzen.ink.Brushes
+import de.millione.schulranzen.ink.PageEdit
+import de.millione.schulranzen.ink.PageItem
 import de.millione.schulranzen.ink.PageStroke
+import de.millione.schulranzen.ink.TextItem
 import de.millione.schulranzen.ink.ToolKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -38,10 +46,34 @@ import kotlin.math.roundToInt
 /** A note being written: where, and the note it replaces (null = new). */
 internal data class NoteDraft(val page: Int, val x: Float, val y: Float, val old: BookNote?)
 
+/** Text being typed on a page (unrotated units), and the text it replaces (null = new). */
+internal data class TextDraft(val page: Int, val x: Float, val y: Float, val old: TextItem?)
+
+/** What the book's text index can do right now, for the search and contents panels. */
+internal data class IndexInfo(
+    /** The PDF text pass went through all pages. */
+    val textDone: Boolean,
+    val pagesWithText: Int,
+    /** Pages still without text (scanned pages not yet recognised). */
+    val pagesWithoutText: Int,
+    /** No page has a PDF text layer. */
+    val scanned: Boolean,
+)
+
+/** One undoable action in a book. */
+internal sealed class BookStep {
+    /** Strokes and typed text, as the canvas reported them. */
+    class Ink(val edits: List<PageEdit>) : BookStep()
+    /** Notes, areas, bookmarks, page turns: the marks before and after. */
+    class Marks(val before: BookMarks, val after: BookMarks) : BookStep()
+}
+
 /**
  * One open book: binds the reader view to storage and holds the toolbar
  * state. Ink, marks and the reading position are saved shortly after each
  * change on the shelf's own scope, so leaving the book never drops a write.
+ * Undo covers everything done in the book: ink, text, lasso changes,
+ * notes, areas, bookmarks and page turns.
  */
 internal class BookSession(private val context: Context, val bookId: String, val view: BookCanvasView) : BookCanvasView.Listener {
     private val store = ShelfStore.of(context)
@@ -62,19 +94,31 @@ internal class BookSession(private val context: Context, val bookId: String, val
     var canRedo by mutableStateOf(false); private set
     var marks by mutableStateOf(BookMarks()); private set
     var outline by mutableStateOf<Outline?>(null); private set
-    /** (page, count) while the text analysis runs. */
-    var analyzing by mutableStateOf<Pair<Int, Int>?>(null); private set
+    /** Background text work of this book (text layer or recognition), or null. */
+    var indexProgress by mutableStateOf<BookIndexer.Progress?>(null); private set
+    var indexInfo by mutableStateOf<IndexInfo?>(null); private set
     /** Marked rectangle in view pixels, for the action bar. */
     var areaFrame by mutableStateOf<RectF?>(null); private set
+    /** Lasso selection in view pixels, for its action bar. */
+    var selectionFrame by mutableStateOf<RectF?>(null); private set
     var noteDraft by mutableStateOf<NoteDraft?>(null); private set
+    var textDraft by mutableStateOf<TextDraft?>(null); private set
     var toast by mutableStateOf<String?>(null); private set
 
+    var searchQuery by mutableStateOf(""); private set
+    var searchHits by mutableStateOf<List<SearchHit>>(emptyList()); private set
+    var searching by mutableStateOf(false); private set
+    /** The hit last jumped to, marked in the list. */
+    var currentHit by mutableStateOf<SearchHit?>(null); private set
+
     private var doc: BookDocument? = null
+    private val history = UndoStack<BookStep>()
     private val inkSaves = HashMap<Int, Job>()
     private var pageSave: Job? = null
     private var toastJob: Job? = null
-    private var analyzeJob: Job? = null
+    private var searchJob: Job? = null
     private val marksLock = Mutex()
+    private var pendingJump: Pair<Int, RectF?>? = null
     private val thumbs = object : LruCache<Int, Bitmap>(16 * 1024 * 1024) {
         override fun sizeOf(key: Int, value: Bitmap) = value.byteCount
     }
@@ -96,12 +140,17 @@ internal class BookSession(private val context: Context, val bookId: String, val
                 doc = d
                 marks = opened.second
                 pageCount = d.pageCount
-                page = record.lastPage.coerceIn(0, d.pageCount - 1)
+                val jump = pendingJump
+                pendingJump = null
+                page = (jump?.first ?: record.lastPage).coerceIn(0, d.pageCount - 1)
                 view.setDocument(d, BookInkStore(store.inkDir(bookId)), marks, page)
+                jump?.second?.let { view.highlight(page, listOf(it)) }
                 loaded = true
                 store.scope.launch { store.update(bookId) { it.copy(openedAt = System.currentTimeMillis()) } }
                 outline = withContext(Dispatchers.IO) { BookOutlines.cached(store, bookId) }
                 if (outline == null) BookOutlines.embedded(context, store, bookId)?.let { outline = it }
+                watchIndex()
+                BookIndexer.ensureText(store, bookId)
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 error = "Das Buch lässt sich nicht öffnen."
@@ -121,6 +170,13 @@ internal class BookSession(private val context: Context, val bookId: String, val
         doc = null
         thumbs.evictAll()
         ui.cancel()
+    }
+
+    /** Jumps to [page] and marks [rect] (unrotated units) there; before loading, where reading starts. */
+    fun openAt(page: Int, rect: RectF?) {
+        if (!loaded) { pendingJump = page to rect; return }
+        val p = page.coerceIn(0, pageCount - 1)
+        if (rect != null) view.highlight(p, listOf(rect)) else { view.clearHighlight(); view.scrollToPage(p) }
     }
 
     // ------------------------------------------------------------ tools
@@ -151,15 +207,41 @@ internal class BookSession(private val context: Context, val bookId: String, val
         view.markerColor = markerColor; view.markerSize = markerSize
     }
 
-    fun undo() = view.undo()
-    fun redo() = view.redo()
-
     fun goTo(index: Int) {
         if (pageCount == 0) return
         view.scrollToPage(index.coerceIn(0, pageCount - 1))
     }
 
+    // ----------------------------------------------------------- history
+
+    private fun pushStep(step: BookStep) {
+        history.push(step)
+        syncHistory()
+    }
+
+    private fun syncHistory() { canUndo = history.canUndo; canRedo = history.canRedo }
+
+    fun undo() {
+        val step = history.undo() ?: return
+        when (step) {
+            is BookStep.Ink -> view.applyEdits(step.edits, forward = false)
+            is BookStep.Marks -> applyMarks(step.before)
+        }
+        syncHistory()
+    }
+
+    fun redo() {
+        val step = history.redo() ?: return
+        when (step) {
+            is BookStep.Ink -> view.applyEdits(step.edits, forward = true)
+            is BookStep.Marks -> applyMarks(step.after)
+        }
+        syncHistory()
+    }
+
     // ---------------------------------------------------------- listener
+
+    override fun onInkStep(edits: List<PageEdit>) = pushStep(BookStep.Ink(edits))
 
     override fun onInkChanged(page: Int) {
         inkSaves.remove(page)?.cancel()
@@ -172,13 +254,11 @@ internal class BookSession(private val context: Context, val bookId: String, val
 
     /** Snapshot on the main thread, write on the shelf's scope. */
     private fun saveInkNow(page: Int) {
-        val strokes: List<PageStroke> = ArrayList(view.inkOf(page).strokes)
-        val ink = BookInkStore(store.inkDir(bookId))
-        store.scope.launch { runCatching { ink.save(page, strokes) } }
-    }
-
-    override fun onHistoryChanged(canUndo: Boolean, canRedo: Boolean) {
-        this.canUndo = canUndo; this.canRedo = canRedo
+        val ink = view.inkOf(page)
+        val strokes: List<PageStroke> = ArrayList(ink.strokes)
+        val items: List<PageItem> = ArrayList(ink.items)
+        val files = BookInkStore(store.inkDir(bookId))
+        store.scope.launch { runCatching { files.save(page, strokes, items) } }
     }
 
     override fun onVisiblePageChanged(page: Int) {
@@ -192,14 +272,26 @@ internal class BookSession(private val context: Context, val bookId: String, val
 
     override fun onAreaChanged(frame: RectF?) { areaFrame = frame }
 
+    override fun onSelectionChanged(frame: RectF?) { selectionFrame = frame }
+
     override fun onNoteRequest(page: Int, x: Float, y: Float) { noteDraft = NoteDraft(page, x, y, null) }
 
     override fun onNoteOpen(note: BookNote) { noteDraft = NoteDraft(note.page, note.x, note.y, note) }
 
+    override fun onTextRequest(page: Int, x: Float, y: Float, existing: TextItem?) { textDraft = TextDraft(page, x, y, existing) }
+
     // ------------------------------------------------------------- marks
 
+    /** Changes the marks as one undoable step. */
     private fun updateMarks(change: (BookMarks) -> BookMarks) {
-        val next = change(marks)
+        val before = marks
+        val next = change(before)
+        if (next == before) return
+        applyMarks(next)
+        pushStep(BookStep.Marks(before, next))
+    }
+
+    private fun applyMarks(next: BookMarks) {
         marks = next
         view.setMarks(next)
         store.scope.launch { marksLock.withLock { runCatching { store.saveMarks(bookId, marks) } } }
@@ -247,9 +339,58 @@ internal class BookSession(private val context: Context, val bookId: String, val
 
     fun cancelArea() = view.clearArea()
 
+    // -------------------------------------------------------------- links
+
+    /** The page being read, as a link. */
+    fun linkForPage(): BookLink = BookLink(bookId, page, null, BookLink.label(title, page, area = false))
+
+    /** The marked rectangle as a link (unrotated units), or null when none is drawn. */
+    fun linkForArea(): BookLink? {
+        val (p, rect) = view.areaSelection() ?: return null
+        return BookLink(bookId, p, view.boxToUnits(p, rect), BookLink.label(title, p, area = true))
+    }
+
+    /** Hands the area (or else the page) to [onMark] and says so. */
+    fun markForExam(onMark: (BookLink) -> Unit, area: Boolean) {
+        val link = (if (area) linkForArea() else null) ?: linkForPage()
+        onMark(link)
+        if (area) view.clearArea()
+        say("Für die Prüfung gemerkt")
+    }
+
+    // -------------------------------------------------------------- text
+
+    /** Size of text in unrotated units of [page] for one of [TextItem.sizes]. */
+    fun textUnits(page: Int, size: Float): Float = size * view.boxToUnitScale(page)
+
+    fun commitText(text: String, size: Float, color: Int) {
+        val d = textDraft ?: return
+        textDraft = null
+        val old = d.old
+        val width = old?.width ?: view.defaultTextWidth(d.page, d.x, d.y)
+        val item = TextItem(view.newId(), old?.x ?: d.x, old?.y ?: d.y, width, text.trimEnd(), textUnits(d.page, size), color)
+        view.putText(d.page, item, old)
+    }
+
+    fun deleteText() {
+        val d = textDraft ?: return
+        textDraft = null
+        view.putText(d.page, null, d.old)
+    }
+
+    fun cancelText() { textDraft = null }
+
+    // ------------------------------------------------------------- lasso
+
+    fun recolorSelection(color: Int) = view.recolorSelection(color)
+    fun deleteSelection() = view.deleteSelection()
+    fun clearSelection() = view.clearSelection()
+
+    // ----------------------------------------------------- clip to notebook
+
     /**
-     * Renders the marked rectangle (PDF and ink) at print resolution into
-     * `filesDir/images/<uuid>.png` and hands the file to [onClip].
+     * Renders the marked rectangle (PDF, ink and text) at print resolution
+     * into `filesDir/images/<uuid>.png` and hands the file to [onClip].
      */
     fun clipArea(onClip: (File) -> Unit) {
         val d = doc ?: return
@@ -259,7 +400,9 @@ internal class BookSession(private val context: Context, val bookId: String, val
         val pts = d.pointsToUnits(p)
         ui.launch {
             val file = runCatching {
-                val bmp = d.onRenderThread { renderClip(d, p, rect, toBox, pts, strokes) }
+                val (bmp, unitToOut) = d.onRenderThread { renderClip(d, p, rect, toBox, pts, strokes) }
+                // Typed text on the main thread: the text painter is shared with the screen.
+                Canvas(bmp).apply { concat(unitToOut); view.paintItems(this, p) }
                 withContext(Dispatchers.IO) {
                     val out = File(store.imageDir, "${UUID.randomUUID()}.png")
                     val tmp = File(store.imageDir, out.name + ".tmp")
@@ -277,7 +420,7 @@ internal class BookSession(private val context: Context, val bookId: String, val
         }
     }
 
-    private fun renderClip(d: BookDocument, page: Int, rect: RectF, toBox: Matrix, pts: Matrix, strokes: List<PageStroke>): Bitmap {
+    private fun renderClip(d: BookDocument, page: Int, rect: RectF, toBox: Matrix, pts: Matrix, strokes: List<PageStroke>): Pair<Bitmap, Matrix> {
         val (w, h) = RenderMath.clipSize(rect.width(), rect.height())
         val f = w / rect.width()
         val boxToOut = Matrix().apply { setTranslate(-rect.left, -rect.top); postScale(f, f) }
@@ -289,23 +432,71 @@ internal class BookSession(private val context: Context, val bookId: String, val
         val renderer = CanvasStrokeRenderer.create()
         for (s in strokes) if (s.tool == ToolKind.MARKER) renderer.draw(canvas, s.stroke, unitToOut)
         for (s in strokes) if (s.tool != ToolKind.MARKER) renderer.draw(canvas, s.stroke, unitToOut)
-        return bmp
+        return bmp to unitToOut
     }
 
-    // ----------------------------------------------------------- outline
+    // ------------------------------------------------- text index, outline
 
-    /** Starts the text analysis unless it runs or a result is there ([force] redoes it). */
-    fun analyze(force: Boolean = false) {
-        if (analyzeJob?.isActive == true) return
-        if (!force && outline != null) return
-        analyzeJob = ui.launch {
-            analyzing = 0 to pageCount
-            try {
-                outline = BookOutlines.analyze(context, store, bookId) { p, n -> analyzing = p to n }
-            } finally {
-                analyzing = null
+    private fun watchIndex() {
+        ui.launch { BookIndexer.running.map { it[bookId] }.distinctUntilChanged().collect { indexProgress = it } }
+        ui.launch {
+            BookIndexer.revisions.map { it[bookId] ?: 0 }.distinctUntilChanged().collect {
+                val (info, cached) = withContext(Dispatchers.IO) {
+                    val index = BookIndexer.index(store, bookId)
+                    index?.let { IndexInfo(it.textDone, it.pagesWithText, it.pagesWithoutText().size, it.looksScanned) } to BookOutlines.cached(store, bookId)
+                }
+                indexInfo = info
+                if (cached != null) outline = cached
+                if (searchQuery.isNotBlank()) runSearch(searchQuery, debounce = false)
             }
         }
+    }
+
+    /** Makes sure the text pass runs; [force] rebuilds the contents from the text already read. */
+    fun analyze(force: Boolean = false) {
+        if (!force) { BookIndexer.ensureText(store, bookId); return }
+        ui.launch {
+            outline = withContext(Dispatchers.IO) {
+                BookIndexer.index(store, bookId)?.let { BookOutlines.fromIndex(store, bookId, it) }
+            } ?: outline
+            BookIndexer.ensureText(store, bookId)
+        }
+    }
+
+    /** Text recognition for pages without text (scanned books). Goes on after the book is closed. */
+    fun startRecognition() {
+        BookIndexer.startOcr(store, bookId)
+        say("Texterkennung läuft im Hintergrund")
+    }
+
+    fun stopRecognition() = BookIndexer.stop(bookId)
+
+    // ------------------------------------------------------------ search
+
+    fun search(query: String) {
+        searchQuery = query
+        runSearch(query, debounce = true)
+    }
+
+    private fun runSearch(query: String, debounce: Boolean) {
+        searchJob?.cancel()
+        if (query.trim().length < 2) { searchHits = emptyList(); searching = false; return }
+        searchJob = ui.launch {
+            if (debounce) delay(250)
+            searching = true
+            val hits = withContext(Dispatchers.Default) {
+                val index = withContext(Dispatchers.IO) { BookIndexer.index(store, bookId) }
+                if (index == null) emptyList() else TextSearch.find(index.pages.values, query)
+            }
+            searchHits = hits
+            searching = false
+        }
+    }
+
+    /** Jumps to a hit and marks the found words. */
+    fun openHit(hit: SearchHit) {
+        currentHit = hit
+        view.highlight(hit.page, hit.rects.map { RectF(it.left, it.top, it.right, it.bottom) })
     }
 
     // -------------------------------------------------------- thumbnails

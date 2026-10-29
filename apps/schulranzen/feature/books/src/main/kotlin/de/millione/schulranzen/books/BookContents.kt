@@ -90,7 +90,7 @@ private fun OutlineTab(session: BookSession, onClose: () -> Unit) {
     val c = Ranzen.colors
     LaunchedEffect(Unit) { if (session.outline == null) session.analyze() }
     val outline = session.outline
-    val running = session.analyzing
+    val running = session.indexProgress
     val entries = outline?.entries.orEmpty()
     val current = entries.indexOfLast { it.page <= session.page }
     val list = rememberLazyListState()
@@ -98,14 +98,7 @@ private fun OutlineTab(session: BookSession, onClose: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = 22.dp, vertical = 12.dp)) {
             if (running != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Lamp(c.signal, size = 8.dp)
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        if (running.first == 0) "Inhalt wird gesucht …" else "Text wird gelesen: Seite ${running.first} von ${running.second}",
-                        style = Ranzen.type.caption, color = c.inkMuted,
-                    )
-                }
+                IndexStatus(session)
             } else if (outline != null) {
                 Text(outline.summary(), style = Ranzen.type.caption, color = c.inkMuted)
                 if (outline.source == OutlineSource.PRINTED_TOC || outline.source == OutlineSource.HEADINGS) {
@@ -115,13 +108,13 @@ private fun OutlineTab(session: BookSession, onClose: () -> Unit) {
         }
         LazyColumn(Modifier.weight(1f), state = list) {
             itemsIndexed(entries, key = { i, _ -> i }) { i, e -> OutlineRow(e, i == current) { session.goTo(e.page); onClose() } }
-            if (running == null && outline != null && entries.isEmpty()) item {
+            if (running == null && outline != null && entries.isEmpty() && outline.hasText) item {
                 Text(
-                    if (outline.hasText) "Keine Kapitel gefunden. Die Seitenübersicht hilft weiter."
-                    else "Dieses Buch ist gescannt und hat keinen lesbaren Text. Nutze die Seitenübersicht oder Lesezeichen.",
+                    "Keine Kapitel gefunden. Die Seitenübersicht hilft weiter.",
                     style = Ranzen.type.body, color = c.inkMuted, modifier = Modifier.padding(22.dp),
                 )
             }
+            item { RecognitionOffer(session, Modifier.padding(horizontal = 22.dp, vertical = 10.dp)) }
         }
         if (running == null && outline != null && outline.source != OutlineSource.EMBEDDED) {
             Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {

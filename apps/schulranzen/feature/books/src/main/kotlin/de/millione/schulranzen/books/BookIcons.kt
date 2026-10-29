@@ -57,6 +57,12 @@ internal object BookIcons {
         moveTo(7f, 17.5f); lineTo(8f, 17.5f); moveTo(11.5f, 17.5f); lineTo(19.5f, 17.5f)
     }
 
+    /** Marked for the exam: a pennant on a pole. */
+    val Exam = RanzenIcons.line("exam") {
+        moveTo(6f, 20.5f); lineTo(6f, 3.5f)
+        moveTo(6f, 4.5f); lineTo(18.5f, 8.2f); lineTo(6f, 12f)
+    }
+
     val Prev = RanzenIcons.line("prev") { moveTo(14.5f, 5.5f); lineTo(8f, 12f); lineTo(14.5f, 18.5f) }
     val Next = RanzenIcons.line("next") { moveTo(9.5f, 5.5f); lineTo(16f, 12f); lineTo(9.5f, 18.5f) }
 }
