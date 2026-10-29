@@ -6,7 +6,7 @@ Plan und Design im Detail: [PLAN.md](PLAN.md). Regeln für parallele Agenten: [A
 
 Legende: `[x]` erledigt · `[ ]` offen · `[~]` teilweise · **(T)** nur auf dem echten Tablet prüfbar
 
-Letzte Aktualisierung: 29.10.2026, Version **0.4.0**
+Letzte Aktualisierung: 29.10.2026, Version **0.4.1**
 
 
 ---
@@ -57,19 +57,19 @@ Letzte Aktualisierung: 29.10.2026, Version **0.4.0**
 - Sichern
   - [x] Verschlüsselte Backups (AES-256, Passwort) – 0.4.0
   - [x] Automatisches Backup (täglich/wöchentlich, Ordner und/oder Unraid) – 0.4.0 **(T)**
-  - [~] Zusammenführen: Hefte, Bilder, Bücher, SHK – 0.4.0. **Offen:** Lerndaten (study.db braucht IDs + Änderungszeit)
+  - [x] Zusammenführen: Hefte, Bilder, Bücher, SHK (0.4.0), Lerndaten (0.4.1)
   - [x] Datenbanken vor dem Wiederherstellen schließen, App startet neu – 0.4.0
 - Bibliothek
   - [x] Suche in der Handschrift der Hefte – 0.4.0
 
 ### 3b. Feinschliff (in 0.4.0 gesehen)
-- [ ] SHK-Schema: Rohrbeschriftungen überlappen an kurzen Stücken
-- [ ] Sheets (Karte, Prüfung) im Split nur über der Heft-Hälfte – ggf. ganz zentrieren
+- [x] SHK-Schema: Rohrbeschriftungen weichen Symbolen, Rohren und einander aus – 0.4.1
+- [x] Lern-Sheets im Split mittig über dem ganzen Bildschirm – 0.4.1
 - [ ] Rohrknicke nachträglich verschieben, T-Stücke als Formteil (Schema)
 - [ ] Bildkarten: Zoom/Verschieben im Bild
 - [ ] Erklärhilfe mit Streaming
-- [ ] Lerndaten zusammenführen (study.db: UUID + updatedAt)
-- [ ] Beim ersten Start alle vorhandenen Seiten für die Handschriftsuche indexieren
+- [x] Lerndaten zusammenführen (nach Bedeutung: Stapel, Prüfung, Karte …; neuer gelernte Karte gewinnt) – 0.4.1 **(T: mit zwei Geräten)**
+- [x] Erstindexierung aller vorhandenen Seiten, sobald das Handschrift-Modell da ist – 0.4.1 **(T)**
 
 ### 4. SHK-Ausbau (schon in V15 offen)
 - [x] Digitales Aufmaß (CSV/PDF) – 0.4.0
@@ -86,6 +86,20 @@ Letzte Aktualisierung: 29.10.2026, Version **0.4.0**
 ---
 
 ## Erledigt
+
+### 0.4.1 – Feinschliff
+- SHK-Schema: Rohrbeschriftungen werden neben dem Rohr platziert, wo sie weder andere Beschriftungen noch
+  Symbole oder Rohre überdecken; passt nichts, bleibt das Stück unbeschriftet ([Bild](screens/shk-schema.png)).
+  Silbentrennung immer deutsch (Palette: „Wärmetau-scher“).
+- Lern-Sheets (Als Text, Prüfung, Karte, Erklären, Karten vorschlagen) liegen über dem ganzen Bildschirm,
+  auch neben einem Buch ([Bild](screens/pruefung-merken-split.png)).
+- Lerndaten beim Zusammenführen: Stapel nach Name, Prüfung nach Fach+Datum+Art, Karte nach Stapel+Vorderseite;
+  die zuletzt gelernte Kopie behält ihren Wiederholungsplan; Wiederholungen, markierte Stellen, Probeprüfungen,
+  Stundenplan und Kartenbilder werden ergänzt. Nichts wird gelöscht.
+- Handschriftsuche: beim ersten Mal mit Modell werden alle vorhandenen Seiten indexiert (auch aus V15 übernommene).
+- Sprung aus Lernen markiert die Stelle 4 s lang ([Bild](screens/sprung-mit-markierung.png)).
+- Im Emulator geprüft: Schema, Sheet im Split, Merken → Lernen → Sprung mit Markierung.
+  Nicht geprüft: Zusammenführen (braucht zweites Gerät), Erstindexierung (braucht Modell-Download).
 
 ### 0.4.0
 - Buch und Heft nebeneinander: im Heft *Mehr → Buch daneben öffnen*; Trenner ziehen, doppelt tippen = halbe-halbe;

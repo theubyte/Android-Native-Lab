@@ -13,8 +13,8 @@ android {
         applicationId = "de.millione.schulranzen.neu"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.4.0"
+        versionCode = 6
+        versionName = "0.4.1"
     }
     // One fixed key, so a new APK installs over the old one and keeps the
     // notebooks. The key stays off GitHub (public repo): signing/ holds the

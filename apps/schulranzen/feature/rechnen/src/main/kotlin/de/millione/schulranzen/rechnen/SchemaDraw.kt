@@ -1,5 +1,7 @@
 package de.millione.schulranzen.rechnen
 
+import kotlin.math.abs
+import androidx.compose.ui.geometry.Rect
 import android.graphics.Paint
 import android.graphics.Typeface
 import androidx.compose.ui.geometry.CornerRadius
@@ -98,15 +100,45 @@ fun DrawScope.drawSchemaUnits(schema: Schema, style: SchemaStyle, overlay: Schem
         }
     }
 
-    // Pipe labels after symbols, so they stay readable.
+    // Pipe labels after symbols, so they stay readable. Each label goes on the
+    // longest segment it fits on, beside the pipe, and never on top of another
+    // label; a pipe too short for its label (or with no free spot) stays unlabelled.
+    val placed = ArrayList<Rect>()
+    // Symbols (with their name below), all pipe runs and free texts are in the way as well.
+    val blocked = ArrayList<Rect>()
+    schema.symbols.forEach { sym ->
+        val b = SchemaGeometry.bounds(sym)
+        blocked += Rect(b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), (b.bottom + if (sym.label.isNotBlank()) 0.9 else 0.0).toFloat())
+    }
+    schema.pipes.forEach { p ->
+        p.points.zipWithNext().forEach { (a, b) ->
+            blocked += Rect(minOf(a.x, b.x).toFloat() - 0.08f, minOf(a.y, b.y).toFloat() - 0.08f, maxOf(a.x, b.x).toFloat() + 0.08f, maxOf(a.y, b.y).toFloat() + 0.08f)
+        }
+    }
+    schema.labels.forEach { l -> blocked += Rect(l.at.x.toFloat() - l.text.length * 0.18f, l.at.y.toFloat() - 0.5f, l.at.x.toFloat() + l.text.length * 0.18f, l.at.y.toFloat() + 0.4f) }
     schema.pipes.forEach { p ->
         val text = listOfNotNull(PipeCatalog.byId(p.pipeId)?.fullLabel, p.label.ifBlank { null }).joinToString(" · ")
         if (text.isEmpty() || p.points.size < 2) return@forEach
-        val (a, b) = p.points.zipWithNext().maxBy { (u, v) -> u.dist(v) }
-        val mid = Pt((a.x + b.x) / 2, (a.y + b.y) / 2)
-        val horizontal = a.y == b.y
-        val at = if (horizontal) Pt(mid.x, mid.y - 0.35) else Pt(mid.x + 0.25 + text.length * 0.13, mid.y + 0.15)
-        drawText(text, at, 0.42f, textPaint, style.pipe(p.kind), background = style.paper)
+        val size = 0.42f
+        textPaint.textSize = size * TEXT_K
+        val w = textPaint.measureText(text) / TEXT_K + 0.2f
+        val h = size * 1.25f
+        val spot = p.points.zipWithNext().sortedByDescending { (u, v) -> u.dist(v) }.asSequence().flatMap { (a, b) ->
+            // Middle first, then towards the ends of the run.
+            sequenceOf(0.5, 0.3, 0.7, 0.15, 0.85).flatMap { f ->
+                val m = Pt(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f)
+                if (a.y == b.y) {
+                    if (abs(b.x - a.x) < w + 0.4) emptySequence()
+                    else sequenceOf(Pt(m.x, m.y - 0.35), Pt(m.x, m.y + 0.35 + h * 0.75))
+                } else {
+                    if (abs(b.y - a.y) < h + 0.6) emptySequence()
+                    else sequenceOf(Pt(m.x + 0.25 + w / 2, m.y + 0.15), Pt(m.x - 0.25 - w / 2, m.y + 0.15))
+                }
+            }
+        }.map { at -> at to Rect(at.x.toFloat() - w / 2, at.y.toFloat() - size * 0.95f, at.x.toFloat() + w / 2, at.y.toFloat() + size * 0.3f) }
+            .firstOrNull { (_, r) -> placed.none { it.overlaps(r) } && blocked.none { it.overlaps(r) } } ?: return@forEach
+        placed += spot.second
+        drawText(text, spot.first, size, textPaint, style.pipe(p.kind), background = style.paper)
     }
 
     schema.labels.forEach { l ->

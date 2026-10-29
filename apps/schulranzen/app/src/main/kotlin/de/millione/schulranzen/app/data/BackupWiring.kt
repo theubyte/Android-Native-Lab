@@ -23,9 +23,9 @@ fun appBackupHooks(context: Context, flush: () -> Unit): BackupHooks = object : 
 }
 
 /**
- * What "Zusammenführen" merges: plain folders (newer file wins) and the
- * notebooks by their change time. Study data has no change times yet and
- * is left out, so it is never mixed up between devices.
+ * What "Zusammenführen" merges: plain folders (newer file wins), the
+ * notebooks by their change time and the study data by meaning (see
+ * [de.millione.schulranzen.study.StudyMergeParticipant]).
  */
 fun appMergeParticipants(context: Context): List<MergeParticipant> {
     val files = context.filesDir
@@ -34,6 +34,7 @@ fun appMergeParticipants(context: Context): List<MergeParticipant> {
         FolderMergeParticipant(File(files, "books"), name = "Bücher"),
         FolderMergeParticipant(File(files, "rechnen"), name = "SHK-Werkzeuge"),
         NotebookMergeParticipant(context),
+        de.millione.schulranzen.study.StudyMergeParticipant(context),
     )
 }
 

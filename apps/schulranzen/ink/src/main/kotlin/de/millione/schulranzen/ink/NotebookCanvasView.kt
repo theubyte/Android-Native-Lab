@@ -401,9 +401,9 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
 
     /** Briefly marks [rect] (page units) on [page], e.g. a search hit or a marked passage. */
     fun flash(page: Int, rect: RectF) {
-        flashPage = page; flashRect = RectF(rect); flashUntil = SystemClock.uptimeMillis() + 2200
+        flashPage = page; flashRect = RectF(rect); flashUntil = SystemClock.uptimeMillis() + 4000
         overlay.invalidate()
-        postDelayed({ overlay.invalidate() }, 2300)
+        postDelayed({ overlay.invalidate() }, 4100)
     }
     private var flashPage = -1
     private var flashRect: RectF? = null

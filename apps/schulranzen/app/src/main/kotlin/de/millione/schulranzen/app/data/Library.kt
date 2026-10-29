@@ -83,6 +83,9 @@ class Library(private val context: Context) {
 
     suspend fun notebook(id: String) = dao.notebook(id)
 
+    /** Ids of every notebook, trashed ones included. */
+    suspend fun allNotebookIds(): List<String> = dao.allNotebooks().map { it.id }
+
     /** 0-based position of page [pageId] in its notebook, or 0. */
     suspend fun pageIndex(notebookId: String, pageId: String): Int =
         dao.pages(notebookId).indexOfFirst { it.id == pageId }.coerceAtLeast(0)

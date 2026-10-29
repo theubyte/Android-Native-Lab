@@ -250,19 +250,6 @@ fun NotebookScreen(
             }
         }
 
-        // Learning sheets (from the selection bar or the More panel)
-        session.convert?.let { cs ->
-            Box(Modifier.fillMaxSize().background(c.desk.copy(alpha = 0.45f)).pointerInput(Unit) { detectTapGestures { session.convert = null } }
-                .windowInsetsPadding(WindowInsets.safeDrawing.union(WindowInsets.ime)), contentAlignment = Alignment.Center) {
-                ConvertToTextSheet(cs.text, onInsert = session::insertConverted, onCopy = { session.convert = null; session.say("Text kopiert") },
-                    onCancel = { session.convert = null })
-            }
-        }
-        session.markDraft?.let { d -> MarkForExamSheet(d, onDone = { session.markDraft = null; session.say("Für die Prüfung gemerkt") }, onCancel = { session.markDraft = null }) }
-        session.cardClip?.let { (file, link) -> CardFromClipSheet(file, link, onDone = { session.cardClip = null; file.delete(); session.say("Karteikarte angelegt") }, onCancel = { session.cardClip = null; file.delete() }) }
-        session.explainText?.let { q -> ExplainSheet(q, onClose = { session.explainText = null }) }
-        session.suggestText?.let { t -> SuggestCardsSheet(t, onDone = { session.suggestText = null; session.say("Karten gespeichert") }, onCancel = { session.suggestText = null }) }
-
         // Tool ring around the pen tip
         session.ring?.let { r ->
             val color = if (session.tool == ToolKind.MARKER) session.markerColor else session.penColor
@@ -691,4 +678,27 @@ private val CalcIcon: ImageVector = RanzenIcons.line("calc") {
     moveTo(8.5f, 6.5f); lineTo(15.5f, 6.5f); lineTo(15.5f, 9.5f); lineTo(8.5f, 9.5f); close()
     moveTo(9f, 13f); lineTo(9.01f, 13f); moveTo(12f, 13f); lineTo(12.01f, 13f); moveTo(15f, 13f); lineTo(15.01f, 13f)
     moveTo(9f, 17f); lineTo(9.01f, 17f); moveTo(12f, 17f); lineTo(12.01f, 17f); moveTo(15f, 17f); lineTo(15.01f, 17f)
+}
+
+/**
+ * Sheets of the learning features (text, exam mark, card, explain). Drawn by
+ * the host over the whole window, so with a book beside the notebook they
+ * are centred on the screen and not squeezed into the notebook half.
+ */
+@Composable
+fun NotebookSheets(session: NotebookSession) {
+    val c = Ranzen.colors
+    Box(Modifier.fillMaxSize()) {
+        session.convert?.let { cs ->
+            Box(Modifier.fillMaxSize().background(c.desk.copy(alpha = 0.45f)).pointerInput(Unit) { detectTapGestures { session.convert = null } }
+                .windowInsetsPadding(WindowInsets.safeDrawing.union(WindowInsets.ime)), contentAlignment = Alignment.Center) {
+                ConvertToTextSheet(cs.text, onInsert = session::insertConverted, onCopy = { session.convert = null; session.say("Text kopiert") },
+                    onCancel = { session.convert = null })
+            }
+        }
+        session.markDraft?.let { d -> MarkForExamSheet(d, onDone = { session.markDraft = null; session.say("Für die Prüfung gemerkt") }, onCancel = { session.markDraft = null }) }
+        session.cardClip?.let { (file, link) -> CardFromClipSheet(file, link, onDone = { session.cardClip = null; file.delete(); session.say("Karteikarte angelegt") }, onCancel = { session.cardClip = null; file.delete() }) }
+        session.explainText?.let { q -> ExplainSheet(q, onClose = { session.explainText = null }) }
+        session.suggestText?.let { t -> SuggestCardsSheet(t, onDone = { session.suggestText = null; session.say("Karten gespeichert") }, onCancel = { session.suggestText = null }) }
+    }
 }

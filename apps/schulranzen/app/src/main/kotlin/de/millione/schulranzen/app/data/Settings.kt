@@ -48,6 +48,11 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("circleSolve", true)
         set(v) = prefs.edit().putBoolean("circleSolve", v).apply()
 
+    /** All existing pages went through the handwriting index once. */
+    var handwritingIndexedAll: Boolean
+        get() = prefs.getBoolean("hwIndexedAll", false)
+        set(v) = prefs.edit().putBoolean("hwIndexedAll", v).apply()
+
     var markerSize: Float
         get() = prefs.getFloat("markerSize", 18f)
         set(v) = prefs.edit().putFloat("markerSize", v).apply()

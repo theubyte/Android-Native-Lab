@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.LaunchedEffect
 import de.millione.schulranzen.app.notebook.SplitWithBook
+import de.millione.schulranzen.app.notebook.NotebookSheets
 import de.millione.schulranzen.app.notebook.BookPickerSheet
 import de.millione.schulranzen.app.library.ClipTargetSheet
 import android.widget.Toast
@@ -179,6 +180,14 @@ class MainActivity : ComponentActivity() {
                             app.handwriting.indexPending { ref ->
                                 app.library.loadPages(ref.notebookId).firstOrNull { it.id == ref.pageId }
                                     ?.let { de.millione.schulranzen.handwriting.InkInput.handwriting(it.ink.strokes) }
+                            }
+                            // Once: pages written before the search existed (or imported from V15).
+                            if (!app.settings.handwritingIndexedAll) {
+                                for (nb in app.library.allNotebookIds()) for (page in app.library.loadPages(nb)) {
+                                    val strokes = de.millione.schulranzen.handwriting.InkInput.handwriting(page.ink.strokes)
+                                    if (strokes.isNotEmpty() && app.handwriting.pageText(page.id) == null) app.handwriting.indexPage(nb, page.id, strokes)
+                                }
+                                app.settings.handwritingIndexedAll = true
                             }
                         }
                     }
@@ -326,6 +335,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                             )
+                            NotebookSheets(session)
                             if (pickBook) BookPickerSheet(app.books, onPick = { b -> pickBook = false; route = NotebookRoute(id, book = b.id).encode() }, onCancel = { pickBook = false })
                         }
                     }

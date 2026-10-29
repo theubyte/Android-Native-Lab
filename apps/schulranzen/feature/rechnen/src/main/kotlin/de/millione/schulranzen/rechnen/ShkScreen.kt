@@ -303,7 +303,7 @@ private fun CalculatorDetail(
                 is ShkCalcResult.Ok -> result.outputs.forEachIndexed { i, out ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Bottom) {
                         Text(out.symbol, style = Ranzen.type.mono.copy(fontSize = 16.sp), color = c.inkMuted, modifier = Modifier.width(40.dp))
-                        Text(out.label, style = Ranzen.type.body.copy(hyphens = Hyphens.Auto), color = c.inkMuted, modifier = Modifier.weight(1f))
+                        Text(out.label, style = Ranzen.type.body.copy(hyphens = Hyphens.Auto, localeList = androidx.compose.ui.text.intl.LocaleList("de-DE")), color = c.inkMuted, modifier = Modifier.weight(1f))
                         Text(
                             GermanNumber.format(out.value, out.decimals),
                             style = Ranzen.type.monoLarge.copy(fontSize = if (i == 0) 30.sp else 22.sp),
@@ -342,7 +342,7 @@ private fun CalculatorDetail(
                     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(input.symbol, style = Ranzen.type.mono.copy(fontSize = 18.sp), color = accent, modifier = Modifier.width(64.dp))
                         Column(Modifier.weight(1f).padding(end = 16.dp)) {
-                            Text(input.label, style = Ranzen.type.label.copy(hyphens = Hyphens.Auto), color = c.ink)
+                            Text(input.label, style = Ranzen.type.label.copy(hyphens = Hyphens.Auto, localeList = androidx.compose.ui.text.intl.LocaleList("de-DE")), color = c.ink)
                             input.hint?.let { Text(it, style = Ranzen.type.caption, color = c.inkMuted) }
                         }
                         NumberField(
