@@ -24,6 +24,7 @@ dependencies {
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)
+    implementation(libs.motion.prediction)
     // Embedded outline and text layer for the table of contents (as in V15).
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     testImplementation(libs.junit)
