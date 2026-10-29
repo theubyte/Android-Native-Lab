@@ -33,7 +33,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import de.millione.schulranzen.core.study.ExamPlanner
+import de.millione.schulranzen.core.study.PathState
 import de.millione.schulranzen.core.study.PlanPhase
+import de.millione.schulranzen.core.study.StageKind
+import de.millione.schulranzen.study.data.StudyLink
 import de.millione.schulranzen.design.Lamp
 import de.millione.schulranzen.design.PaperPanel
 import de.millione.schulranzen.design.QuietButton
@@ -123,6 +126,12 @@ internal fun ExamDetail(
     wide: Boolean,
     onStudyDeck: (Long) -> Unit,
     onCreateDeck: () -> Unit,
+    links: List<StudyLink> = emptyList(),
+    path: PathState? = null,
+    repo: StudyRepository? = null,
+    onOpenLink: (StudyLink) -> Unit = {},
+    onPathAction: (StageKind) -> Unit = {},
+    onSuggest: () -> Unit = {},
 ) {
     val c = Ranzen.colors
     val date = LocalDate.ofEpochDay(exam.dateEpochDay)
@@ -148,14 +157,22 @@ internal fun ExamDetail(
                 Spacer(Modifier.height(16.dp))
                 SectionHead("Quellen", null)
                 val sources = exam.sources.lines().map { it.trim() }.filter { it.isNotEmpty() }
-                if (sources.isEmpty()) EmptyNote("Heft, Buch und Seite hier eintragen.")
+                if (sources.isEmpty() && links.isEmpty()) EmptyNote("Heft, Buch und Seite hier eintragen.")
                 sources.forEach { Bullet(it, mono = true) }
+                if (repo != null) {
+                    Spacer(Modifier.height(16.dp))
+                    MaterialSection(links, repo, onOpenLink)
+                }
             }
         }
     }
     val right: @Composable () -> Unit = {
         PaperPanel(Modifier.fillMaxWidth(), corner = 22.dp) {
             Column(Modifier.padding(26.dp)) {
+                if (path != null && days >= 0) {
+                    PathSection(path, onPathAction)
+                    Spacer(Modifier.height(24.dp))
+                }
                 SectionHead("Lernplan", plan.size)
                 if (plan.isEmpty()) EmptyNote(if (days <= 0) "Die Prüfung ist heute oder vorbei." else "Kein Plan nötig.")
                 plan.forEach { d ->
@@ -185,6 +202,7 @@ internal fun ExamDetail(
                     Spacer(Modifier.height(14.dp))
                     SignalButton("Karten lernen", { onStudyDeck(deck.id) }, icon = de.millione.schulranzen.study.ui.StudyIcons.Play)
                 }
+                QuietButton("Karten aus Text vorschlagen", onSuggest, color = c.ink)
             }
         }
     }

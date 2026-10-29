@@ -1,5 +1,9 @@
 package de.millione.schulranzen.study
 
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -10,6 +14,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -31,6 +36,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -48,6 +54,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import de.millione.schulranzen.core.study.Rating
 import de.millione.schulranzen.design.Lamp
 import de.millione.schulranzen.design.PaperPanel
+import de.millione.schulranzen.design.QuietButton
 import de.millione.schulranzen.design.Ranzen
 import de.millione.schulranzen.design.SignalButton
 import de.millione.schulranzen.design.SubjectPalette
@@ -166,9 +174,16 @@ private fun CardTile(card: Card, accent: Color, today: LocalDate, onClick: () ->
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
         Column(Modifier.fillMaxSize()) {
-            Text(card.front, style = Ranzen.type.label, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.height(26.dp).padding(top = 4.dp))
+            Text(card.front.ifBlank { "Bildkarte" }, style = Ranzen.type.label, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.height(26.dp).padding(top = 4.dp))
             Spacer(Modifier.height(10.dp))
-            Text(card.back, style = Ranzen.type.body, color = c.inkMuted, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Row(Modifier.weight(1f)) {
+                val pic = card.frontImage ?: card.backImage
+                if (pic != null) {
+                    StudyImage(pic, Modifier.fillMaxHeight().widthIn(max = 110.dp).clip(RoundedCornerShape(4.dp)), maxEdge = 360)
+                    Spacer(Modifier.width(10.dp))
+                }
+                Text(card.back, style = Ranzen.type.body, color = c.inkMuted, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            }
             Text(
                 when {
                     card.lastReviewEpochDay == null -> "NEU"
@@ -182,12 +197,38 @@ private fun CardTile(card: Card, accent: Color, today: LocalDate, onClick: () ->
     }
 }
 
+/**
+ * New or edited card: text on both sides, and optionally a picture on each
+ * side (from the gallery). Pictures picked here but not saved are removed
+ * again when the sheet closes.
+ */
 @Composable
-internal fun CardSheet(card: Card?, onCancel: () -> Unit, onDelete: (() -> Unit)?, onSave: (front: String, back: String, keepOpen: Boolean) -> Unit) {
+internal fun CardSheet(
+    card: Card?,
+    onCancel: () -> Unit,
+    onDelete: (() -> Unit)?,
+    onSave: (front: String, back: String, frontImage: String?, backImage: String?, keepOpen: Boolean) -> Unit,
+    initialFront: String = "",
+    initialBack: String = "",
+) {
     val c = Ranzen.colors
-    var front by remember { mutableStateOf(card?.front ?: "") }
-    var back by remember { mutableStateOf(card?.back ?: "") }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var front by remember { mutableStateOf(card?.front ?: initialFront) }
+    var back by remember { mutableStateOf(card?.back ?: initialBack) }
+    var frontImage by remember { mutableStateOf(card?.frontImage) }
+    var backImage by remember { mutableStateOf(card?.backImage) }
+    // Pictures imported in this sheet; whatever is not saved in the end is deleted.
+    val imported = remember { mutableStateListOf<String>() }
+    val savedHere = remember { mutableSetOf<String>() }
     var made by remember { mutableIntStateOf(0) }
+    fun dropUnused(keep: Set<String?>) {
+        val stray = imported.filter { it !in keep }
+        imported.removeAll(stray)
+        StudyImages.discard(context, stray)
+    }
+    DisposableEffect(Unit) { onDispose { dropUnused(setOf(card?.frontImage, card?.backImage) + savedHere) } }
+
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(if (card == null) "Neue Karte" else "Karte bearbeiten", style = Ranzen.type.title, color = c.ink, modifier = Modifier.weight(1f))
         if (made > 0) Text("$made angelegt", style = Ranzen.type.mono, color = c.inkMuted)
@@ -195,20 +236,60 @@ internal fun CardSheet(card: Card?, onCancel: () -> Unit, onDelete: (() -> Unit)
     Spacer(Modifier.height(22.dp))
     FieldLabel("Vorderseite · Frage")
     LineField(front, { front = it }, "z. B. Mindesttemperatur Warmwasser am Speicheraustritt?", singleLine = false, minLines = 2, style = Ranzen.type.heading)
+    ImageSlot(frontImage, onPicked = { imported += it; frontImage = it }, onRemove = { frontImage = null })
     Spacer(Modifier.height(20.dp))
     FieldLabel("Rückseite · Antwort")
     LineField(back, { back = it }, "z. B. 60 °C (Legionellenschutz)", singleLine = false, minLines = 3)
+    ImageSlot(backImage, onPicked = { imported += it; backImage = it }, onRemove = { backImage = null })
     SheetActions(
         primary = if (card == null) "Speichern, nächste" else "Speichern",
         onPrimary = {
-            if (front.isBlank()) return@SheetActions
-            onSave(front, back, card == null)
-            if (card == null) { front = ""; back = ""; made++ }
+            if (front.isBlank() && frontImage == null) return@SheetActions
+            savedHere += listOfNotNull(frontImage, backImage)
+            onSave(front, back, frontImage, backImage, card == null)
+            dropUnused(savedHere.toSet<String?>())
+            if (card == null) { front = ""; back = ""; frontImage = null; backImage = null; made++ }
         },
         onCancel = onCancel,
         onDelete = onDelete,
         cancelLabel = if (card == null && made > 0) "Fertig" else "Abbrechen",
     )
+}
+
+/** A picture slot under a card side: "+ Bild" or the picture with replace/remove. */
+@Composable
+internal fun ImageSlot(image: String?, onPicked: (String) -> Unit, onRemove: () -> Unit) {
+    val c = Ranzen.colors
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var error by remember { mutableStateOf<String?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            error = null
+            runCatching { StudyImages.import(context, uri) }
+                .onSuccess(onPicked)
+                .onFailure { error = "Das Bild ließ sich nicht laden." }
+        }
+    }
+    val pick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+    Spacer(Modifier.height(10.dp))
+    if (image == null) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            QuietButton("+ Bild", pick, color = c.ink)
+            error?.let { Text(it, style = Ranzen.type.caption, color = c.signal) }
+        }
+    } else {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.height(120.dp).widthIn(max = 260.dp).clip(RoundedCornerShape(8.dp)).border(1.dp, c.line, RoundedCornerShape(8.dp))) {
+                StudyImage(image, Modifier.height(120.dp), maxEdge = 720)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column {
+                QuietButton("Ersetzen", pick, color = c.ink)
+                QuietButton("Entfernen", onRemove, color = c.signal)
+            }
+        }
+    }
 }
 
 @Composable
@@ -240,7 +321,14 @@ internal fun DeckSheet(deck: DeckCounts?, known: List<StudySubject>, onCancel: (
  * once at the start so the order stays calm while answers are saved.
  */
 @Composable
-internal fun ReviewSession(repo: StudyRepository, deckId: Long?, onDone: () -> Unit, onProgress: (done: Int, left: Int, canUndo: Boolean) -> Unit, undoSignal: Int) {
+internal fun ReviewSession(
+    repo: StudyRepository,
+    deckId: Long?,
+    onDone: () -> Unit,
+    onProgress: (done: Int, left: Int, canUndo: Boolean) -> Unit,
+    undoSignal: Int,
+    onExplain: ((Card) -> Unit)? = null,
+) {
     val c = Ranzen.colors
     val scope = rememberCoroutineScope()
     val queue = remember { mutableStateListOf<Card>() }
@@ -250,6 +338,7 @@ internal fun ReviewSession(repo: StudyRepository, deckId: Long?, onDone: () -> U
     var again by remember { mutableIntStateOf(0) }
     val history = remember { mutableStateListOf<Pair<StudyRepository.Undo, Boolean>>() }
     var preview by remember { mutableStateOf<Map<Rating, Int>>(emptyMap()) }
+    var zoom by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(deckId) {
         queue.clear(); queue.addAll(repo.studyQueue(deckId)); loaded = true
@@ -295,7 +384,10 @@ internal fun ReviewSession(repo: StudyRepository, deckId: Long?, onDone: () -> U
             return@Column
         }
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            key(card.id, done) { FlipCard(card, flipped, onFlip = { flipped = !flipped }) }
+            key(card.id, done) { FlipCard(card, flipped, onFlip = { flipped = !flipped }, onZoom = { zoom = it }) }
+        }
+        if (flipped && onExplain != null) {
+            QuietButton("Erklären lassen", { onExplain(card) }, color = c.ink)
         }
         Spacer(Modifier.height(20.dp))
         Box(Modifier.widthIn(max = 820.dp).fillMaxWidth().height(84.dp), contentAlignment = Alignment.Center) {
@@ -312,43 +404,82 @@ internal fun ReviewSession(repo: StudyRepository, deckId: Long?, onDone: () -> U
         }
         Spacer(Modifier.height(24.dp))
     }
+    zoom?.let { ImageZoom(it) { zoom = null } }
+}
+
+/** A card picture over the whole screen; tap or back closes it. */
+@Composable
+internal fun ImageZoom(image: String, onClose: () -> Unit) {
+    val c = Ranzen.colors
+    BackHandler(onBack = onClose)
+    Box(
+        Modifier.fillMaxSize().background(c.desk).clickable(onClickLabel = "Schließen", onClick = onClose).padding(24.dp),
+        contentAlignment = Alignment.Center,
+    ) { StudyImage(image, Modifier.fillMaxSize()) }
 }
 
 @Composable
-private fun FlipCard(card: Card, flipped: Boolean, onFlip: () -> Unit) {
+private fun FlipCard(card: Card, flipped: Boolean, onFlip: () -> Unit, onZoom: (String) -> Unit) {
     val c = Ranzen.colors
     val rotation by animateFloatAsState(if (flipped) 180f else 0f, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow), label = "flip")
     val showBack = rotation > 90f
     val shape = RoundedCornerShape(14.dp)
-    Box(
-        Modifier.widthIn(max = 820.dp).fillMaxWidth().aspectRatio(1.65f)
-            .graphicsLayer { rotationY = rotation; cameraDistance = 14f * density }
-            .softRaise(14.dp, 1f, c.bevelLight, c.bevelShadow)
-            .clip(shape).background(c.raised)
-            .clickable(role = Role.Button, onClickLabel = "Karte umdrehen", onClick = onFlip),
-    ) {
+    val hasPicture = card.frontImage != null || card.backImage != null
+    BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        // Cards with pictures use the whole space: a picture is only worth it when it is big.
+        val cardModifier = if (hasPicture) Modifier.widthIn(max = 1100.dp).fillMaxWidth().fillMaxHeight()
+        else Modifier.widthIn(max = 820.dp).fillMaxWidth().aspectRatio(1.65f)
         Box(
-            Modifier.fillMaxSize()
-                .graphicsLayer { if (showBack) rotationY = 180f }
-                .indexCard(if (showBack) SubjectPalette.of(3) else c.signal, c.line.copy(alpha = 0.55f), headline = 64f)
-                .padding(horizontal = 36.dp, vertical = 20.dp),
+            cardModifier
+                .graphicsLayer { rotationY = rotation; cameraDistance = 14f * density }
+                .softRaise(14.dp, 1f, c.bevelLight, c.bevelShadow)
+                .clip(shape).background(c.raised)
+                .clickable(role = Role.Button, onClickLabel = "Karte umdrehen", onClick = onFlip),
         ) {
-            Column(Modifier.fillMaxSize()) {
-                Text(
-                    if (showBack) "ANTWORT" else "FRAGE", style = Ranzen.type.mono,
-                    color = c.inkMuted, modifier = Modifier.height(32.dp).padding(top = 6.dp),
-                )
-                Spacer(Modifier.height(18.dp))
-                Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.Center) {
-                    if (showBack) {
-                        Text(card.front, style = Ranzen.type.body, color = c.inkMuted, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
-                        Spacer(Modifier.height(14.dp))
-                        Text(card.back.ifBlank { "–" }, style = Ranzen.type.title, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
-                    } else {
-                        Text(card.front, style = Ranzen.type.title, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+            Box(
+                Modifier.fillMaxSize()
+                    .graphicsLayer { if (showBack) rotationY = 180f }
+                    .indexCard(if (showBack) SubjectPalette.of(3) else c.signal, c.line.copy(alpha = 0.55f), headline = 64f)
+                    .padding(horizontal = 36.dp, vertical = 20.dp),
+            ) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(Modifier.height(32.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (showBack) "ANTWORT" else "FRAGE", style = Ranzen.type.mono, color = c.inkMuted, modifier = Modifier.weight(1f))
+                        val pic = if (showBack) card.backImage else card.frontImage
+                        if (pic != null) {
+                            Text(
+                                "BILD GROSS", style = Ranzen.type.mono, color = c.inkMuted,
+                                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { onZoom(pic) }.padding(horizontal = 10.dp, vertical = 6.dp),
+                            )
+                        }
                     }
+                    Spacer(Modifier.height(18.dp))
+                    val pic = if (showBack) card.backImage else card.frontImage
+                    if (pic != null) {
+                        // Text above, the picture takes the rest at full sharpness.
+                        if (showBack && card.front.isNotBlank()) {
+                            Text(card.front, style = Ranzen.type.body, color = c.inkMuted, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth())
+                        }
+                        val text = if (showBack) card.back else card.front
+                        if (text.isNotBlank()) {
+                            Text(text, style = Ranzen.type.heading, color = c.ink, textAlign = TextAlign.Center, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp))
+                        }
+                        StudyImage(pic, Modifier.weight(1f).fillMaxWidth())
+                    } else {
+                        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.Center) {
+                            if (showBack) {
+                                if (card.front.isNotBlank()) {
+                                    Text(card.front, style = Ranzen.type.body, color = c.inkMuted, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                                    Spacer(Modifier.height(14.dp))
+                                }
+                                Text(card.back.ifBlank { "–" }, style = Ranzen.type.title, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                            } else {
+                                Text(card.front, style = Ranzen.type.title, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                            }
+                        }
+                    }
+                    if (!showBack) Text("Antippen zum Umdrehen", style = Ranzen.type.caption, color = c.inkFaint, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                 }
-                if (!showBack) Text("Antippen zum Umdrehen", style = Ranzen.type.caption, color = c.inkFaint, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             }
         }
     }

@@ -37,7 +37,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import de.millione.schulranzen.core.study.PathStage
+import de.millione.schulranzen.core.study.StageKind
 import de.millione.schulranzen.core.study.Timetable
+import de.millione.schulranzen.design.RanzenIcon
+import de.millione.schulranzen.study.data.StudyLink
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import de.millione.schulranzen.design.PaperPanel
 import de.millione.schulranzen.design.QuietButton
 import de.millione.schulranzen.design.Ranzen
@@ -66,6 +74,8 @@ private sealed interface Pg {
     data class DeckView(val id: Long) : Pg
     data class Review(val deckId: Long?) : Pg
     data class ExamView(val id: Long) : Pg
+    data class Mock(val examId: Long) : Pg
+    data class Assistant(val question: String) : Pg
 }
 
 private sealed interface HomeSheet {
@@ -73,16 +83,26 @@ private sealed interface HomeSheet {
     data class EditExam(val exam: Exam?) : HomeSheet
     data class EditDeck(val deck: DeckCounts?) : HomeSheet
     data class EditCard(val deckId: Long, val card: Card?) : HomeSheet
+    data class QuickCard(val front: String, val back: String) : HomeSheet
+    data class Suggest(val text: String, val deckId: Long?, val examId: Long? = null) : HomeSheet
+    data object Settings : HomeSheet
 }
 
 /**
  * The study area: cards due today, upcoming exams, decks, and the way into
  * the timetable. Two columns on a landscape tablet, one column otherwise.
- * Deck, exam and learning views open inside; back returns step by step.
- * [subjects] are the app's subjects, offered as quick picks.
+ * Deck, exam, mock exam, assistant and learning views open inside; back
+ * returns step by step. [subjects] are the app's subjects, offered as quick
+ * picks. [onOpenLink] is called when the learner taps marked exam material
+ * (a notebook or book page); the host opens that page.
  */
 @Composable
-fun StudyHome(onBack: () -> Unit, onOpenTimetable: () -> Unit, subjects: List<StudySubject> = emptyList()) {
+fun StudyHome(
+    onBack: () -> Unit,
+    onOpenTimetable: () -> Unit,
+    subjects: List<StudySubject> = emptyList(),
+    onOpenLink: (StudyLink) -> Unit = {},
+) {
     val context = LocalContext.current
     val repo = remember { StudyRepository(context.applicationContext) }
     val stack = remember { mutableStateListOf<Pg>(Pg.Home) }
@@ -95,6 +115,8 @@ fun StudyHome(onBack: () -> Unit, onOpenTimetable: () -> Unit, subjects: List<St
     val overview by repo.overview.collectAsState(initial = StudyOverview(0, 0, 0, 0))
     val knownStudy by repo.knownSubjects.collectAsState(initial = emptyList())
     val known = remember(subjects, knownStudy) { (subjects + knownStudy).distinctBy { it.name.lowercase() } }
+    val bookmarks by repo.bookmarks.collectAsState(initial = emptyList())
+    val nextStep by repo.nextStep.collectAsState(initial = null)
 
     fun push(p: Pg) { stack.add(p) }
     fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) else onBack() }
@@ -117,6 +139,12 @@ fun StudyHome(onBack: () -> Unit, onOpenTimetable: () -> Unit, subjects: List<St
                 onNewExam = { sheet = HomeSheet.EditExam(null) },
                 onNewDeck = { sheet = HomeSheet.EditDeck(null) },
                 repo = repo,
+                bookmarks = bookmarks,
+                nextStep = nextStep,
+                onOpenLink = onOpenLink,
+                onAssistant = { push(Pg.Assistant("")) },
+                onSettings = { sheet = HomeSheet.Settings },
+                onSuggest = { sheet = HomeSheet.Suggest("", null) },
             )
             is Pg.DeckView -> {
                 val deck = decks.firstOrNull { it.id == p.id }
@@ -128,6 +156,7 @@ fun StudyHome(onBack: () -> Unit, onOpenTimetable: () -> Unit, subjects: List<St
                         ::pop, accent = deck?.let { SubjectPalette.of(it.colorIndex) },
                     ) {
                         if (deck != null) EditKey { sheet = HomeSheet.EditDeck(deck) }
+                        IconKey(StudyIcons.Wand, "Karten aus Text", { sheet = HomeSheet.Suggest("", p.id) })
                         PlusKey("Neue Karte") { sheet = HomeSheet.EditCard(p.id, null) }
                         if ((deck?.due ?: 0) > 0) SignalButton("Lernen", { push(Pg.Review(p.id)) }, icon = StudyIcons.Play)
                     }
@@ -150,7 +179,10 @@ fun StudyHome(onBack: () -> Unit, onOpenTimetable: () -> Unit, subjects: List<St
                         if (canUndo) IconKey(RanzenIcons.Undo, "Letzte Antwort zurücknehmen", { undo++ })
                     }
                 }) {
-                    ReviewSession(repo, p.deckId, onDone = ::pop, onProgress = { d, l, u -> progress = Triple(d, l, u) }, undoSignal = undo)
+                    ReviewSession(
+                        repo, p.deckId, onDone = ::pop, onProgress = { d, l, u -> progress = Triple(d, l, u) }, undoSignal = undo,
+                        onExplain = { push(Pg.Assistant(StudyAssistant.cardQuestion(it.front, it.back))) },
+                    )
                 }
             }
             is Pg.ExamView -> {
@@ -164,8 +196,13 @@ fun StudyHome(onBack: () -> Unit, onOpenTimetable: () -> Unit, subjects: List<St
                             "${ExamKind.of(exam.kind).label} · ${exam.subject}",
                             "${date.format(Fmt.dayDate)} · ${Fmt.countdown(today, date)}",
                             ::pop, accent = SubjectPalette.of(exam.colorIndex),
-                        ) { EditKey { sheet = HomeSheet.EditExam(exam) } }
+                        ) {
+                            EditKey { sheet = HomeSheet.EditExam(exam) }
+                            IconKey(StudyIcons.Test, "Probeprüfung", { push(Pg.Mock(exam.id)) })
+                        }
                     }) {
+                        val links by remember(exam.id) { repo.links(exam.id) }.collectAsState(initial = emptyList())
+                        val path by remember(exam) { repo.path(exam) }.collectAsState(initial = null)
                         BoxWithConstraints(Modifier.fillMaxSize()) {
                             val wide = maxWidth >= 840.dp
                             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
@@ -178,11 +215,39 @@ fun StudyHome(onBack: () -> Unit, onOpenTimetable: () -> Unit, subjects: List<St
                                             push(Pg.DeckView(id))
                                         }
                                     },
+                                    links = links, path = path, repo = repo, onOpenLink = onOpenLink,
+                                    onPathAction = { kind ->
+                                        when (kind) {
+                                            StageKind.CARDS -> scope.launch { push(Pg.DeckView(repo.deckForExam(exam.id))) }
+                                            StageKind.LEARN, StageKind.FINAL -> deckFor(exam, decks)?.let { push(Pg.Review(it.id)) }
+                                            StageKind.MOCK -> push(Pg.Mock(exam.id))
+                                            StageKind.MATERIAL -> {}
+                                        }
+                                    },
+                                    onSuggest = { sheet = HomeSheet.Suggest("", null, exam.id) },
                                 )
                             }
                         }
                     }
                 }
+            }
+            is Pg.Mock -> {
+                val exam = exams.firstOrNull { it.id == p.examId }
+                if (exam == null) LaunchedEffect(Unit) { if (stack.lastOrNull() == p) pop() }
+                else MockExamPage(repo, exam, decks, onBack = ::pop, onStudy = { id -> stack.removeAt(stack.lastIndex); push(Pg.Review(id)) })
+            }
+            is Pg.Assistant -> StudyPage(header = {
+                ScreenHeader("Erklärhilfe", "Claude · für Schule und Ausbildung", ::pop) {
+                    IconKey(RanzenIcons.Settings, "Einstellungen", { sheet = HomeSheet.Settings })
+                }
+            }) {
+                ExplainContent(
+                    p.question,
+                    onSaveCard = { q, a -> sheet = HomeSheet.QuickCard(q, a) },
+                    onSuggest = { sheet = HomeSheet.Suggest(it, null) },
+                    onSettings = { sheet = HomeSheet.Settings },
+                    modifier = Modifier.fillMaxSize().padding(bottom = 24.dp),
+                )
             }
         }
     }
@@ -232,13 +297,27 @@ fun StudyHome(onBack: () -> Unit, onOpenTimetable: () -> Unit, subjects: List<St
         if (s != null) key(s) { CardSheet(
             s.card, onCancel = close,
             onDelete = s.card?.let { card -> { scope.launch { repo.deleteCard(card) }; close() } },
-            onSave = { front, back, keepOpen ->
+            onSave = { front, back, frontImage, backImage, keepOpen ->
                 scope.launch {
-                    if (s.card == null) repo.addCard(s.deckId, front, back) else repo.updateCardText(s.card, front, back)
+                    if (s.card == null) repo.addCard(s.deckId, front, back, frontImage, backImage)
+                    else repo.updateCard(s.card, front, back, frontImage, backImage)
                 }
                 if (!keepOpen) close()
             },
         ) }
+    }
+    val quickSheet = latestNonNull(sheet as? HomeSheet.QuickCard)
+    SheetHost(sheet is HomeSheet.QuickCard, close, width = 680.dp) {
+        val s = quickSheet
+        if (s != null) key(s) { QuickCardContent(s.front, s.back, onDone = close, onCancel = close) }
+    }
+    val suggestSheet = latestNonNull(sheet as? HomeSheet.Suggest)
+    SheetHost(sheet is HomeSheet.Suggest, close, width = 760.dp) {
+        val s = suggestSheet
+        if (s != null) key(s) { SuggestCardsContent(s.text, preferDeck = s.deckId, preferExam = s.examId, onDone = close, onCancel = close) }
+    }
+    SheetHost(sheet is HomeSheet.Settings, close, width = 640.dp) {
+        if (sheet is HomeSheet.Settings) AssistantSettingsContent(onClose = close)
     }
 }
 
@@ -257,11 +336,20 @@ private fun HomePage(
     onNewExam: () -> Unit,
     onNewDeck: () -> Unit,
     repo: StudyRepository,
+    bookmarks: List<StudyLink>,
+    nextStep: Pair<Exam, PathStage>?,
+    onOpenLink: (StudyLink) -> Unit,
+    onAssistant: () -> Unit,
+    onSettings: () -> Unit,
+    onSuggest: () -> Unit,
 ) {
     val c = Ranzen.colors
     StudyPage(header = {
         ScreenHeader("Lernen", today.format(Fmt.longDate), onBack) {
+            IconKey(StudyIcons.Assistant, "Erklärhilfe", onAssistant)
+            IconKey(StudyIcons.Wand, "Karten aus Text", onSuggest)
             IconKey(StudyIcons.Grid, "Stundenplan", onOpenTimetable)
+            IconKey(RanzenIcons.Settings, "Einstellungen", onSettings)
         }
     }) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -281,6 +369,21 @@ private fun HomePage(
                             overview.dueToday > 0 -> SignalButton("Jetzt lernen", onStudyAll, icon = StudyIcons.Play)
                             overview.totalCards == 0 -> EmptyNote("Leg einen Stapel an und schreib die ersten Karten.")
                             else -> EmptyNote("Alles wiederholt. Morgen geht es weiter.")
+                        }
+                        nextStep?.let { (exam, stage) ->
+                            Spacer(Modifier.height(18.dp))
+                            Row(
+                                Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(RoundedCornerShape(14.dp)).clickable { onExam(exam.id) }.padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RanzenIcon(StudyIcons.Path, tint = SubjectPalette.of(exam.colorIndex))
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text("NÄCHSTER SCHRITT · ${exam.subject.uppercase()}", style = Ranzen.type.caption, color = c.inkMuted, maxLines = 1)
+                                    Text(nextStepText(stage), style = Ranzen.type.body, color = c.ink, maxLines = 2)
+                                }
+                                ChevronIcon()
+                            }
                         }
                     }
                 }
@@ -303,6 +406,11 @@ private fun HomePage(
                         SectionHead("Prüfungen", upcoming.size) { QuietButton("+ Prüfung", onNewExam, color = c.ink) }
                         if (upcoming.isEmpty()) EmptyNote("Keine Prüfung geplant.")
                         upcoming.forEach { e -> ExamRow(e, today) { onExam(e.id) } }
+                        if (bookmarks.isNotEmpty()) {
+                            Spacer(Modifier.height(10.dp))
+                            SectionHead("Merkliste", bookmarks.size)
+                            BookmarkSection(bookmarks, upcoming, repo, onOpenLink)
+                        }
                         if (past.isNotEmpty()) {
                             QuietButton(if (showPast) "Vergangene ausblenden" else "Vergangene (${past.size})", { showPast = !showPast })
                             if (showPast) past.forEach { e -> ExamRow(e, today) { onExam(e.id) } }
