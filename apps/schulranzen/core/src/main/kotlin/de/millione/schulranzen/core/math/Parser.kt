@@ -29,7 +29,7 @@ internal object Lexer {
         "arcsin", "arccos", "arctan", "asin", "acos", "atan",
         "sqrt", "cbrt", "sin", "cos", "tan", "abs", "ans", "log", "lg", "ln", "pi", "e",
     )
-    private const val SYMBOLS = "+-*/^%!()"
+    private const val SYMBOLS = "+-*/^%!()°"
 
     fun tokenize(s: String): List<Token> {
         val out = ArrayList<Token>()
@@ -40,7 +40,17 @@ internal object Lexer {
                 ch.isDigit() || ch == '.' || ch == ',' -> {
                     val start = i
                     while (i < s.length && (s[i].isDigit() || s[i] == '.' || s[i] == ',')) i++
-                    out += Token.Num(parseNumber(s.substring(start, i), start), start)
+                    var value = parseNumber(s.substring(start, i), start)
+                    if (i < s.length && s[i] == Normalizer.SCI) {
+                        i++
+                        val expStart = i
+                        if (i < s.length && s[i] in "+-") i++
+                        while (i < s.length && s[i].isDigit()) i++
+                        val exp = s.substring(expStart, i).toIntOrNull() ?: throw MathException("Ungültige Zahl", start)
+                        value = "${value}E$exp".toDouble()
+                        if (value.isInfinite()) throw MathException("Ergebnis ist zu groß", start)
+                    }
+                    out += Token.Num(value, start)
                 }
                 ch in 'a'..'z' -> {
                     val start = i
@@ -58,7 +68,10 @@ internal object Lexer {
         var i = 0
         while (i < run.length) {
             val w = WORDS.firstOrNull { run.startsWith(it, i) }
-                ?: throw MathException("Unbekannt: „${run.substring(i)}“", offset + i)
+                ?: throw MathException(
+                    if (run[i] == 'x') "Unbekannt: „x“. Variablen kann der Rechner nicht ausrechnen" else "Unbekannt: „${run.substring(i)}“",
+                    offset + i,
+                )
             out += Token.Word(canonicalWord(w), offset + i)
             i += w.length
         }
@@ -89,6 +102,9 @@ internal object Lexer {
                 intPart.replace(group.toString(), "") + "." + frac
             }
             commas + dots == 0 -> text
+            // "1.234" means 1234 in a German text and 1,234 on a pocket calculator: ask instead of guessing.
+            dots == 1 && commas == 0 && AMBIGUOUS_DOT.matches(text) ->
+                throw MathException("„$text“ ist mehrdeutig: Dezimalzahlen mit Komma schreiben, Tausender ohne Punkt", pos)
             commas + dots == 1 -> text.replace(',', '.')
             else -> {
                 val mark = if (commas > 0) ',' else '.'
@@ -96,8 +112,12 @@ internal object Lexer {
                 text.replace(mark.toString(), "")
             }
         }
-        return plain.toDoubleOrNull() ?: throw bad()
+        val value = plain.toDoubleOrNull() ?: throw bad()
+        if (value.isInfinite()) throw MathException("Ergebnis ist zu groß", pos)
+        return value
     }
+
+    private val AMBIGUOUS_DOT = Regex("[1-9][0-9]{0,2}\\.[0-9]{3}")
 
     private fun validGrouping(intPart: String, group: Char): Boolean {
         if (group !in intPart) return true
@@ -115,7 +135,7 @@ internal object Lexer {
  * product := signed (('*'|'/') signed | signed)*  juxtaposition multiplies: 2π, 3(4+1)
  * signed  := ('+'|'-') signed | power              so -2^2 = -4
  * power   := postfix ('^' signed)?                right associative: 2^3^2 = 2^9
- * postfix := primary ('!' | '%')*
+ * postfix := primary ('!' | '%' | '°')*
  * primary := number | pi | e | ans | func arg | '(' sum ')'
  * ```
  * Missing closing brackets at the end are added, as on a pocket calculator.
@@ -126,6 +146,7 @@ internal class Parser(
     private val ans: Double,
 ) {
     private var p = 0
+    private var depth = 0
 
     private class Operand(val v: Double, val percent: Boolean = false)
 
@@ -150,7 +171,7 @@ internal class Parser(
             val right = product()
             // Shop arithmetic: 200 + 10 % = 220, as people expect from a calculator.
             val r = if (right.percent) acc * right.v else right.v
-            acc = checked(if (op == '+') acc + r else acc - r)
+            acc = cancelNoise(checked(if (op == '+') acc + r else acc - r), acc, r)
             left = Operand(acc)
         }
         return left
@@ -161,15 +182,15 @@ internal class Parser(
         while (true) {
             val op = peekSym()
             left = when {
-                op == '*' -> { p++; Operand(checked(left.v * signed().v)) }
+                op == '*' -> { p++; val r = signed().v; Operand(notVanished(checked(left.v * r), left.v, r)) }
                 op == '/' -> {
                     val pos = tokens[p].pos
                     p++
                     val d = signed().v
                     if (d == 0.0) throw MathException("Division durch 0 ist nicht möglich", pos)
-                    Operand(checked(left.v / d))
+                    Operand(notVanished(checked(left.v / d), left.v, d))
                 }
-                startsPrimary() -> Operand(checked(left.v * signed().v))
+                startsPrimary() -> { val r = signed().v; Operand(notVanished(checked(left.v * r), left.v, r)) }
                 else -> return left
             }
         }
@@ -177,9 +198,27 @@ internal class Parser(
 
     private fun signed(): Operand {
         val op = peekSym()
-        if (op == '-') { p++; val o = signed(); return Operand(-o.v, o.percent) }
-        if (op == '+') { p++; return signed() }
+        if (op == '-' || op == '+') {
+            p++
+            val o = nested { signed() }
+            return if (op == '-') Operand(-o.v, o.percent) else o
+        }
         return power()
+    }
+
+    /** Guards the recursion: 400 opening brackets must give a message, not a stack overflow. */
+    private inline fun <T> nested(block: () -> T): T {
+        if (++depth > MAX_DEPTH) throw MathException("Die Rechnung ist zu tief verschachtelt")
+        try { return block() } finally { depth-- }
+    }
+
+    /** a − b with a ≈ b only leaves binary noise (0,1 + 0,2 − 0,3): that is a true 0, anything larger stays. */
+    private fun cancelNoise(result: Double, a: Double, b: Double): Double =
+        if (result != 0.0 && abs(result) < 4 * Math.ulp(maxOf(abs(a), abs(b)))) 0.0 else result
+
+    private fun notVanished(result: Double, a: Double, b: Double): Double {
+        if (result == 0.0 && a != 0.0 && b != 0.0) throw MathException("Ergebnis ist zu klein")
+        return result
     }
 
     private fun power(): Operand {
@@ -188,7 +227,7 @@ internal class Parser(
         val pos = tokens[p].pos
         p++
         if (p >= tokens.size) throw MathException("Nach „^“ fehlt der Exponent", pos)
-        val exp = signed().v
+        val exp = nested { signed() }.v
         return Operand(pow(base.v, exp, pos))
     }
 
@@ -198,6 +237,8 @@ internal class Parser(
             when (peekSym()) {
                 '%' -> { p++; o = Operand(o.v / 100.0, percent = true) }
                 '!' -> { val pos = tokens[p].pos; p++; o = Operand(factorial(o.v, pos)) }
+                // An explicit degree sign is always degrees, also in RAD mode.
+                '°' -> { p++; if (angle == AngleMode.RAD) o = Operand(o.v * PI / 180.0) }
                 else -> return o
             }
         }
@@ -215,7 +256,7 @@ internal class Parser(
                 '(' -> {
                     p++
                     if (peekSym() == ')') throw MathException("Leere Klammer", t.pos)
-                    val v = sum().v
+                    val v = nested { sum() }.v
                     closeBracket()
                     Operand(v)
                 }
@@ -241,11 +282,11 @@ internal class Parser(
             val open = tokens[p].pos
             p++
             if (peekSym() == ')') throw MathException("Leere Klammer nach „${fnLabel(fn.name)}“", open)
-            val v = sum().v
+            val v = nested { sum() }.v
             closeBracket()
             return v
         }
-        return signed().v
+        return nested { signed() }.v
     }
 
     private fun closeBracket() {
@@ -293,7 +334,7 @@ internal class Parser(
             "abs" -> abs(x)
             else -> throw MathException("Unbekannte Funktion „$name“", pos)
         }
-        return checked(snap(v), pos)
+        return checked(if (name in TRIG) snapTrig(v, x) else v, pos)
     }
 
     /** sin in degrees with exact values on the axes and at ±30°/150°, which students check by hand. */
@@ -312,6 +353,7 @@ internal class Parser(
 
     private fun pow(b: Double, e: Double, pos: Int): Double {
         if (b == 0.0 && e < 0) throw MathException("Division durch 0 ist nicht möglich", pos)
+        if (b == 0.0 && e == 0.0) throw MathException("0 hoch 0 ist nicht festgelegt", pos)
         var r = b.pow(e)
         if (r.isNaN() && b < 0) {
             // (-8)^(1/3) = -2: odd roots of negative numbers are real.
@@ -320,6 +362,7 @@ internal class Parser(
             if (abs(k - kr) < 1e-9 && kr.toLong() % 2L != 0L) r = -((-b).pow(e))
             else throw MathException("Keine reelle Lösung (negative Basis)", pos)
         }
+        if (r == 0.0 && b != 0.0) throw MathException("Ergebnis ist zu klein", pos)
         return checked(r, pos)
     }
 
@@ -330,7 +373,8 @@ internal class Parser(
         return f
     }
 
-    private fun snap(v: Double) = if (abs(v) < 1e-13) 0.0 else v
+    /** sin(π) comes out as 1,2·10⁻¹⁶. Only an argument of real size can leave such noise; sin(10⁻²⁰) stays. */
+    private fun snapTrig(v: Double, x: Double) = if (abs(v) < 1e-13 && abs(x) > 1e-3) 0.0 else v
 
     private fun checked(v: Double, pos: Int = -1): Double {
         if (v.isNaN()) throw MathException("Ergebnis ist keine reelle Zahl", pos)
@@ -344,6 +388,11 @@ internal class Parser(
         is Token.Num, is Token.Word -> true
         is Token.Sym -> t.ch == '('
         null -> false
+    }
+
+    private companion object {
+        const val MAX_DEPTH = 64
+        val TRIG = setOf("sin", "cos", "tan")
     }
 
     private fun describe(t: Token) = when (t) {

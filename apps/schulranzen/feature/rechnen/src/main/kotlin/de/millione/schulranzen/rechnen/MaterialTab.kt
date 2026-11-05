@@ -166,13 +166,13 @@ private fun SettingsPanel(settings: MaterialSettings, onChange: ((MaterialSettin
         field("ins", "Verschnitt Dämmung", settings.insulationWastePercent, "%") { s, v -> s.copy(insulationWastePercent = v) }
         field("piece", "Länge Dämmschlauch", settings.insulationPieceM, "m") { s, v -> if (v > 0) s.copy(insulationPieceM = v) else s }
         Spacer(Modifier.height(14.dp))
-        Caption("Dämmung nach GEG")
+        Caption("Dämmung nach GModG (früher GEG)")
         Spacer(Modifier.height(4.dp))
         InsulationCase.entries.forEach { case ->
             CheckRow(case.title, settings.insulationCase == case, SubjectPalette.of(2)) { onChange { it.copy(insulationCase = case) } }
         }
         Spacer(Modifier.height(10.dp))
-        Text(de.millione.schulranzen.core.shk.ShkDesign.SOURCE, style = Ranzen.type.caption, color = c.inkMuted)
+        Text("Dämmung von Kaltwasserleitungen (DIN 1988-200) ist nicht enthalten. " + de.millione.schulranzen.core.shk.ShkDesign.SOURCE, style = Ranzen.type.caption, color = c.inkMuted)
     }
 }
 

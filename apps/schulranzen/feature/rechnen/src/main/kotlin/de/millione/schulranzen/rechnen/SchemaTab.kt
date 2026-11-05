@@ -282,7 +282,7 @@ private fun SchemaEditor(
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 PipeKind.entries.forEach { k -> FilterTab("${k.short} · ${k.title}", SchemaStyleFor().pipe(k), k == pipeKind) { pipeKind = k } }
                 Spacer(Modifier.width(10.dp))
-                Text("Mit Stift oder Finger von Anschluss zu Anschluss ziehen.", style = Ranzen.type.caption, color = c.inkMuted)
+                Text("Von Anschluss zu Anschluss ziehen. Endet ein Rohr auf einem gleichen Rohr, entsteht ein T-Stück.", style = Ranzen.type.caption, color = c.inkMuted)
             }
         }
         notice?.let {
@@ -320,6 +320,10 @@ private fun SchemaEditor(
                                 else -> null
                             }
                             val pipeStart = if (st.tool == Tool.PIPE) SchemaGeometry.snap(st.schema, startWorld, radius = maxOf(0.8, tol)) else null
+                            // A selected pipe can be reshaped: a corner, or a whole straight stretch sideways.
+                            val reshape = st.schema.pipes.firstOrNull { it.id == st.selected }?.takeIf { st.tool == Tool.SELECT && dragId == null }
+                            val cornerDrag = reshape?.let { SchemaGeometry.cornerAt(it, startWorld, tol) }
+                            val segmentDrag = (startHit as? SchemaHit.Pipe)?.takeIf { cornerDrag == null && it.id == reshape?.id }?.segment
                             var multi = false
                             var moved = false
                             val slop = viewConfiguration.touchSlop
@@ -350,6 +354,8 @@ private fun SchemaEditor(
                                         draft = SchemaGeometry.route(pipeStart.at, end.at, horizontal)
                                         snapAt = end.at.takeIf { end.port != null }
                                     }
+                                    cornerDrag != null -> preview = SchemaOps.moveCorner(st.schema, reshape!!.id, cornerDrag, world)
+                                    segmentDrag != null -> preview = SchemaOps.moveSegment(st.schema, reshape!!.id, segmentDrag, world)
                                     dragId != null -> {
                                         val dx = world.x - startWorld.x; val dy = world.y - startWorld.y
                                         val sym = st.schema.symbols.firstOrNull { it.id == dragId }
@@ -395,10 +401,11 @@ private fun SchemaEditor(
                                 draft = null; snapAt = null
                                 if (d != null && d.size >= 2) {
                                     val id = ShkFiles.newId()
-                                    val next = SchemaOps.addPipe(st.schema, id, st.pipeKind, startWorld, d.last(), st.lastPipeId)
+                                    // Uses the previewed start, so the pipe lands on the port the user saw; on a running pipe a tee goes in.
+                                    val next = SchemaOps.addPipeWithTees(st.schema, id, st.pipeKind, d.first(), d.last(), st.lastPipeId) { ShkFiles.newId() }
                                     if (next !== st.schema) { session.commit(next); selected = id }
                                 }
-                            } else if (endPreview != null) {
+                            } else if (endPreview != null && endPreview != st.schema) {
                                 session.commit(endPreview)
                             }
                         }
@@ -553,6 +560,10 @@ private fun PropertiesPanel(
                 Spacer(Modifier.height(8.dp))
                 val drawn = SchemaGeometry.length(pipe.points) * schema.metersPerUnit
                 var lenText by remember(pipe.id) { mutableStateOf(pipe.lengthM?.let { GermanNumber.formatPlain(it) } ?: "") }
+                // Undo changes the value behind the field; keep the text while it still means the same number.
+                LaunchedEffect(pipe.lengthM) {
+                    if (de.millione.schulranzen.core.shk.AufmassPosition.evaluate(lenText) != pipe.lengthM) lenText = pipe.lengthM?.let { GermanNumber.formatPlain(it) } ?: ""
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Länge", style = Ranzen.type.label, color = c.ink, modifier = Modifier.weight(1f))
                     NumberField(lenText, { t ->
@@ -561,7 +572,7 @@ private fun PropertiesPanel(
                         if (t.isBlank() || (v != null && v > 0)) session.commit(SchemaOps.updatePipe(schema, pipe.id) { it.copy(lengthM = v) }, "len_${pipe.id}")
                     }, "m", Modifier.width(170.dp), placeholder = GermanNumber.format(drawn, 1))
                 }
-                Text("Leer = gezeichnete Länge (${GermanNumber.format(drawn, 1)} m)", style = Ranzen.type.caption, color = c.inkMuted)
+                Text("Leer = gezeichnete Länge (${GermanNumber.format(drawn, 1)} m). Knicke und gerade Stücke des gewählten Rohrs lassen sich ziehen.", style = Ranzen.type.caption, color = c.inkMuted)
                 Spacer(Modifier.height(8.dp))
                 TextLine(pipe.label, { t -> session.commit(SchemaOps.updatePipe(schema, pipe.id) { it.copy(label = t) }, "plabel_${pipe.id}") }, Modifier.fillMaxWidth(), "Beschriftung (optional)")
                 Spacer(Modifier.height(12.dp))
@@ -613,13 +624,20 @@ private fun LiveResult(link: CalcLink, props: Map<String, String>, onCalculate: 
     Spacer(Modifier.height(12.dp))
     Column(Modifier.fillMaxWidth().recessed(14.dp).padding(horizontal = 14.dp, vertical = 10.dp)) {
         Caption(calc.title)
+        if (calc.reliability == de.millione.schulranzen.core.shk.Reliability.GUIDE) {
+            Spacer(Modifier.height(4.dp))
+            GuideMark()
+        }
         Spacer(Modifier.height(4.dp))
         when (result) {
-            is ShkCalcResult.Ok -> result.outputs.take(3).forEach { o ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.Bottom) {
-                    Text(o.label, style = Ranzen.type.caption, color = c.inkMuted, modifier = Modifier.weight(1f), maxLines = 2)
-                    Text("${GermanNumber.format(o.value, o.decimals)} ${o.unit}", style = Ranzen.type.mono.copy(fontSize = 16.sp), color = c.ink)
+            is ShkCalcResult.Ok -> {
+                result.outputs.take(3).forEach { o ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.Bottom) {
+                        Text(o.label, style = Ranzen.type.caption, color = c.inkMuted, modifier = Modifier.weight(1f), maxLines = 2)
+                        Text("${GermanNumber.format(o.value, o.decimals)} ${o.unit}", style = Ranzen.type.mono.copy(fontSize = 16.sp), color = c.ink)
+                    }
                 }
+                ResultNotes(result.warnings, calc.needsPlanner)
             }
             ShkCalcResult.Incomplete -> Text("Werte eingeben für das Ergebnis.", style = Ranzen.type.caption, color = c.inkMuted)
             is ShkCalcResult.Invalid -> Text(result.message, style = Ranzen.type.caption, color = c.signal)
@@ -639,6 +657,9 @@ private fun SchemaInfo(session: SchemaSession, onDelete: () -> Unit) {
     TextLine(schema.name, { t -> session.commit(schema.copy(name = t), "name") }, Modifier.fillMaxWidth(), "Name")
     Spacer(Modifier.height(12.dp))
     var scaleText by remember(schema.id) { mutableStateOf(GermanNumber.formatPlain(schema.metersPerUnit)) }
+    LaunchedEffect(schema.metersPerUnit) {
+        if (de.millione.schulranzen.core.shk.AufmassPosition.evaluate(scaleText) != schema.metersPerUnit) scaleText = GermanNumber.formatPlain(schema.metersPerUnit)
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("1 Kästchen =", style = Ranzen.type.label, color = c.ink, modifier = Modifier.weight(1f))
         NumberField(scaleText, { t ->
@@ -661,7 +682,7 @@ private fun SchemaInfo(session: SchemaSession, onDelete: () -> Unit) {
     Spacer(Modifier.height(14.dp))
     Text(
         "Tippen wählt ein Element. Symbole und Texte mit dem Finger oder Stift verschieben. " +
-            "Rohre mit Dimension fließen in die Materialliste.",
+            "Rohr wählen, dann Knick oder geraden Abschnitt ziehen. Rohre mit Dimension und T-Stücke fließen in die Materialliste.",
         style = Ranzen.type.caption, color = c.inkMuted,
     )
     Spacer(Modifier.height(14.dp))

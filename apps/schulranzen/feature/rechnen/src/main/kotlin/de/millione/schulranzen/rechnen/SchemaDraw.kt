@@ -100,6 +100,14 @@ fun DrawScope.drawSchemaUnits(schema: Schema, style: SchemaStyle, overlay: Schem
         }
     }
 
+    // Handles on the corners of the selected pipe: these can be dragged.
+    schema.pipes.firstOrNull { it.id == overlay.selectedId }?.let { p ->
+        p.points.drop(1).dropLast(1).forEach { corner ->
+            drawCircle(style.paper, 0.26f, corner.o())
+            drawCircle(style.accent, 0.26f, corner.o(), style = Stroke(LINE))
+        }
+    }
+
     // Pipe labels after symbols, so they stay readable. Each label goes on the
     // longest segment it fits on, beside the pipe, and never on top of another
     // label; a pipe too short for its label (or with no free spot) stays unlabelled.

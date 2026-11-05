@@ -116,6 +116,13 @@ enum class Quantity(val title: String, val units: List<MeasureUnit>) {
 }
 
 object Units {
+    /** German reason why [value] cannot exist in this unit, or null when it is fine. */
+    fun problem(quantity: Quantity, value: Double, from: String): String? {
+        if (!value.isFinite()) return "Ungültiger Wert"
+        if (quantity == Quantity.TEMPERATURE && quantity.unit(from).toBase(value) < -1e-9) return "Das liegt unter dem absoluten Nullpunkt (−273,15 °C)"
+        return null
+    }
+
     /** Converts [value] between two units of the same [quantity]. */
     fun convert(quantity: Quantity, value: Double, from: String, to: String): Double {
         require(value.isFinite()) { "Ungültiger Wert" }

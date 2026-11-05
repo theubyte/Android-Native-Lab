@@ -18,8 +18,16 @@ data class ShkInput(
 /** One line of the result. [decimals] is the sensible rounding for the unit. */
 data class ShkOutput(val label: String, val symbol: String, val value: Double, val unit: String, val decimals: Int = 3)
 
+/**
+ * How far a result can be relied on. [GUIDE] covers everything simplified or
+ * resting on assumed values (water at 1000 kg/m³, typical coefficients, tables
+ * without a citable norm text): the UI marks it "Richtwert", nothing poses as certain.
+ */
+enum class Reliability { DEFINITION, GUIDE }
+
 sealed interface ShkCalcResult {
-    data class Ok(val outputs: List<ShkOutput>) : ShkCalcResult
+    /** [warnings] are limits the values run into; the UI shows them next to the result. */
+    data class Ok(val outputs: List<ShkOutput>, val warnings: List<String> = emptyList()) : ShkCalcResult
     /** Not all inputs are filled yet; nothing to show, no error. */
     data object Incomplete : ShkCalcResult
     data class Invalid(val message: String) : ShkCalcResult
@@ -37,6 +45,10 @@ class ShkCalculator(
     val formula: String,
     val inputs: List<ShkInput>,
     val note: String,
+    val reliability: Reliability = Reliability.DEFINITION,
+    /** Sizing with normative weight: the UI adds that this does not replace the design engineer. */
+    val needsPlanner: Boolean = false,
+    private val warn: (Map<String, Double>) -> List<String> = { emptyList() },
     private val compute: (Map<String, Double>) -> List<ShkOutput>,
 ) {
     fun calculate(values: Map<String, Double?>): ShkCalcResult {
@@ -50,7 +62,7 @@ class ShkCalculator(
         return try {
             val out = compute(filled)
             if (out.any { !it.value.isFinite() }) ShkCalcResult.Invalid("Mit diesen Werten nicht berechenbar")
-            else ShkCalcResult.Ok(out)
+            else ShkCalcResult.Ok(out, warn(filled))
         } catch (e: IllegalArgumentException) {
             ShkCalcResult.Invalid(e.message ?: "Mit diesen Werten nicht berechenbar")
         }
@@ -69,7 +81,8 @@ object ShkCalculators {
         ShkCalculator(
             "flow_from_power", "Volumenstrom aus Heizleistung", R, "V̇ = Φ / (1,163 · ΔT)",
             listOf(ShkInput("p", "Heizleistung", "Φ", "kW"), dT(20.0)),
-            "Wasser, c = 1,163 Wh/(kg·K). Typische Spreizung: Heizkörper 10–20 K, Fußbodenheizung 5–8 K.",
+            "Wasser, c = 1,163 Wh/(kg·K), ρ = 1000 kg/m³. Typische Spreizung: Heizkörper 10–20 K, Fußbodenheizung 5–8 K.",
+            Reliability.GUIDE,
         ) { v ->
             val m3h = Shk.flowFromPower(v.getValue("p"), v.getValue("dt"))
             listOf(
@@ -81,7 +94,8 @@ object ShkCalculators {
         ShkCalculator(
             "power_from_flow", "Heizleistung aus Volumenstrom", R, "Φ = 1,163 · V̇ · ΔT",
             listOf(ShkInput("q", "Volumenstrom", "V̇", "l/min"), dT(20.0)),
-            "V̇ in m³/h eingesetzt ergibt Φ in kW.",
+            "V̇ in m³/h eingesetzt ergibt Φ in kW. Wasser, ρ = 1000 kg/m³.",
+            Reliability.GUIDE,
         ) { v ->
             val kw = Shk.powerFromFlow(v.getValue("q") * 60.0 / 1000.0, v.getValue("dt"))
             listOf(ShkOutput("Heizleistung", "Φ", kw, "kW"), ShkOutput("Heizleistung", "Φ", kw * 1000.0, "W", 0))
@@ -97,7 +111,7 @@ object ShkCalculators {
         ShkCalculator(
             "flow_velocity", "Fließgeschwindigkeit", R, "v = V̇ / A",
             listOf(ShkInput("q", "Volumenstrom", "V̇", "l/min"), ShkInput("d", "Innendurchmesser", "dᵢ", "mm")),
-            "Richtwerte: Heizung 0,3–1,0 m/s, Trinkwasser bis etwa 2 m/s.",
+            "Rechnung exakt. Übliche Bereiche (Richtwerte): Heizung 0,3–1,0 m/s, Trinkwasser bis etwa 2 m/s.",
         ) { v ->
             listOf(
                 ShkOutput("Fließgeschwindigkeit", "v", Shk.velocity(v.getValue("q"), v.getValue("d")), "m/s"),
@@ -113,18 +127,20 @@ object ShkCalculators {
             "water_energy", "Wasser erwärmen", W, "E = V · ΔT · 1,163 / 1000",
             listOf(ShkInput("v", "Wassermenge", "V", "l"), ShkInput("dt", "Temperaturänderung", "ΔT", "K", hint = "z. B. 10 °C → 60 °C = 50 K")),
             "1 l Wasser ≈ 1 kg. Ohne Verluste.",
+            Reliability.GUIDE,
         ) { v ->
             val kwh = Shk.waterHeatKwh(v.getValue("v"), v.getValue("dt"))
             listOf(ShkOutput("Energie", "E", kwh, "kWh"), ShkOutput("Energie", "E", kwh * 3600.0, "kJ", 0))
         },
         ShkCalculator(
-            "heating_time", "Aufheizzeit", W, "t = V · ΔT · 1,163 / Φ",
+            "heating_time", "Aufheizzeit", W, "t = V · ΔT · 1,163 / (1000 · Φ)",
             listOf(
                 ShkInput("v", "Wassermenge", "V", "l"),
                 ShkInput("dt", "Temperaturänderung", "ΔT", "K"),
                 ShkInput("p", "Heizleistung", "Φ", "kW"),
             ),
-            "Ohne Verluste; reale Zeiten sind länger.",
+            "V in l, Φ in kW, t in h. Ohne Verluste; reale Zeiten sind länger.",
+            Reliability.GUIDE,
         ) { v ->
             val hours = Shk.waterHeatKwh(v.getValue("v"), v.getValue("dt")) / v.getValue("p")
             listOf(ShkOutput("Aufheizzeit", "t", hours * 60.0, "min", 1), ShkOutput("Aufheizzeit", "t", hours, "h", 2))
@@ -133,7 +149,7 @@ object ShkCalculators {
             "heat_quantity", "Wärmemenge", W, "Q = m · c · ΔT",
             listOf(
                 ShkInput("m", "Masse", "m", "kg"),
-                ShkInput("c", "Spezifische Wärmekapazität", "c", "kJ/(kg·K)", Shk.WATER_C_KJ, "Wasser 4,19 · Stahl 0,48 · Kupfer 0,39"),
+                ShkInput("c", "Spezifische Wärmekapazität", "c", "kJ/(kg·K)", Shk.WATER_C_KJ, "Wasser 4,19 · Stahl ≈ 0,48 · Kupfer ≈ 0,39"),
                 ShkInput("dt", "Temperaturänderung", "ΔT", "K"),
             ),
             "1 kWh = 3600 kJ.",
@@ -149,7 +165,8 @@ object ShkCalculators {
                 ShkInput("m2", "Menge 2", "m₂", "l"),
                 ShkInput("t2", "Temperatur 2", "ϑ₂", "°C", allowNonPositive = true),
             ),
-            "Gleiche Flüssigkeit, keine Verluste (Richmannsche Mischungsregel).",
+            "Gleiche Flüssigkeit, keine Verluste, gleiche Dichte (Richmannsche Mischungsregel).",
+            Reliability.GUIDE,
         ) { v ->
             listOf(ShkOutput("Mischtemperatur", "ϑm", Shk.mixingTemperature(v.getValue("m1"), v.getValue("t1"), v.getValue("m2"), v.getValue("t2")), "°C", 1))
         },
@@ -169,20 +186,23 @@ object ShkCalculators {
             "expansion", "Längenausdehnung", W, "Δl = l₀ · α · ΔT",
             listOf(
                 ShkInput("l", "Rohrlänge", "l₀", "m"),
-                ShkInput("a", "Ausdehnungskoeffizient", "α", "mm/(m·K)", 0.0166, "Kupfer 0,0166 · Stahl 0,012 · PE-X 0,2"),
+                ShkInput("a", "Ausdehnungskoeffizient", "α", "mm/(m·K)", 0.0166, "Kupfer 0,0166 · Stahl 0,012 · Verbund ≈ 0,026 · PE-X 0,15–0,2"),
                 ShkInput("dt", "Temperaturänderung", "ΔT", "K"),
             ),
-            "Wichtig für Dehnungsausgleich (Bögen, Kompensatoren).",
+            "Wichtig für Dehnungsausgleich (Bögen, Kompensatoren). α je nach Hersteller etwas anders.",
+            Reliability.GUIDE,
         ) { v -> listOf(ShkOutput("Längenänderung", "Δl", Shk.expansionMm(v.getValue("l"), v.getValue("a"), v.getValue("dt")), "mm", 2)) },
         ShkCalculator(
             "pressure_to_head", "Druck in Förderhöhe", R, "H = p / (ρ · g)",
             listOf(ShkInput("p", "Druck", "p", "bar")),
             "1 bar ≈ 10,2 mWS (Wasser, ρ = 1000 kg/m³).",
+            Reliability.GUIDE,
         ) { v -> listOf(ShkOutput("Förderhöhe", "H", Shk.barToMws(v.getValue("p")), "mWS", 2), ShkOutput("Druck", "p", v.getValue("p") * 1000.0, "mbar", 0)) },
         ShkCalculator(
             "head_to_pressure", "Förderhöhe in Druck", R, "p = ρ · g · H",
             listOf(ShkInput("h", "Förderhöhe / Höhe", "H", "m")),
-            "Statischer Druck einer Wassersäule, z. B. für den Anlagendruck.",
+            "Statischer Druck einer Wassersäule, z. B. für den Anlagendruck. Wasser, ρ = 1000 kg/m³.",
+            Reliability.GUIDE,
         ) { v ->
             val bar = Shk.mwsToBar(v.getValue("h"))
             listOf(ShkOutput("Druck", "p", bar, "bar"), ShkOutput("Druck", "p", bar * 100.0, "kPa", 2))
@@ -194,8 +214,10 @@ object ShkCalculators {
                 ShkInput("h", "Förderhöhe", "H", "m"),
                 ShkInput("eta", "Wirkungsgrad", "η", "%", 50.0),
             ),
-            "Wellenleistung der Pumpe für Wasser.",
+            "Wellenleistung der Pumpe für Wasser, ρ = 1000 kg/m³.",
+            Reliability.GUIDE,
         ) { v ->
+            require(v.getValue("eta") <= 100.0) { "Der Wirkungsgrad kann nicht über 100 % liegen" }
             val w = Shk.pumpPowerW(v.getValue("q"), v.getValue("h"), v.getValue("eta"))
             listOf(ShkOutput("Leistung", "P", w, "W", 1), ShkOutput("Hydraulische Leistung", "P_hyd", w * v.getValue("eta") / 100.0, "W", 1))
         },
@@ -212,6 +234,7 @@ object ShkCalculators {
             listOf(ShkInput("u", "Spannung", "U", "V", 230.0), ShkInput("i", "Stromstärke", "I", "A"), ShkInput("cos", "Leistungsfaktor", "cos φ", "", 1.0, "ohmsche Last: 1")),
             "Wechselstrom-Wirkleistung.",
         ) { v ->
+            require(v.getValue("cos") <= 1.0) { "cos φ kann nicht größer als 1 sein" }
             val w = Shk.power1p(v.getValue("u"), v.getValue("i"), v.getValue("cos"))
             listOf(ShkOutput("Wirkleistung", "P", w, "W", 1), ShkOutput("Wirkleistung", "P", w / 1000.0, "kW"))
         },
@@ -220,18 +243,22 @@ object ShkCalculators {
             listOf(ShkInput("u", "Spannung", "U", "V", 400.0), ShkInput("i", "Stromstärke", "I", "A"), ShkInput("cos", "Leistungsfaktor", "cos φ", "", 1.0)),
             "Drehstrom-Wirkleistung mit Außenleiterspannung.",
         ) { v ->
+            require(v.getValue("cos") <= 1.0) { "cos φ kann nicht größer als 1 sein" }
             val w = Shk.power3p(v.getValue("u"), v.getValue("i"), v.getValue("cos"))
             listOf(ShkOutput("Wirkleistung", "P", w, "W", 1), ShkOutput("Wirkleistung", "P", w / 1000.0, "kW"))
         },
         ShkCalculator(
             "current_3p", "Stromstärke 3~", E, "I = P / (√3 · U · cos φ)",
-            listOf(ShkInput("p", "Wirkleistung", "P", "kW"), ShkInput("u", "Spannung", "U", "V", 400.0), ShkInput("cos", "Leistungsfaktor", "cos φ", "", 1.0)),
-            "Zum Auswählen der Absicherung, z. B. für einen Durchlauferhitzer.",
-        ) { v -> listOf(ShkOutput("Stromstärke", "I", Shk.current3p(v.getValue("p") * 1000.0, v.getValue("u"), v.getValue("cos")), "A", 2)) },
+            listOf(ShkInput("p", "Wirkleistung", "P", "kW"), ShkInput("u", "Spannung", "U", "V", 400.0), ShkInput("cos", "Leistungsfaktor", "cos φ", "", 1.0, "höchstens 1")),
+            "Zum Überschlagen der Absicherung, z. B. für einen Durchlauferhitzer. Die Absicherung legt die Elektrofachkraft fest.",
+        ) { v ->
+            require(v.getValue("cos") <= 1.0) { "cos φ kann nicht größer als 1 sein" }
+            listOf(ShkOutput("Stromstärke", "I", Shk.current3p(v.getValue("p") * 1000.0, v.getValue("u"), v.getValue("cos")), "A", 2))
+        },
         ShkCalculator(
             "efficiency", "Wirkungsgrad", B, "η = P_ab / P_zu",
             listOf(ShkInput("out", "Abgegebene Leistung", "P_ab", "kW"), ShkInput("in", "Zugeführte Leistung", "P_zu", "kW")),
-            "Verluste = P_zu − P_ab.",
+            "Verluste = P_zu − P_ab. Beide Leistungen auf denselben Energiewert beziehen; Brennwertkessel erreichen auf den Heizwert bezogen scheinbar über 100 %.",
         ) { v ->
             require(v.getValue("out") <= v.getValue("in")) { "Die abgegebene Leistung kann nicht größer sein als die zugeführte" }
             val eta = v.getValue("out") / v.getValue("in")
@@ -240,7 +267,7 @@ object ShkCalculators {
         ShkCalculator(
             "gradient", "Gefälle", B, "I = Δh / L · 100 %",
             listOf(ShkInput("h", "Höhenunterschied", "Δh", "cm"), ShkInput("l", "Leitungslänge", "L", "m")),
-            "Abwasser-Grundleitungen meist mindestens 1 % (1 cm je m), Richtwert 2 %.",
+            "1 % = 1 cm je m. Mindestgefälle je Leitungsart: Tabelle „Gefälle Abwasser“ (z. B. 0,5 % im Gebäude, unbelüftete Anschlussleitungen 1 %, außerhalb 1 : DN).",
         ) { v ->
             val percent = v.getValue("h") / (v.getValue("l") * 100.0) * 100.0
             listOf(ShkOutput("Gefälle", "I", percent, "%", 2), ShkOutput("Gefälle", "I", v.getValue("h") / v.getValue("l"), "cm/m", 2))

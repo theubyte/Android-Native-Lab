@@ -71,9 +71,11 @@ object PipeCatalog {
         cu(28, 1.5, 25, 2.25), cu(35, 1.5, 32, 2.75), cu(42, 1.5, 40, 3.0), cu(54, 2.0, 50, 3.5),
         cs(15, 1.2, 12, 1.25), cs(18, 1.2, 15, 1.5), cs(22, 1.5, 20, 2.0), cs(28, 1.5, 25, 2.25),
         cs(35, 1.5, 32, 2.75), cs(42, 1.5, 40, 3.0), cs(54, 1.5, 50, 3.5),
-        ml(16, 2.0, 12, 1.0), ml(20, 2.0, 15, 1.25), ml(26, 3.0, 20, 1.5), ml(32, 3.0, 25, 2.0),
-        ml(40, 3.5, 32, 2.0), ml(50, 4.0, 40, 2.25), ml(63, 4.5, 50, 2.5),
-        ht(40, 40.0, 1.8, 0.8), ht(50, 50.0, 1.8, 0.8), ht(70, 75.0, 1.9, 1.1), ht(100, 110.0, 2.7, 1.1),
+        // Composite: guide values of MÜPRO; manufacturers partly allow more.
+        ml(16, 2.0, 12, 1.2), ml(20, 2.0, 15, 1.5), ml(26, 3.0, 20, 1.5), ml(32, 3.0, 25, 1.5),
+        ml(40, 3.5, 32, 1.5), ml(50, 4.0, 40, 1.5), ml(63, 4.5, 50, 1.5),
+        // Drain: recommended horizontal spacing of the Ostendorf HT mounting instructions.
+        ht(40, 40.0, 1.8, 0.5), ht(50, 50.0, 1.8, 0.5), ht(70, 75.0, 1.9, 0.8), ht(100, 110.0, 2.7, 1.1),
     )
 
     fun byId(id: String?): PipeSize? = if (id == null) null else all.firstOrNull { it.id == id }
@@ -81,6 +83,8 @@ object PipeCatalog {
 
     /** Kinematic viscosity of water at about 60 °C in m²/s. */
     const val VISCOSITY = 0.475e-6
+    /** Density of water at 60 °C in kg/m³, matching the viscosity above. */
+    const val DENSITY_60C = 983.2
 
     /**
      * Pressure drop per metre in Pa/m for [flowM3h] through [size]
@@ -93,7 +97,7 @@ object PipeCatalog {
         val re = v * d / VISCOSITY
         val lambda = if (re < 2300) 64.0 / re
         else 0.25 / log10(size.material.roughnessMm / 1000.0 / (3.7 * d) + 5.74 / re.pow(0.9)).pow(2)
-        return lambda / d * Shk.WATER_DENSITY * v * v / 2.0
+        return lambda / d * DENSITY_60C * v * v / 2.0
     }
 
     fun flow(size: PipeSize, flowM3h: Double): PipeFlow =

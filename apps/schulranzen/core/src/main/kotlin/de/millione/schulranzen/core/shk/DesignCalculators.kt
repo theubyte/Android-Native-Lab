@@ -19,7 +19,13 @@ internal object DesignCalculators {
                 ShkInput("r", "Höchster Druckverlust", "R_max", "Pa/m", 100.0, "üblich 100–200 Pa/m"),
                 ShkInput("v", "Höchste Geschwindigkeit", "v_max", "m/s", 1.0),
             ),
-            "Kleinste Dimension je Werkstoff, die R und v einhält. R nach Darcy-Weisbach, Wasser 60 °C. " + ShkDesign.SOURCE,
+            "Kleinste Dimension je Werkstoff, die R und v einhält. R nach Darcy-Weisbach (Swamee-Jain), neue Rohre, Wasser 60 °C. " + ShkDesign.SOURCE,
+            Reliability.GUIDE, needsPlanner = true,
+            warn = { v ->
+                val q = Shk.flowFromPower(v.getValue("p"), v.getValue("dt"))
+                PipeMaterial.entries.filter { it.pressurePipe && PipeCatalog.choose(it, q, v.getValue("r"), v.getValue("v")) == null }
+                    .map { "${it.title}: keine Dimension der Tabelle hält diese Grenzen ein." }
+            },
         ) { v ->
             val q = Shk.flowFromPower(v.getValue("p"), v.getValue("dt"))
             val out = mutableListOf(ShkOutput("Volumenstrom", "V̇", q, "m³/h"))
@@ -28,17 +34,25 @@ internal object DesignCalculators {
                 out += if (pick == null) ShkOutput("${m.title}: größer als Tabelle", "R", Double.NaN, "Pa/m")
                 else ShkOutput("${pick.size.fullLabel}, v = ${GermanNumber.format(pick.velocityMs, 2)} m/s", "R", pick.rPaPerM, "Pa/m", 0)
             }
-            out.filter { it.value.isFinite() }.ifEmpty { throw IllegalArgumentException("Volumenstrom zu groß für die Tabelle") }
+            // Materials without a fitting size drop out here; the warning above names them.
+            out.filter { it.value.isFinite() }
         },
         ShkCalculator(
             "mag", "MAG-Auslegung", D, "V_N = (V_e + V_V) · (p_e + 1) / (p_e − p₀)",
             listOf(
-                ShkInput("va", "Anlageninhalt", "V_A", "l", hint = "≈ 8,5 l/kW Heizkörper, 20 l/kW Fußbodenheizung"),
-                ShkInput("hst", "Statische Höhe über MAG", "h_st", "m", 8.0),
+                ShkInput("va", "Anlageninhalt", "V_A", "l", hint = "≈ 13,5 l/kW Radiatoren · 8,5 l/kW Platten · 20 l/kW Fußbodenheizung"),
+                ShkInput("hst", "Statische Höhe über MAG", "h_st", "m", 8.0, allowNonPositive = true),
                 ShkInput("tmax", "Höchste Vorlauftemperatur", "ϑ_V", "°C", 70.0),
                 ShkInput("psv", "Ansprechdruck Sicherheitsventil", "p_SV", "bar", 3.0),
             ),
-            "Vordruck p₀ = h_st/10 + 0,2 bar (mind. 0,7 bar), Enddruck p_e = p_SV − 0,5 bar, Wasservorlage 0,5 % (mind. 3 l). " + ShkDesign.SOURCE,
+            "Vordruck p₀ = h_st/10 + 0,2 bar (mind. 1 bar), Enddruck p_e = p_SV − 0,5 bar (über 5 bar: 0,9 · p_SV), " +
+                "Wasservorlage 0,5 % (mind. 3 l; bis 15 l Nennvolumen 20 % von V_N). Bis 100 °C. " + ShkDesign.SOURCE,
+            Reliability.GUIDE, needsPlanner = true,
+            warn = { v ->
+                val r = ShkDesign.mag(v.getValue("va"), v.getValue("hst"), v.getValue("tmax"), v.getValue("psv"))
+                ShkDesign.magWarnings(v.getValue("hst"), v.getValue("psv")) +
+                    if (r.standardL == null) listOf("Größer als die größte Tabellengröße: mehrere Gefäße oder Druckhaltung planen.") else emptyList()
+            },
         ) { v ->
             val r = ShkDesign.mag(v.getValue("va"), v.getValue("hst"), v.getValue("tmax"), v.getValue("psv"))
             listOfNotNull(
@@ -55,8 +69,9 @@ internal object DesignCalculators {
         ShkCalculator(
             "safety_valve", "Sicherheitsventil-Auswahl", D, "Φ → DN (Eintritt)",
             listOf(ShkInput("p", "Nennleistung Wärmeerzeuger", "Φ", "kW")),
-            "Bis 50 kW DN 15, bis 100 kW DN 20, bis 200 kW DN 25, bis 350 kW DN 32, bis 600 kW DN 40, bis 900 kW DN 50. " +
-                "Ansprechdruck nach Anlage, meist 2,5 oder 3 bar. " + ShkDesign.SOURCE,
+            "Bis 50 kW DN 15, bis 100 kW DN 20, bis 200 kW DN 25, bis 350 kW DN 32, bis 600 kW DN 40, bis 900 kW DN 50 " +
+                "(Herstellertabelle für 2,5 bar nach TRD 721; bei 3 bar etwas mehr). Maßgeblich ist die Tabelle des eingebauten Ventils. " + ShkDesign.SOURCE,
+            Reliability.GUIDE, needsPlanner = true,
         ) { v ->
             val dn = ShkDesign.safetyValveDn(v.getValue("p")) ?: throw IllegalArgumentException("Über 900 kW: Hersteller fragen")
             listOf(ShkOutput("Eintrittsnennweite mindestens", "DN", dn.toDouble(), "", 0))
@@ -64,7 +79,10 @@ internal object DesignCalculators {
         ShkCalculator(
             "tw_peak", "Trinkwasser-Spitzendurchfluss", D, "V̇_S = a · (ΣV̇_R)^b − c",
             TapPoint.entries.map { ShkInput(it.name.lowercase(), it.title, "n", "Stk", 0.0, "V̇_R = ${GermanNumber.format(it.flowLs, 2)} l/s", allowNonPositive = true) },
-            "Wohngebäude: a = 1,48, b = 0,19, c = 0,94. Nie mehr als ΣV̇_R, nie weniger als die größte Entnahmestelle. " + ShkDesign.SOURCE,
+            "Wohngebäude: a = 1,48, b = 0,19, c = 0,94 (DIN 1988-300:2012). Nie mehr als ΣV̇_R, nie weniger als die größte Entnahmestelle. " +
+                "Dauerverbraucher kommen zum Spitzendurchfluss dazu. Je Nutzungseinheit zählen zweites Waschbecken, Dusche neben Wanne, Urinal und Bidet nicht mit. " +
+                ShkDesign.SOURCE,
+            Reliability.GUIDE, needsPlanner = true,
         ) { v ->
             val counts = TapPoint.entries.associateWith { t ->
                 val n = v.getValue(t.name.lowercase())
@@ -81,16 +99,20 @@ internal object DesignCalculators {
             )
         },
         ShkCalculator(
-            "insulation", "Dämmdicke nach GEG", D, "s ≥ f(dᵢ) bei λ = 0,035",
+            "insulation", "Dämmdicke nach GModG (früher GEG)", D, "s ≥ f(dᵢ) bei λ = 0,035",
             listOf(ShkInput("di", "Innendurchmesser", "dᵢ", "mm")),
-            "Bis 22 mm: 20 mm, bis 35 mm: 30 mm, bis 100 mm: gleich dᵢ, darüber 100 mm. Halbe Dicke in Durchbrüchen, " +
-                "an Verteilern und zwischen Nutzern; 6 mm im Fußbodenaufbau. " + ShkDesign.SOURCE,
+            "Anlage 8: bis 22 mm: 20 mm, bis 35 mm: 30 mm, bis 100 mm: gleich dᵢ, darüber 100 mm, je bei λ = 0,035 W/(m·K). Halbe Dicke in Durchbrüchen, " +
+                "Kreuzungen, an Verbindungen, Verteilern und zwischen Nutzern; 6 mm im Fußbodenaufbau zwischen Nutzern; doppelt an Außenluft. " +
+                "Ausnahmen: in beheizten Räumen eines Nutzers mit frei liegender Absperrung; Warmwasser-Stichleitungen bis 3 l. " +
+                "Anderes λ: Dicke umrechnen (technische Regeln). " + ShkDesign.SOURCE,
+            Reliability.GUIDE,
         ) { v ->
             val di = v.getValue("di")
             listOf(
                 ShkOutput("Dämmdicke normal", "s", ShkDesign.insulationMm(di), "mm", 1),
                 ShkOutput("Dämmdicke 50 %", "s", ShkDesign.insulationMm(di, InsulationCase.HALF), "mm", 1),
-                ShkOutput("Im Fußbodenaufbau", "s", 6.0, "mm", 0),
+                ShkOutput("Fußbodenaufbau zwischen Nutzern", "s", 6.0, "mm", 0),
+                ShkOutput("An Außenluft", "s", ShkDesign.insulationMm(di, InsulationCase.OUTDOOR), "mm", 1),
             )
         },
         ShkCalculator(
@@ -99,7 +121,8 @@ internal object DesignCalculators {
                 ShkInput("a", "Beheizte Fläche", "A", "m²"),
                 ShkInput("q", "Spezifische Heizlast", "q", "W/m²", 80.0, "Altbau 150 · EnEV 60 · Neubau 45 · Passivhaus 15"),
             ),
-            "Nur zum Überschlagen; die Raumheizlast wird nach DIN EN 12831 berechnet. " + ShkDesign.SOURCE,
+            "Nur zum Überschlagen; die q-Werte sind grobe Erfahrungswerte. Die Raumheizlast wird nach DIN EN 12831 berechnet. " + ShkDesign.SOURCE,
+            Reliability.GUIDE, needsPlanner = true,
         ) { v ->
             val w = v.getValue("a") * v.getValue("q")
             listOf(ShkOutput("Heizlast", "Φ_HL", w / 1000.0, "kW", 2), ShkOutput("Heizlast", "Φ_HL", w, "W", 0))
@@ -111,9 +134,10 @@ internal object DesignCalculators {
                 ShkInput("tv", "Vorlauftemperatur", "ϑ_V", "°C", 55.0),
                 ShkInput("tr", "Rücklauftemperatur", "ϑ_R", "°C", 45.0),
                 ShkInput("ti", "Raumtemperatur", "ϑ_i", "°C", 20.0),
-                ShkInput("n", "Heizkörperexponent", "n", "", 1.3, "Plattenheizkörper ≈ 1,3"),
+                ShkInput("n", "Heizkörperexponent", "n", "", 1.3, "≈ 1,3, genau im Datenblatt (oft 1,2–1,35)"),
             ),
             "Umrechnung der Katalogleistung (EN 442) auf andere Temperaturen. " + ShkDesign.SOURCE,
+            Reliability.GUIDE,
         ) { v ->
             val dl = ShkDesign.logDelta(v.getValue("tv"), v.getValue("tr"), v.getValue("ti"))
             val w = ShkDesign.radiatorOutput(v.getValue("pn"), v.getValue("tv"), v.getValue("tr"), v.getValue("ti"), v.getValue("n"))
@@ -133,7 +157,8 @@ internal object DesignCalculators {
                 ShkInput("z", "Zuschlag Einzelwiderstände", "Z", "%", 30.0),
                 ShkInput("dpx", "Weitere Bauteile (Ventile, Kessel)", "Δp_z", "kPa", 10.0, allowNonPositive = true),
             ),
-            "Betriebspunkt der Umwälzpumpe für den ungünstigsten Kreis. " + ShkDesign.SOURCE,
+            "Betriebspunkt der Umwälzpumpe für den ungünstigsten Kreis. Zuschlag Z und R sind Annahmen. " + ShkDesign.SOURCE,
+            Reliability.GUIDE, needsPlanner = true,
         ) { v ->
             require(v.getValue("dpx") >= 0) { "Weitere Bauteile: Wert ≥ 0" }
             val q = Shk.flowFromPower(v.getValue("p"), v.getValue("dt"))

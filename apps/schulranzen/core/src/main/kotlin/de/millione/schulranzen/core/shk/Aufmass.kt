@@ -83,8 +83,16 @@ object AufmassMath {
 object ShkCsv {
     const val BOM = "﻿"
 
-    fun cell(s: String): String =
-        if (s.any { it == ';' || it == '"' || it == '\n' || it == '\r' }) "\"" + s.replace("\"", "\"\"") + "\"" else s
+    private val NUMBER = Regex("-?[0-9]+(,[0-9]+)?")
+
+    /**
+     * Quotes separators, and defuses text a spreadsheet would run as a formula
+     * ("=…", "+…", "-…", "@…"); a plain negative number stays a number.
+     */
+    fun cell(s: String): String {
+        val safe = if (s.isNotEmpty() && s[0] in "=+-@" && !NUMBER.matches(s)) "'$s" else s
+        return if (safe.any { it == ';' || it == '"' || it == '\n' || it == '\r' }) "\"" + safe.replace("\"", "\"\"") + "\"" else safe
+    }
 
     fun row(vararg cells: String): String = cells.joinToString(";") { cell(it) }
 
@@ -94,6 +102,8 @@ object ShkCsv {
         append(BOM)
         appendLine(row("Aufmaß", project.name))
         if (project.address.isNotBlank()) appendLine(row("Baustelle", project.address))
+        val bad = AufmassMath.invalid(project).size
+        if (bad > 0) appendLine(row("Achtung", "$bad Rechnung(en) nicht lesbar, in den Summen nicht enthalten"))
         appendLine()
         appendLine(row("Raum", "Art", "Bezeichnung", "Rohr", "Rechnung", "Menge", "Einheit", "Gedämmt", "Bemerkung"))
         project.rooms.forEach { room ->
@@ -101,7 +111,7 @@ object ShkCsv {
                 appendLine(
                     row(
                         room.name, p.kind.title, p.title, PipeCatalog.byId(p.pipeId)?.fullLabel ?: "",
-                        p.expression, num(p.quantity), p.unit, if (p.insulate) "ja" else "", p.note,
+                        p.expression, quantityText(p), p.unit, if (p.insulate) "ja" else "", p.note,
                     ),
                 )
             }
@@ -110,6 +120,13 @@ object ShkCsv {
         appendLine(row("Summen"))
         appendLine(row("Art", "Bezeichnung", "Menge", "Einheit"))
         AufmassMath.sums(project).forEach { appendLine(row(it.kind.title, it.title, num(it.quantity), it.unit)) }
+    }
+
+    /** The quantity for exports; an unreadable calculation says so instead of leaving a gap that reads as 0. */
+    fun quantityText(p: AufmassPosition, decimals: Int = 3): String = when {
+        p.expression.isBlank() -> ""
+        p.quantity == null -> "nicht lesbar"
+        else -> num(p.quantity, decimals)
     }
 
     fun materials(title: String, list: MaterialList): String = buildString {
