@@ -31,17 +31,24 @@ object GermanNumber {
     /** Rounds to [decimals] places for fixed-unit outputs (SHK results); trailing zeros dropped. */
     fun format(value: Double, decimals: Int, grouping: Boolean = true): String {
         if (!value.isFinite()) return "–"
+        if (value == 0.0) return "0"
+        if (abs(value) >= 1e12) return scientific(value, MINUS)
         val bd = BigDecimal.valueOf(value).setScale(decimals, RoundingMode.HALF_UP).stripTrailingZeros()
-        if (bd.signum() == 0) return "0"
-        // Too small for the requested places: fall back to significant digits.
+        // Too small for the requested places: a real value must never read as a plain 0.
+        if (bd.signum() == 0) {
+            if (abs(value) < 1e-6) return scientific(value, MINUS)
+            val small = BigDecimal.valueOf(value).round(MathContext(3, RoundingMode.HALF_UP)).stripTrailingZeros()
+            return decorate(small.toPlainString(), grouping, MINUS)
+        }
         return decorate(bd.toPlainString(), grouping, MINUS)
     }
 
     private fun render(value: Double, grouping: Boolean, minus: Char): String {
         if (value.isNaN()) return "–"
         if (value.isInfinite()) return if (value > 0) "∞" else "${minus}∞"
+        // Only a true zero prints as 0; the parser removes rounding noise before it gets here.
+        if (value == 0.0) return "0"
         val a = abs(value)
-        if (a < 1e-12) return "0"
         if (a >= 1e12 || a < 1e-6) return scientific(value, minus)
         val bd = BigDecimal.valueOf(value).round(MathContext(SIGNIFICANT, RoundingMode.HALF_UP)).stripTrailingZeros()
         if (bd.abs() >= BigDecimal("1E12")) return scientific(value, minus)
@@ -72,7 +79,7 @@ object GermanNumber {
     }
 
     private fun scientific(value: Double, minus: Char): String {
-        val bd = BigDecimal.valueOf(value).round(MathContext(SCI_SIGNIFICANT, RoundingMode.HALF_UP))
+        val bd = BigDecimal.valueOf(value).round(MathContext(SCI_SIGNIFICANT, RoundingMode.HALF_UP)).stripTrailingZeros()
         val exp = bd.precision() - bd.scale() - 1
         val mantissa = bd.movePointLeft(exp).stripTrailingZeros().toPlainString()
         val m = decorate(mantissa, false, minus)

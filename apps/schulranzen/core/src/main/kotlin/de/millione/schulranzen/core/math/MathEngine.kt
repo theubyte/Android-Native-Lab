@@ -1,5 +1,7 @@
 package de.millione.schulranzen.core.math
 
+import kotlin.math.abs
+
 /**
  * The calculator core: normalise, parse, evaluate, format. Pure Kotlin so the
  * pocket calculator, the handwriting solver and the SHK input fields all share
@@ -39,6 +41,8 @@ object MathEngine {
         MathOutcome.Error(e.message ?: "Fehler", e.position)
     } catch (e: RuntimeException) {
         MathOutcome.Error("Rechnung nicht verständlich")
+    } catch (e: StackOverflowError) {
+        MathOutcome.Error("Die Rechnung ist zu tief verschachtelt")
     }
 
     /** Canonical ASCII form ("3×4" → "3*4", "5:2" → "5/2", "√9" → "sqrt9"). */
@@ -65,68 +69,82 @@ object MathEngine {
 
     private val PRETTY_WORDS = listOf(
         "sqrt" to "√", "cbrt" to "∛", "asin" to "sin⁻¹", "acos" to "cos⁻¹", "atan" to "tan⁻¹",
-        "ans" to "ANS", "pi" to "π",
+        "ans" to "ANS", "pi" to "π", Normalizer.SCI.toString() to "×10^",
     )
 
     /**
-     * Picks the most plausible calculation among handwriting candidates and
-     * solves it. Returns null when none of them is a calculation (plain words,
-     * a lone number, a formula with variables).
+     * Solves what the recogniser read. Returns null when no candidate is a
+     * calculation (plain words, a lone number, a formula with variables).
      *
-     * Every candidate is tried as is and in a few repaired variants; the score
-     * prefers many digits and operators, an explicit "=", and the recogniser's
-     * own ranking.
+     * Follows the recogniser's own ranking instead of guessing from how many
+     * digits a candidate has. The result is [MathResult.uncertain] as soon as
+     * letters had to be repaired, text was skipped, or another highly ranked
+     * reading gives a different number: the UI then asks to check the reading,
+     * because a wrong result that looks sure is the worst outcome here.
      */
     fun solveHandwriting(
         candidates: List<String>,
         angle: AngleMode = AngleMode.DEG,
         ans: Double = 0.0,
     ): MathResult? {
-        var best: MathResult? = null
-        var bestScore = Int.MIN_VALUE
+        val readings = ArrayList<Reading>()
         candidates.forEachIndexed { rank, raw ->
-            variants(raw).forEachIndexed { variantIndex, candidate ->
-                val expr = try { normalize(candidate, handwriting = true) } catch (e: RuntimeException) { return@forEachIndexed }
-                if (expr.isEmpty() || expr.length > 160 || expr.none { it.isDigit() } || !looksLikeCalculation(expr)) return@forEachIndexed
-                val result = try { evaluate(candidate, angle, ans, handwriting = true) } catch (e: RuntimeException) { return@forEachIndexed }
-                val score = score(raw, expr) - rank * 2 - variantIndex
-                if (score > bestScore) {
-                    bestScore = score
-                    best = MathResult(raw, result.expression, result.value)
-                }
+            variants(raw).forEach { (text, repaired) ->
+                val expr = runCatching { normalize(text, handwriting = true) }.getOrNull() ?: return@forEach
+                if (expr.isEmpty() || expr.length > 160 || expr.none { it.isDigit() } || !looksLikeCalculation(expr)) return@forEach
+                val value = runCatching { evaluate(text, angle, ans, handwriting = true).value }.getOrNull() ?: return@forEach
+                val plain = runCatching { normalize(text, handwriting = false) }.getOrNull()
+                readings += Reading(raw, expr, value, rank, repaired || plain != expr)
             }
         }
-        return best
+        // A clean reading always beats a repaired one; among equals the recogniser's order decides.
+        val best = readings.minWithOrNull(compareBy({ it.repaired }, { it.rank })) ?: return null
+        val others = readings.filter { abs(it.value - best.value) > RESULT_TOLERANCE * maxOf(1.0, abs(best.value)) }
+            .filter { it.rank <= best.rank + CLOSE_RANKS }
+            .distinctBy { it.expression }
+        val alternatives = others.take(3).map { "${pretty(it.expression)} = ${GermanNumber.format(it.value)}" }
+        return MathResult(best.raw, best.expression, best.value, uncertain = best.repaired || others.isNotEmpty(), alternatives = alternatives)
     }
+
+    private data class Reading(val raw: String, val expression: String, val value: Double, val rank: Int, val repaired: Boolean)
+
+    private const val RESULT_TOLERANCE = 1e-9
+    /** Readings this close behind the best one count as real doubt; ML Kit lists up to 24, most far-fetched. */
+    private const val CLOSE_RANKS = 3
 
     private fun looksLikeCalculation(expr: String): Boolean =
         expr.any { it in "+-*/^%!" } || FUNCTIONS.any { expr.contains(it) }
 
     private val FUNCTIONS = listOf("sqrt", "cbrt", "sin", "cos", "tan", "ln", "log")
 
-    private fun score(raw: String, expr: String): Int {
-        var s = expr.count { it.isDigit() } * 4
-        s += expr.count { it in "+-*/^%()" } * 3
-        if (raw.contains('=')) s += 2
-        s -= maxOf(0, expr.length - 45)
-        return s
-    }
-
-    /** Raw candidate first, then each line on its own, then look-alike letter fixes. */
-    private fun variants(raw: String): List<String> {
-        val out = LinkedHashSet<String>()
+    /**
+     * The candidate as is, then each line on its own, then look-alike letter
+     * fixes. The flag says the text was changed, so the result is only a guess.
+     * Lines are joined only for column sums, where the next line starts with an
+     * operator; a removed "=" must never glue the answer onto the task (3+4=7 → 3+47).
+     */
+    private fun variants(raw: String): List<Pair<String, Boolean>> {
         if (raw.isBlank()) return emptyList()
-        out += raw
-        raw.split('\n', '\r').map { it.trim() }.filter { it.isNotEmpty() }.forEach { out += it }
-        out += raw.replace("=", "")
-        val low = raw.lowercase()
-        if (FUNCTIONS.none { low.contains(it) }) {
-            val common = low.map { LOOKALIKE[it] ?: it }.joinToString("")
-            out += common
-            out += common.replace('b', '6')
-            out += common.replace('b', '8')
+        val out = LinkedHashMap<String, Boolean>()
+        val lines = raw.split('\n', '\r').map { it.trim() }.filter { it.isNotEmpty() }
+        if (lines.size > 1) {
+            if (lines.drop(1).all { it.first() in "+-−–*×·/:÷=" }) out[lines.joinToString("")] = false
+            else lines.forEach { out.putIfAbsent(it, true) }
+        } else {
+            out[lines.first()] = false
         }
-        return out.toList()
+        out.keys.toList().forEach { text ->
+            val low = text.lowercase()
+            val letters = low.count { it in 'a'..'z' }
+            val hasOperands = low.count { it.isDigit() } >= letters
+            if (FUNCTIONS.none { low.contains(it) } && letters > 0 && hasOperands) {
+                val common = low.map { LOOKALIKE[it] ?: it }.joinToString("")
+                out.putIfAbsent(common, true)
+                out.putIfAbsent(common.replace('b', '6'), true)
+                out.putIfAbsent(common.replace('b', '8'), true)
+            }
+        }
+        return out.map { it.key to it.value }
     }
 
     private val LOOKALIKE = mapOf('o' to '0', 'l' to '1', 'i' to '1', 'z' to '2', 's' to '5', 'g' to '9', 't' to '+')

@@ -9,8 +9,16 @@ enum class AngleMode { DEG, RAD }
  * @property input what the user (or the recogniser) gave us, untouched.
  * @property expression the normalised form that was actually evaluated (ASCII operators).
  * @property value the exact double result; [text] is what to show.
+ * @property uncertain handwriting only: the reading may be wrong, so the UI must ask to check it.
+ * @property alternatives handwriting only: other plausible readings as "expression = result".
  */
-data class MathResult(val input: String, val expression: String, val value: Double) {
+data class MathResult(
+    val input: String,
+    val expression: String,
+    val value: Double,
+    val uncertain: Boolean = false,
+    val alternatives: List<String> = emptyList(),
+) {
     /** German display form, e.g. "1232" or "0,3333333333". */
     val text: String get() = GermanNumber.format(value)
 

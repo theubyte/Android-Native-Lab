@@ -44,7 +44,12 @@ class GermanNumberTest {
     @Test fun fixedDecimals() {
         assertEquals("7,17", GermanNumber.format(7.16537, 2))
         assertEquals("10", GermanNumber.format(10.0001, 2))
-        assertEquals("0", GermanNumber.format(0.0001, 2))
+        // A real value never reads as a plain 0, even below the requested places.
+        assertEquals("0,0001", GermanNumber.format(0.0001, 2))
+        assertEquals("0,00123", GermanNumber.format(0.0012345, 2))
+        assertEquals("1,5×10⁻⁷", GermanNumber.format(1.5e-7, 3))
+        assertEquals("0", GermanNumber.format(0.0, 3))
+        assertEquals("1,5×10¹³", GermanNumber.format(1.5e13, 1))
         assertEquals("1000", GermanNumber.format(999.9999, 2))
         assertEquals("12${g}345,7", GermanNumber.format(12345.678, 1))
         assertEquals("${m}3,5", GermanNumber.format(-3.5, 1))

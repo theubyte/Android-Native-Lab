@@ -7,6 +7,14 @@ package de.millione.schulranzen.core.math
  * keeps the parser small and strict.
  */
 internal object Normalizer {
+    /** Marks the exponent of scientific notation for the lexer. */
+    const val SCI = 'ᴇ'
+    private val TIMES_X = Regex("(?<=[0-9.,)!%]|pi|ans|e)x(?=[0-9.,(]|sqrt|cbrt|sin|cos|tan|asin|acos|atan|arc|ln|log|lg|abs|pi|ans|e)")
+    private const val SPACE = "[ \\t\\u00A0\\u2009\\u202F]"
+    private val LINE_GAP = Regex("[0-9.,]\\s*[\\r\\n]\\s*[0-9.,]")
+    /** A run of digits split by plain spaces; the capture is everything after the first group. */
+    private val GAP = Regex("(?<![0-9.,])[0-9]+((?:$SPACE+[0-9]+)+)")
+    private val THOUSANDS = Regex("(?:$SPACE+[0-9]{3})+")
     private val CHAR_MAP: Map<Char, String> = buildMap {
         "−–—‐‑‒﹣－".forEach { put(it, "-") }
         "×·∙•⋅✕✖✗＊⨯".forEach { put(it, "*") }
@@ -27,7 +35,7 @@ internal object Normalizer {
     fun normalize(raw: String, handwriting: Boolean): String {
         val sb = StringBuilder()
         var i = 0
-        val src = raw.trim()
+        val src = markScientific(rejectGluedNumbers(raw.trim()))
         while (i < src.length) {
             val ch = src[i]
             if (ch in SUPER) {
@@ -39,15 +47,16 @@ internal object Normalizer {
                 continue
             }
             if (ch.isWhitespace()) { i++; continue }
-            sb.append(CHAR_MAP[ch] ?: ch.lowercaseChar().toString())
+            sb.append(CHAR_MAP[ch] ?: if (ch == SCI) ch.toString() else ch.lowercaseChar().toString())
             i++
         }
         var s = sb.toString()
         // Words people write instead of symbols.
         s = s.replace("wurzel", "sqrt").replace("mal", "*").replace("durch", "/")
         if (handwriting) s = fixHandwriting(s)
-        // No variables exist, so every x is a times sign ("3x4", "3 x (2+1)").
-        s = s.replace('x', '*')
+        // An x is a times sign only between two operands ("3x4", "3 x (2+1)"). "2x+3" is an
+        // equation with a variable; reading it as 2·3 would be silently wrong.
+        s = TIMES_X.replace(s, "*")
         // A colon is sometimes read as a semicolon between digits.
         s = s.replace(Regex("(?<=[0-9)]);(?=[0-9(])"), "/")
         // Only the left side of "a = b" is the task; a trailing "=" just asks for the result.
@@ -57,6 +66,27 @@ internal object Normalizer {
             s = if (left.isNotEmpty()) left else s.substring(eq + 1).trimEnd('=')
         }
         return s
+    }
+
+    /**
+     * Whitespace used to vanish, so "12 5" became 125 and two written lines
+     * melted into one number. Only real thousands groups ("1 000") may stay apart.
+     */
+    private fun rejectGluedNumbers(src: String): String {
+        if (LINE_GAP.containsMatchIn(src)) throw MathException("Zwei Zeilen: bitte nur eine Rechnung auswählen")
+        GAP.findAll(src).forEach { m ->
+            if (!m.groupValues[1].matches(THOUSANDS)) throw MathException("Zwischen den Zahlen fehlt ein Rechenzeichen")
+        }
+        return src
+    }
+
+    /** "1e5" and "1,5E-3" are powers of ten, not 1·e·5. A small "2e-1" could be either, so it asks. */
+    private fun markScientific(src: String): String {
+        if (Regex("[0-9.,]e[+\\-−][0-9]").containsMatchIn(src)) {
+            throw MathException("„e“ ist mehrdeutig: 2·e−1 oder 2×10^−1 ausschreiben")
+        }
+        return src.replace(Regex("(?<=[0-9.,])[eE](?=[0-9])"), SCI.toString())
+            .replace(Regex("(?<=[0-9.,])E(?=[+\\-−][0-9])"), SCI.toString())
     }
 
     /** Conservative OCR fixes: letters only become digits where a digit is expected. */
