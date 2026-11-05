@@ -37,7 +37,8 @@ internal object BookOutlines {
 
     fun embeddedOf(doc: PDDocument): Outline? {
         val entries = ArrayList<OutlineEntry>()
-        runCatching { doc.documentCatalog?.documentOutline?.firstChild?.let { walk(doc, it, 0, entries) } }
+        val budget = intArrayOf(MAX_NODES)
+        runCatching { doc.documentCatalog?.documentOutline?.firstChild?.let { walk(doc, it, 0, entries, budget) } }
         return if (entries.size >= 2) Outline(entries, OutlineSource.EMBEDDED, doc.numberOfPages, hasText = true) else null
     }
 
@@ -64,16 +65,20 @@ internal object BookOutlines {
         return doc.use { block(it) }
     }
 
-    private fun walk(doc: PDDocument, first: PDOutlineItem, level: Int, out: MutableList<OutlineEntry>) {
+    /** Broken PDFs can have bookmarks pointing at each other: [budget] ends the walk where the entry count would not. */
+    private fun walk(doc: PDDocument, first: PDOutlineItem, level: Int, out: MutableList<OutlineEntry>, budget: IntArray) {
         var item: PDOutlineItem? = first
-        while (item != null && out.size < Outline.MAX_ENTRIES * 2) {
+        while (item != null && out.size < Outline.MAX_ENTRIES * 2 && budget[0]-- > 0) {
             runCatching {
                 val title = item!!.title?.trim().orEmpty()
                 val page = item!!.findDestinationPage(doc)?.let { doc.pages.indexOf(it) } ?: -1
                 if (title.isNotEmpty() && page >= 0) out += OutlineEntry(title, page, minOf(5, level))
-                item!!.firstChild?.let { walk(doc, it, level + 1, out) }
+                item!!.firstChild?.let { if (level < MAX_DEPTH) walk(doc, it, level + 1, out, budget) }
             }
             item = item.nextSibling
         }
     }
+
+    private const val MAX_NODES = 20_000
+    private const val MAX_DEPTH = 32
 }

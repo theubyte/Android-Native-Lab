@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -75,6 +76,16 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -85,6 +96,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import de.millione.schulranzen.core.books.PageJump
+import de.millione.schulranzen.core.books.ReadingProgress
 import de.millione.schulranzen.design.InkPalette
 import de.millione.schulranzen.design.Lamp
 import de.millione.schulranzen.design.PaperPanel
@@ -95,6 +107,7 @@ import de.millione.schulranzen.design.RanzenIcons
 import de.millione.schulranzen.design.SignalButton
 import de.millione.schulranzen.design.TactileKey
 import de.millione.schulranzen.design.TextFamily
+import de.millione.schulranzen.design.rememberIsPhone
 import de.millione.schulranzen.ink.Brushes
 import de.millione.schulranzen.ink.TextItem
 import java.io.File
@@ -106,8 +119,13 @@ private enum class Panel { NONE, STYLE, JUMP, CONTENTS, SEARCH, MORE }
  * Reads a book full screen: the PDF with ink, text, notes, bookmarks and
  * marked areas. [onClip] gets a PNG under `filesDir/images/` when the
  * reader takes a clipping into a notebook. [onMarkForExam] (optional) adds
- * "Für Prüfung merken" for the page or a marked area. [startPage] and
+ * "Für Prüfung merken" for the page or a marked area. [onLearn] (optional)
+ * adds "Karte" and "Text" to a marked area, see [BookLearn]. [startPage] and
  * [highlight] (unrotated page units, as in [BookLink]) jump into the book.
+ *
+ * On a phone ([rememberIsPhone]) this is a reader: search, contents, bookmarks,
+ * jumps, night mode and "Für Prüfung merken", with no way of changing a page.
+ * [onClip] and [onLearn] are then never called.
  */
 @Composable
 fun BookScreen(
@@ -117,7 +135,8 @@ fun BookScreen(
     onMarkForExam: ((BookLink) -> Unit)? = null,
     startPage: Int? = null,
     highlight: RectF? = null,
-) = BookReader(bookId, Modifier.fillMaxSize(), onClip, onBack, onMarkForExam, startPage, highlight, embedded = false)
+    onLearn: ((BookLearn) -> Unit)? = null,
+) = BookReader(bookId, Modifier.fillMaxSize(), onClip, onBack, onMarkForExam, onLearn, startPage, highlight, embedded = false)
 
 /**
  * The same reader for "book and notebook side by side": no full-screen
@@ -135,8 +154,10 @@ fun BookPane(
     onMarkForExam: ((BookLink) -> Unit)? = null,
     startPage: Int? = null,
     highlight: RectF? = null,
-) = BookReader(bookId, modifier, onClip, onClose, onMarkForExam, startPage, highlight, embedded = true)
+    onLearn: ((BookLearn) -> Unit)? = null,
+) = BookReader(bookId, modifier, onClip, onClose, onMarkForExam, onLearn, startPage, highlight, embedded = true)
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BookReader(
     bookId: String,
@@ -144,21 +165,23 @@ private fun BookReader(
     onClip: (File) -> Unit,
     onClose: () -> Unit,
     onMarkForExam: ((BookLink) -> Unit)?,
+    onLearn: ((BookLearn) -> Unit)?,
     startPage: Int?,
     highlight: RectF?,
     embedded: Boolean,
 ) {
     val context = LocalContext.current
     val c = Ranzen.colors
-    val view = remember(bookId) { BookCanvasView(context) }
-    val session = remember(bookId) { BookSession(context.applicationContext, bookId, view) }
+    val phone = rememberIsPhone()
+    val view = remember(bookId) { BookCanvasView(context).also { it.compact = phone } }
+    val session = remember(bookId) { BookSession(context.applicationContext, bookId, view).also { it.setReadingOnly(phone) } }
     DisposableEffect(session) {
         session.open()
         onDispose { session.close() }
     }
     LaunchedEffect(session, startPage, highlight) { if (startPage != null) session.openAt(startPage, highlight) }
     val desk = c.desk.toArgb(); val signal = c.signal.toArgb()
-    SideEffect { view.deskColor = desk; view.accentColor = signal }
+    SideEffect { view.deskColor = desk; view.accentColor = signal; view.compact = phone; session.setReadingOnly(phone) }
     var panel by remember { mutableStateOf(Panel.NONE) }
     val busy = session.noteDraft != null || session.textDraft != null || panel != Panel.NONE ||
         session.areaFrame != null || session.selectionFrame != null
@@ -179,14 +202,27 @@ private fun BookReader(
         val landscape = !embedded && maxWidth > maxHeight
         val safe = if (embedded) Modifier else Modifier.windowInsetsPadding(WindowInsets.safeDrawing)
         val sheetWidth = 400.dp.coerceAtMost(maxWidth - 28.dp)
+        val pageLabel = "Buchseite ${session.page + 1} von ${session.pageCount}"
 
-        AndroidView(factory = { view }, modifier = Modifier.fillMaxSize().penHover(view))
+        AndroidView(
+            factory = { view },
+            modifier = Modifier.fillMaxSize().penHover(view).semantics {
+                contentDescription = pageLabel
+                customActions = listOf(
+                    CustomAccessibilityAction("Nächste Seite") { session.goTo(session.page + 1); true },
+                    CustomAccessibilityAction("Vorige Seite") { session.goTo(session.page - 1); true },
+                )
+            },
+        )
 
         if (!session.loaded) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 PaperPanel(corner = 20.dp) {
-                    Column(Modifier.padding(26.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(session.error ?: "Buch wird geöffnet …", style = Ranzen.type.heading, color = c.ink)
+                    Column(Modifier.padding(26.dp).widthIn(max = 440.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            session.error ?: "Buch wird geöffnet …", style = Ranzen.type.heading, color = c.ink,
+                            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                        )
                         if (session.error != null) {
                             Spacer(Modifier.height(14.dp))
                             QuietButton(if (embedded) "Schließen" else "Zurück", onClose)
@@ -197,7 +233,29 @@ private fun BookReader(
         }
 
         if (session.loaded) {
-            if (embedded) {
+            ProgressLine(session, Modifier.align(Alignment.BottomCenter).then(safe))
+            if (session.readOnly) {
+                val topPx = WindowInsets.safeDrawing.getTop(LocalDensity.current)
+                AnimatedVisibility(
+                    session.chrome || panel != Panel.NONE, Modifier.align(Alignment.TopCenter),
+                    enter = fadeIn(), exit = fadeOut(),
+                ) {
+                    PhoneBar(
+                        session,
+                        safe.padding(horizontal = 8.dp, vertical = 8.dp).fillMaxWidth()
+                            // Pages jumped to start below the bar, also while it is hidden: it comes back on a tap.
+                            .onSizeChanged { view.topInset = (topPx + it.height).toFloat() },
+                        panel, onBack = onClose, onPanel = toggle,
+                    )
+                }
+                if (!session.chrome && panel == Panel.NONE) {
+                    Text(
+                        "${session.page + 1} / ${session.pageCount}", style = Ranzen.type.caption, color = c.paper,
+                        modifier = Modifier.align(Alignment.BottomCenter).then(safe).padding(bottom = 12.dp)
+                            .clip(RoundedCornerShape(10.dp)).background(c.ink.copy(alpha = 0.7f)).padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
+            } else if (embedded) {
                 PaneBar(session, Modifier.align(Alignment.TopCenter).padding(horizontal = 10.dp, vertical = 10.dp),
                     onClose = onClose, onPanel = toggle, panel = panel)
             } else {
@@ -213,10 +271,15 @@ private fun BookReader(
         if (panel == Panel.NONE) {
             session.areaFrame?.let { frame ->
                 FloatingBar(frame) {
-                    Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // Wraps in a narrow pane; every action stays reachable.
+                    FlowRow(Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
                         BarButton(RanzenIcons.Scissors, "Ins Heft", { session.clipArea(onClip) }, tint = c.signal)
                         BarButton(BookIcons.Star, "Merken", session::keepArea)
                         if (onMarkForExam != null) BarButton(BookIcons.Exam, "Prüfung", { session.markForExam(onMarkForExam, area = true) })
+                        if (onLearn != null) {
+                            BarButton(BookIcons.Card, "Bildkarte", { session.learnImage(onLearn) })
+                            BarButton(RanzenIcons.Text, if (session.working) "Liest …" else "Textkarten", { session.learnText(onLearn) })
+                        }
                         BarButton(RanzenIcons.Close, "Abbrechen", session::cancelArea)
                     }
                 }
@@ -230,7 +293,7 @@ private fun BookReader(
         }
         val popIn = fadeIn() + scaleIn(spring(dampingRatio = 0.7f), initialScale = 0.92f)
         val popOut = fadeOut() + scaleOut(targetScale = 0.95f)
-        val topGap = when { embedded -> 80.dp; landscape -> 84.dp; else -> 160.dp }
+        val topGap = when { session.readOnly -> 72.dp; embedded -> 80.dp; landscape -> 84.dp; else -> 160.dp }
         val sideAlign = when {
             embedded -> Modifier.align(Alignment.TopStart).padding(start = 10.dp, top = topGap)
             landscape -> Modifier.align(Alignment.CenterStart).then(safe).padding(start = 92.dp)
@@ -241,7 +304,7 @@ private fun BookReader(
             enter = popIn, exit = popOut) {
             JumpPanel(session) { panel = Panel.NONE }
         }
-        AnimatedVisibility(panel == Panel.MORE, Modifier.align(Alignment.TopEnd).padding(end = 10.dp, top = topGap),
+        AnimatedVisibility(panel == Panel.MORE, Modifier.align(Alignment.TopEnd).then(if (embedded) Modifier else safe).padding(end = 10.dp, top = topGap),
             enter = popIn, exit = popOut) {
             MorePanel(session, onMarkForExam, onPanel = { panel = it }, onClose = { panel = Panel.NONE })
         }
@@ -260,7 +323,7 @@ private fun BookReader(
             Box(Modifier.fillMaxSize().background(c.desk.copy(alpha = 0.35f)).pointerInput(Unit) { detectTapGestures { } })
             val insets = if (embedded) Modifier else Modifier.windowInsetsPadding(WindowInsets.safeDrawing.union(WindowInsets.ime))
             Box(Modifier.fillMaxSize().then(insets).padding(if (embedded) 14.dp else 24.dp), contentAlignment = Alignment.Center) {
-                session.noteDraft?.let { NoteEditor(session, it) }
+                session.noteDraft?.let { if (session.readOnly) NoteViewer(session, it) else NoteEditor(session, it) }
                 session.textDraft?.let { TextEditor(session, it) }
             }
         }
@@ -269,7 +332,8 @@ private fun BookReader(
             Box(safe.fillMaxSize().padding(bottom = 28.dp), contentAlignment = Alignment.BottomCenter) {
                 Text(
                     msg, style = Ranzen.type.label, color = c.paper,
-                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(c.ink.copy(alpha = 0.9f)).padding(horizontal = 18.dp, vertical = 10.dp),
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                        .clip(RoundedCornerShape(12.dp)).background(c.ink.copy(alpha = 0.9f)).padding(horizontal = 18.dp, vertical = 10.dp),
                 )
             }
         }
@@ -291,10 +355,52 @@ private fun Modifier.penHover(view: BookCanvasView) = pointerInput(view) {
     }
 }
 
+/** How far through the book the reader is: a thin line along the bottom. */
+@Composable
+private fun ProgressLine(session: BookSession, modifier: Modifier) {
+    val c = Ranzen.colors
+    val fraction = ReadingProgress.fraction(session.page, session.pageCount)
+    val percent = ReadingProgress.percent(session.page, session.pageCount)
+    Box(
+        modifier.fillMaxWidth().height(3.dp).background(c.line.copy(alpha = 0.5f)).semantics {
+            contentDescription = "$percent Prozent gelesen"
+            progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f)
+        },
+    ) {
+        Box(Modifier.fillMaxWidth(fraction).height(3.dp).background(c.signal))
+    }
+}
+
+/** The phone's one bar: back, title and page (tap to jump), search, contents, more. Fits 360 dp. */
+@Composable
+private fun PhoneBar(session: BookSession, modifier: Modifier, panel: Panel, onBack: () -> Unit, onPanel: (Panel) -> Unit) {
+    val c = Ranzen.colors
+    PaperPanel(modifier, corner = 16.dp, depth = 0.6f) {
+        Row(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            TactileKey(onBack, contentDescription = "Zurück") { RanzenIcon(RanzenIcons.Back) }
+            Column(
+                Modifier.weight(1f).heightIn(min = 48.dp).clip(RoundedCornerShape(10.dp))
+                    .clickable(onClickLabel = "Zu einer Seite springen") { onPanel(Panel.JUMP) }
+                    .padding(horizontal = 8.dp),
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(session.title, style = Ranzen.type.label, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("S. ${session.page + 1} / ${session.pageCount}", style = Ranzen.type.caption, color = c.inkMuted, maxLines = 1)
+            }
+            TactileKey({ onPanel(Panel.SEARCH) }, selected = panel == Panel.SEARCH, contentDescription = "Im Buch suchen") { RanzenIcon(RanzenIcons.Search) }
+            Spacer(Modifier.width(2.dp))
+            TactileKey({ onPanel(Panel.CONTENTS) }, selected = panel == Panel.CONTENTS, contentDescription = "Inhalt und Seiten") { RanzenIcon(BookIcons.Contents) }
+            Spacer(Modifier.width(2.dp))
+            TactileKey({ onPanel(Panel.MORE) }, selected = panel == Panel.MORE, contentDescription = "Mehr") { RanzenIcon(RanzenIcons.More) }
+        }
+    }
+}
+
 @Composable
 private fun PageButton(session: BookSession, onClick: () -> Unit) {
     Box(
-        Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick).padding(horizontal = 10.dp),
+        Modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(10.dp))
+            .clickable(onClickLabel = "Zu einer Seite springen", onClick = onClick).padding(horizontal = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text("${session.page + 1} / ${session.pageCount}", style = Ranzen.type.mono, color = Ranzen.colors.ink, maxLines = 1)
@@ -396,11 +502,21 @@ private fun Rail(
         ToolKey(session, BookTool.NOTE, BookIcons.Note, "Notiz")
         Gap(vertical, 10)
         TactileKey(onContents, contentDescription = "Inhalt und Seiten") { RanzenIcon(BookIcons.Contents) }
+        Gap(vertical, 4)
+        NightKey(session)
     }
     PaperPanel(modifier, corner = 26.dp, depth = 0.8f) {
         // Scrolls only when the screen is too short for all keys.
         if (vertical) Column(Modifier.verticalScroll(rememberScrollState()).padding(9.dp), horizontalAlignment = Alignment.CenterHorizontally) { items() }
         else Row(Modifier.horizontalScroll(rememberScrollState()).padding(9.dp), verticalAlignment = Alignment.CenterVertically) { items() }
+    }
+}
+
+@Composable
+private fun NightKey(session: BookSession) {
+    val c = Ranzen.colors
+    TactileKey(session::toggleNight, selected = session.night, contentDescription = if (session.night) "Nachtmodus aus" else "Nachtmodus an") {
+        RanzenIcon(BookIcons.Moon, tint = if (session.night) c.signal else c.ink)
     }
 }
 
@@ -438,12 +554,15 @@ private fun MorePanel(session: BookSession, onMarkForExam: ((BookLink) -> Unit)?
     PaperPanel(corner = 20.dp) {
         FlowRow(Modifier.padding(10.dp).widthIn(max = 330.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             fun tool(t: BookTool) = { session.select(t); onClose() }
-            BarButton(BookIcons.Area, "Bereich", tool(BookTool.AREA), tint = if (session.tool == BookTool.AREA) c.signal else c.ink)
-            BarButton(BookIcons.Note, "Notiz", tool(BookTool.NOTE), tint = if (session.tool == BookTool.NOTE) c.signal else c.ink)
-            BarButton(BookIcons.Contents, "Inhalt", { onPanel(Panel.CONTENTS) })
+            if (!session.readOnly) {
+                BarButton(BookIcons.Area, "Bereich", tool(BookTool.AREA), tint = if (session.tool == BookTool.AREA) c.signal else c.ink)
+                BarButton(BookIcons.Note, "Notiz", tool(BookTool.NOTE), tint = if (session.tool == BookTool.NOTE) c.signal else c.ink)
+                BarButton(BookIcons.Contents, "Inhalt", { onPanel(Panel.CONTENTS) })
+            }
             val marked = session.currentBookmarked
             BarButton(RanzenIcons.Bookmark, if (marked) "Gemerkt" else "Lesezeichen", { session.toggleBookmark() }, tint = if (marked) c.signal else c.ink)
-            BarButton(BookIcons.Rotate, "Drehen", session::rotateCurrent)
+            BarButton(BookIcons.Moon, if (session.night) "Tag" else "Nacht", session::toggleNight, tint = if (session.night) c.signal else c.ink)
+            if (!session.readOnly) BarButton(BookIcons.Rotate, "Drehen", session::rotateCurrent)
             if (onMarkForExam != null) BarButton(BookIcons.Exam, "Prüfung", { session.markForExam(onMarkForExam, area = false); onClose() })
         }
     }
@@ -481,9 +600,14 @@ private fun SelectionBar(session: BookSession, frame: RectF) {
                 BarButton(RanzenIcons.Trash, "Löschen", session::deleteSelection, tint = c.signal)
                 BarButton(RanzenIcons.Check, "Fertig", session::clearSelection)
             }
-            if (colors) Row(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                InkPalette.pen.forEach { argb ->
-                    Box(Modifier.size(40.dp).clip(CircleShape).clickable { session.recolorSelection(argb); colors = false }, contentAlignment = Alignment.Center) {
+            if (colors) Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 14.dp, end = 14.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                InkPalette.pen.forEachIndexed { i, argb ->
+                    Box(
+                        Modifier.size(48.dp).clip(CircleShape)
+                            .clickable(onClickLabel = "Auswahl in Farbe ${i + 1}") { session.recolorSelection(argb); colors = false }
+                            .semantics { contentDescription = "Farbe ${i + 1}" },
+                        contentAlignment = Alignment.Center,
+                    ) {
                         Lamp(Color(argb), size = 22.dp)
                     }
                 }
@@ -506,6 +630,7 @@ internal fun BarButton(icon: ImageVector?, label: String, onClick: () -> Unit, t
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StylePanel(session: BookSession) {
     val c = Ranzen.colors
@@ -516,14 +641,15 @@ private fun StylePanel(session: BookSession) {
             Spacer(Modifier.height(16.dp))
             Text("FARBE", style = Ranzen.type.caption, color = c.inkMuted)
             Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 val colors = if (marker) InkPalette.marker else InkPalette.pen
                 val current = if (marker) session.markerColor else session.penColor
-                colors.forEach { argb ->
+                colors.forEachIndexed { i, argb ->
                     Box(
-                        Modifier.size(40.dp).clip(CircleShape)
+                        Modifier.size(48.dp).clip(CircleShape)
                             .border(if (argb == current) 2.dp else 0.dp, if (argb == current) c.ink else Color.Transparent, CircleShape)
-                            .clickable { if (marker) session.setMarker(argb) else session.setPen(argb) },
+                            .clickable { if (marker) session.setMarker(argb) else session.setPen(argb) }
+                            .semantics { contentDescription = "Farbe ${i + 1}"; selected = argb == current },
                         contentAlignment = Alignment.Center,
                     ) { Lamp(Color(argb), size = 26.dp) }
                 }
@@ -534,10 +660,10 @@ private fun StylePanel(session: BookSession) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                 val sizes = if (marker) Brushes.markerSizes else Brushes.penSizes
                 val current = if (marker) session.markerSize else session.penSize
-                sizes.forEach { s ->
+                sizes.forEachIndexed { i, s ->
                     TactileKey(
                         { if (marker) session.setMarker(session.markerColor, s) else session.setPen(session.penColor, s) },
-                        selected = s == current, size = 48.dp,
+                        selected = s == current, size = 48.dp, contentDescription = "Dicke ${i + 1} von ${sizes.size}",
                     ) {
                         val dot = if (marker) (6 + s * 0.7f).dp else (4 + s * 2.2f).dp
                         Box(Modifier.size(dot).clip(CircleShape).background(Color(if (marker) session.markerColor else session.penColor)))
@@ -546,9 +672,12 @@ private fun StylePanel(session: BookSession) {
             }
             Spacer(Modifier.height(18.dp))
             var buttonErases by remember { mutableStateOf(session.buttonErases) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.heightIn(min = 48.dp).toggleable(buttonErases, role = Role.Switch) { buttonErases = it; session.buttonErases = it },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text("Seitentaste radiert", style = Ranzen.type.body, color = c.ink, modifier = Modifier.weight(1f))
-                Switch(buttonErases, { buttonErases = it; session.buttonErases = it }, colors = SwitchDefaults.colors(
+                Switch(buttonErases, null, colors = SwitchDefaults.colors(
                     checkedTrackColor = c.signal, checkedThumbColor = c.onSignal, checkedBorderColor = c.signal,
                     uncheckedTrackColor = c.line.copy(alpha = 0.5f), uncheckedThumbColor = c.inkFaint, uncheckedBorderColor = c.line,
                 ))
@@ -567,8 +696,8 @@ private fun JumpPanel(session: BookSession, onClose: () -> Unit) {
         val target = PageJump.parse(text, session.pageCount)
         if (target != null) { session.goTo(target); onClose() } else session.say("Seite 1 bis ${session.pageCount}")
     }
-    PaperPanel(corner = 22.dp) {
-        Column(Modifier.padding(22.dp).width(340.dp)) {
+    PaperPanel(Modifier.padding(horizontal = 8.dp), corner = 22.dp) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp).widthIn(max = 340.dp)) {
             Text("Gehe zu Seite", style = Ranzen.type.heading, color = c.ink)
             Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -585,12 +714,40 @@ private fun JumpPanel(session: BookSession, onClose: () -> Unit) {
                 Spacer(Modifier.width(14.dp))
                 Text("von ${session.pageCount}", style = Ranzen.type.mono, color = c.inkMuted)
             }
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Du bist auf Seite ${session.page + 1}, ${ReadingProgress.percent(session.page, session.pageCount)} % gelesen.",
+                style = Ranzen.type.caption, color = c.inkMuted,
+            )
+            Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 QuietButton("Anfang", { session.goTo(0); onClose() })
                 QuietButton("Ende", { session.goTo(session.pageCount - 1); onClose() })
                 Spacer(Modifier.weight(1f))
                 SignalButton("Springen", { submit() })
+            }
+        }
+    }
+}
+
+/** A note on a device that only reads: to see, not to change. */
+@Composable
+private fun NoteViewer(session: BookSession, draft: NoteDraft) {
+    val c = Ranzen.colors
+    PaperPanel(corner = 24.dp) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp).widthIn(max = 520.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RanzenIcon(BookIcons.Note, tint = Color(0xFFC99A2E))
+                Spacer(Modifier.width(10.dp))
+                Text("Notiz", style = Ranzen.type.title, color = c.ink, modifier = Modifier.weight(1f))
+                Text("Seite ${draft.page + 1}", style = Ranzen.type.mono, color = c.inkMuted)
+            }
+            Spacer(Modifier.height(14.dp))
+            Text(draft.old?.text.orEmpty(), style = Ranzen.type.body, color = c.ink)
+            Spacer(Modifier.height(18.dp))
+            Row {
+                Spacer(Modifier.weight(1f))
+                SignalButton("Schließen", session::cancelNote)
             }
         }
     }
@@ -666,10 +823,11 @@ private fun TextEditor(session: BookSession, draft: TextDraft) {
                     }
                     Spacer(Modifier.width(if (i == 2) 16.dp else 6.dp))
                 }
-                InkPalette.pen.forEach { argb ->
+                InkPalette.pen.forEachIndexed { i, argb ->
                     Box(
-                        Modifier.size(44.dp).clip(CircleShape).border(if (argb == color) 2.dp else 0.dp, if (argb == color) c.ink else Color.Transparent, CircleShape)
-                            .clickable { color = argb },
+                        Modifier.size(48.dp).clip(CircleShape).border(if (argb == color) 2.dp else 0.dp, if (argb == color) c.ink else Color.Transparent, CircleShape)
+                            .clickable { color = argb }
+                            .semantics { contentDescription = "Farbe ${i + 1}"; selected = argb == color },
                         contentAlignment = Alignment.Center,
                     ) { Lamp(Color(argb), size = 20.dp) }
                 }

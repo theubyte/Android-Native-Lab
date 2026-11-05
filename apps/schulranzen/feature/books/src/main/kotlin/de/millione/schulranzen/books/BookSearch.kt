@@ -86,7 +86,7 @@ internal fun SearchPanel(session: BookSession, modifier: Modifier, onClose: () -
                     )
                 }
                 if (session.searchQuery.isNotEmpty()) {
-                    TactileKey({ session.search("") }, size = 40.dp, contentDescription = "Suche leeren") {
+                    TactileKey({ session.search("") }, size = 48.dp, contentDescription = "Suche leeren") {
                         RanzenIcon(RanzenIcons.Close, tint = c.inkMuted, size = 16.dp)
                     }
                 }
@@ -99,7 +99,12 @@ internal fun SearchPanel(session: BookSession, modifier: Modifier, onClose: () -
                     q.length < 2 -> Unit
                     session.searching && hits.isEmpty() -> Text("Suche …", style = Ranzen.type.caption, color = c.inkMuted)
                     hits.isEmpty() -> Text(
-                        if (session.indexInfo?.pagesWithText == 0) "Noch kein lesbarer Text in diesem Buch." else "Nichts gefunden.",
+                        when {
+                            session.indexProblem != null && session.indexInfo == null -> "Suche nicht möglich."
+                            session.indexInfo?.pagesWithText == 0 -> "Noch kein lesbarer Text in diesem Buch."
+                            session.indexProgress != null -> "Bisher nichts gefunden. Das Buch wird noch gelesen."
+                            else -> "Nichts gefunden."
+                        },
                         style = Ranzen.type.caption, color = c.inkMuted,
                     )
                     else -> Text(
@@ -147,6 +152,7 @@ private fun HitRow(hit: SearchHit, current: Boolean, onClick: () -> Unit) {
 @Composable
 internal fun IndexStatus(session: BookSession) {
     val c = Ranzen.colors
+    session.indexProblem?.let { Text(it, style = Ranzen.type.caption, color = c.signal, modifier = Modifier.padding(bottom = 6.dp)) }
     val p = session.indexProgress ?: return
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 6.dp)) {
         Lamp(c.signal, size = 8.dp)
@@ -175,7 +181,7 @@ internal fun RecognitionOffer(session: BookSession, modifier: Modifier = Modifie
         Spacer(Modifier.height(6.dp))
         Text(
             if (started) "Noch ${info.pagesWithoutText} Seiten ohne Text. Die Erkennung macht dort weiter, wo sie aufgehört hat."
-            else "Die Seiten sind Bilder ohne Text. Die Texterkennung liest sie auf dem Tablet, ohne Internet – danach gibt es Inhaltsverzeichnis und Suche. Das dauert etwa eine Sekunde pro Seite und läuft im Hintergrund weiter.",
+            else "Die Seiten sind Bilder ohne Text. Die Texterkennung liest sie auf dem Gerät, ohne Internet – danach gibt es Inhaltsverzeichnis und Suche. Das dauert etwa eine Sekunde pro Seite und läuft im Hintergrund weiter.",
             style = Ranzen.type.body, color = c.inkMuted,
         )
         Spacer(Modifier.height(12.dp))

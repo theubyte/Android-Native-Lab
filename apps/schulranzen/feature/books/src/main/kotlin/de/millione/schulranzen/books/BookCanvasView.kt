@@ -2,10 +2,13 @@ package de.millione.schulranzen.books
 
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
+import android.content.ComponentCallbacks2
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.DashPathEffect
 import android.graphics.Matrix
 import android.graphics.Paint
@@ -31,7 +34,9 @@ import androidx.ink.strokes.Stroke
 import androidx.input.motionprediction.MotionEventPredictor
 import de.millione.schulranzen.core.books.BookUnits
 import de.millione.schulranzen.core.books.ColumnLayout
+import de.millione.schulranzen.core.books.NightColors
 import de.millione.schulranzen.core.books.PageRotation
+import de.millione.schulranzen.core.books.ReadingPosition
 import de.millione.schulranzen.core.books.RenderMath
 import de.millione.schulranzen.ink.Brushes
 import de.millione.schulranzen.ink.ItemPainter
@@ -100,6 +105,12 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         fun onSelectionChanged(frame: RectF?) {}
         /** Text tool tapped (x, y) in unrotated units of [page]; [existing] is the text there. */
         fun onTextRequest(page: Int, x: Float, y: Float, existing: TextItem?) {}
+        /** A single tap on the page that did nothing else (reading mode only). */
+        fun onPageTap() {}
+        /** Page [page] came from a broken file; [locked]: it could not be read and stays unchanged. */
+        fun onPageDamaged(page: Int, locked: Boolean) {}
+        /** Someone tried to write on a page locked because its file could not be read. */
+        fun onPageLocked(page: Int) {}
     }
 
     var listener: Listener? = null
@@ -107,7 +118,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     // ---- tool state ----
     var tool: BookTool = BookTool.READ
         set(value) {
-            field = value
+            field = if (readOnly) BookTool.READ else value
             if (value != BookTool.AREA) clearArea()
             if (value != BookTool.LASSO) clearSelection()
             overlay.invalidate()
@@ -121,9 +132,41 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     /** Side button held while writing erases. */
     var buttonErases: Boolean = true
     var deskColor: Int = 0xFFEDE8DE.toInt()
-        set(value) { field = value; setBackgroundColor(value); layer.invalidate() }
+        set(value) { field = value; setBackgroundColor(if (nightMode) NIGHT_DESK else value); layer.invalidate() }
     var accentColor: Int = 0xFFD9542F.toInt()
         set(value) { field = value; layer.invalidate(); overlay.invalidate() }
+
+    /** Reading only (phone): no tool, and neither the pen's button nor its eraser end changes anything. */
+    var readOnly: Boolean = false
+        set(value) {
+            field = value
+            if (value) tool = BookTool.READ
+        }
+    /** Small screen: the page fills the width in any orientation, with thin margins. */
+    var compact: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (width > 0 && height > 0) onSizeChanged(width, height, width, height)
+        }
+    /** Pixels at the top covered by the host's bar: pages jumped to start below it. */
+    var topInset: Float = 0f
+        set(value) {
+            if (field == value) return
+            // What was just below the bar stays there, also when the bar is measured after the first scroll.
+            ty += value - field
+            field = value
+            clampAndApply()
+        }
+    /** Pages, ink and pen colours dark for reading at night; clippings keep their real colours. */
+    var nightMode: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            setBackgroundColor(if (value) NIGHT_DESK else deskColor)
+            layer.nightChanged()
+            layer.invalidate(); overlay.invalidate()
+        }
 
     // ---- document ----
     private var doc: BookDocument? = null
@@ -139,6 +182,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private val inks = HashMap<Int, PageInk>()
     private val inkFiles = HashSet<Int>()
     private val inkLoading = HashSet<Int>()
+    /** Pages whose file could not be read: nothing may change them, or the next save would replace the file. */
+    private val lockedPages = HashSet<Int>()
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "book-ink") }
     private var nextStrokeId = SystemClock.elapsedRealtimeNanos()
     fun newId() = nextStrokeId++
@@ -153,6 +198,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private var laidOut = false
     private var pendingPage = -1
     private var pendingFocus: RectF? = null
+    private var pendingOffset = 0f
 
     private val density = resources.displayMetrics.density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -165,6 +211,11 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         override fun sizeOf(key: Int, value: Base) = value.bmp.byteCount
     }
     private val baseRequested = HashSet<Int>()
+    /** Failed renders per page. A page that fails twice says so instead of trying forever. */
+    private val baseFailures = HashMap<Int, Int>()
+    /** What is on screen, for the render thread: pages scrolled past are not worth rendering any more. */
+    @Volatile private var shownFirst = 0
+    @Volatile private var shownLast = 0
     private val details = HashMap<Int, Detail>()
     private var basePx = 1000
     @Volatile private var docGen = 0
@@ -192,32 +243,59 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         isMotionEventSplittingEnabled = false
     }
 
+    private val memory = object : ComponentCallbacks2 {
+        override fun onTrimMemory(level: Int) {
+            // Bitmaps can always be rendered again; only what is on screen stays when memory gets tight.
+            if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) post { bases.trimToSize(cacheBudget() / 4); bases.resize(cacheBudget()) }
+        }
+        override fun onConfigurationChanged(newConfig: Configuration) {}
+        @Deprecated("Deprecated in Java")
+        override fun onLowMemory() { post { bases.evictAll(); layer.invalidate() } }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        context.applicationContext.registerComponentCallbacks(memory)
+    }
+
+    override fun onDetachedFromWindow() {
+        context.applicationContext.unregisterComponentCallbacks(memory)
+        super.onDetachedFromWindow()
+    }
+
     private fun cacheBudget(): Int = min(Runtime.getRuntime().maxMemory() / 4, 96L * 1024 * 1024).toInt()
 
     // ------------------------------------------------------------- document
 
-    /** Shows [document] with its [marks]; [page] is where reading starts. */
-    fun setDocument(document: BookDocument, store: BookInkStore, marks: BookMarks, page: Int) {
+    /**
+     * Shows [document] with its [marks]; [start] is where reading starts.
+     * [inkPages] (see [BookInkStore.pagesWithInk]) must be read before this:
+     * a page drawn while the list is still missing would count as empty, and
+     * saving it would then overwrite what is on disk.
+     */
+    fun setDocument(document: BookDocument, store: BookInkStore, marks: BookMarks, start: ReadingPosition, inkPages: Set<Int>) {
         doc = document
         inkStore = store
-        inks.clear(); inkLoading.clear()
+        inks.clear(); inkLoading.clear(); lockedPages.clear()
+        inkFiles.clear(); inkFiles += inkPages
+        baseFailures.clear()
         selection = null; drag.reset(); highlightPage = -1; highlightRects = emptyList()
-        io.execute {
-            val files = store.pagesWithInk()
-            post { inkFiles.clear(); inkFiles += files; layer.invalidate() }
-        }
         unitH = FloatArray(document.pageCount) { document.unitHeight(it) }
         this.marks = marks
         relayout()
-        if (pendingPage < 0) pendingPage = page
+        if (pendingPage < 0) { pendingPage = start.page; pendingOffset = start.offset }
         if (laidOut) { flushPending() }
     }
 
     private fun flushPending() {
         if (pendingPage < 0) return
         val focus = pendingFocus
-        if (focus != null) focusOn(pendingPage, focus) else scrollToPage(pendingPage)
-        pendingPage = -1; pendingFocus = null
+        when {
+            focus != null -> focusOn(pendingPage, focus)
+            pendingOffset > 0f -> scrollToPosition(pendingPage, pendingOffset)
+            else -> scrollToPage(pendingPage)
+        }
+        pendingPage = -1; pendingFocus = null; pendingOffset = 0f
     }
 
     /** New marks (notes, areas, bookmarks, rotations) from the session. */
@@ -226,6 +304,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         marks = next
         if (turned) {
             clearSelection()
+            // A marked rectangle is in the page's old shape.
+            clearArea()
             val keep = currentPage
             val within = pageOffsetFraction(keep)
             relayout()
@@ -276,6 +356,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         io.shutdown()
         docGen++; detailGen++
         bases.evictAll(); details.clear()
+        removeCallbacks(singleTap)
         doc = null
     }
 
@@ -293,9 +374,25 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     fun inkOf(page: Int): PageInk = inks[page] ?: loadInkNow(page)
 
     private fun loadInkNow(page: Int): PageInk {
-        val ink = if (page in inkFiles) inkStore?.load(page) ?: PageInk() else PageInk()
-        inks[page] = ink
-        return ink
+        val loaded = if (page in inkFiles) inkStore?.load(page) else null
+        return if (loaded != null) adopt(page, loaded) else PageInk().also { inks[page] = it }
+    }
+
+    private fun adopt(page: Int, loaded: LoadedPage): PageInk {
+        inks[page] = loaded.ink
+        if (loaded.unreadable) lockedPages += page
+        if (loaded.damaged || loaded.unreadable) listener?.onPageDamaged(page, loaded.unreadable)
+        return loaded.ink
+    }
+
+    /** True when this page must not be saved or changed; see [BookInkStore.load]. */
+    fun isPageLocked(page: Int) = page in lockedPages
+
+    /** True when [page] can be written on; otherwise says so. Ink must be loaded first. */
+    private fun canChange(page: Int): Boolean {
+        if (page !in lockedPages) return true
+        listener?.onPageLocked(page)
+        return false
     }
 
     private fun ensureInk(page: Int) {
@@ -305,10 +402,10 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         inkLoading += page
         runCatching {
             io.execute {
-                val ink = store.load(page)
+                val loaded = store.load(page)
                 post {
                     inkLoading -= page
-                    if (page !in inks) { inks[page] = ink; layer.invalidate() }
+                    if (page !in inks) { adopt(page, loaded); layer.invalidate() }
                 }
             }
         }
@@ -319,20 +416,28 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w == 0 || h == 0) return
-        val margin = 28f * density
         // Landscape: the page about as tall as the screen; portrait: full width.
         val oldFit = fitScale
-        fitScale = min((w - 2 * margin) / BookUnits.WIDTH, (h * 1.12f) / (BookUnits.WIDTH * 1.414f))
+        val oldScale = scale
+        fitScale = if (compact) (w - 2 * 6f * density) / BookUnits.WIDTH
+        else min((w - 2 * 28f * density) / BookUnits.WIDTH, (h * 1.12f) / (BookUnits.WIDTH * 1.414f))
         val px = RenderMath.baseWidth(fitScale * BookUnits.WIDTH)
         if (px != basePx) { basePx = px; bases.evictAll(); baseRequested.clear(); docGen++ }
         if (!laidOut) {
             scale = fitScale
             tx = (w - BookUnits.WIDTH * scale) / 2
-            ty = 24f * density
+            ty = 24f * density + topInset
             laidOut = true
             if (doc != null) flushPending()
         } else {
-            scale = (scale / oldFit * fitScale).coerceIn(minScale(), maxScale())
+            // Turning the device or moving the split must not scroll: the same place stays in view.
+            val refW = if (oldw > 0) oldw else w
+            val refH = if (oldh > 0) oldh else h
+            val worldX = (refW / 2f - tx) / oldScale
+            val worldY = (refH / 3f - ty) / oldScale
+            scale = (oldScale / oldFit * fitScale).coerceIn(minScale(), maxScale())
+            tx = w / 2f - worldX * scale
+            ty = h / 3f - worldY * scale
         }
         clampAndApply()
         scheduleDetail()
@@ -349,7 +454,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         val contentH = layout.totalHeight * scale
         val x0: Float; val x1: Float
         if (contentW <= w) { x0 = 0f; x1 = w - contentW } else { x0 = w - contentW - m; x1 = m }
-        val y1 = m
+        val y1 = m + topInset
         val y0 = min(y1, h - contentH - 96f * density)
         return floatArrayOf(x0, x1, y0, y1)
     }
@@ -370,22 +475,47 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     }
 
     private var lastReported = -1
+    /** Jumped to and not scrolled since: this page is current, even if it cannot reach the top of the screen. */
+    private var pinnedPage = -1
     val currentPage get() = lastReported.coerceAtLeast(0)
 
     private fun reportVisiblePage() {
         if (pageCount == 0 || height == 0) return
-        val y = toWorld(width / 2f, height / 3f)[1]
-        val i = layout.nearest(y).coerceIn(0, pageCount - 1)
+        val top = toWorld(0f, topInset)[1]
+        val bottom = toWorld(0f, height.toFloat())[1]
+        val i = (if (pinnedPage in 0 until pageCount) pinnedPage else layout.dominant(top, bottom)).coerceIn(0, pageCount - 1)
         if (i != lastReported) { lastReported = i; listener?.onVisiblePageChanged(i) }
+        val shown = layout.visible(top, bottom)
+        if (!shown.isEmpty()) { shownFirst = shown.first; shownLast = shown.last }
     }
 
     fun scrollToPage(index: Int) {
         if (pageCount == 0) return
         val i = index.coerceIn(0, pageCount - 1)
         flingAnim?.cancel()
-        ty = -(layout.top(i) * scale) + 24f * density
+        pinnedPage = i
+        ty = -(layout.top(i) * scale) + 24f * density + topInset
         clampAndApply()
         scheduleDetail()
+    }
+
+    /** Like [scrollToPage], with the top of the screen [offset] (0..1) down the page. */
+    fun scrollToPosition(index: Int, offset: Float) {
+        if (pageCount == 0) return
+        val i = index.coerceIn(0, pageCount - 1)
+        flingAnim?.cancel()
+        pinnedPage = i
+        ty = -((layout.top(i) + offset.coerceIn(0f, 1f) * layout.height(i)) * scale) + topInset
+        clampAndApply()
+        scheduleDetail()
+    }
+
+    /** Where the reader stands: the current page and how far its top has scrolled off the screen. */
+    fun readingPosition(): ReadingPosition {
+        val page = currentPage
+        if (page !in 0 until pageCount || height == 0) return ReadingPosition(page)
+        val y = toWorld(0f, topInset)[1]
+        return ReadingPosition(page, ((y - layout.top(page)) / layout.height(page)).coerceIn(0f, 1f))
     }
 
     private fun toWorld(x: Float, y: Float): FloatArray = floatArrayOf(x, y).also { inverse.mapPoints(it) }
@@ -424,27 +554,39 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         val d = doc ?: return
         if (page !in 0 until pageCount) return
         val r = rot[page]
-        if (bases.get(page)?.rotation == r || page in baseRequested) return
+        if (bases.get(page)?.rotation == r || page in baseRequested || pageUnreadable(page)) return
         baseRequested += page
-        val w = basePx
-        val h = (w * layout.height(page) / BookUnits.WIDTH).roundToInt().coerceAtLeast(1)
-        val m = d.pointsToUnits(page).apply { postConcat(unitToBox[page]); postScale(w / BookUnits.WIDTH, w / BookUnits.WIDTH) }
+        val (w, h) = RenderMath.baseSize(basePx, layout.height(page) / BookUnits.WIDTH)
+        val f = w / BookUnits.WIDTH
+        val m = d.pointsToUnits(page).apply { postConcat(unitToBox[page]); postScale(f, f) }
         val gen = docGen
         d.post {
             if (gen != docGen) return@post
-            val bmp = runCatching {
-                val full = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                d.renderBlocking(page, full, m)
-                // Half the memory: pages are opaque, 565 is plenty for the cached overview.
-                full.copy(Bitmap.Config.RGB_565, false).also { full.recycle() }
-            }.getOrNull()
+            // Flung past while waiting: the page in view must not queue behind everything on the way.
+            if (page !in shownFirst - RENDER_AHEAD..shownLast + RENDER_AHEAD) {
+                post { baseRequested -= page; if (page in shownFirst - RENDER_AHEAD..shownLast + RENDER_AHEAD) layer.invalidate() }
+                return@post
+            }
+            val bmp = runCatching { renderOpaque(d, page, w, h, m) }.getOrNull()
             post {
                 baseRequested -= page
-                if (bmp != null && gen == docGen && page < rot.size && rot[page] == r) {
-                    bases.put(page, Base(bmp, r))
-                    layer.invalidate()
-                }
+                if (gen != docGen || page >= rot.size || rot[page] != r) return@post
+                if (bmp != null) bases.put(page, Base(bmp, r)) else baseFailures[page] = (baseFailures[page] ?: 0) + 1
+                layer.invalidate()
             }
+        }
+    }
+
+    private fun pageUnreadable(page: Int) = (baseFailures[page] ?: 0) >= 2
+
+    /** Half the memory of the render target: pages are opaque, 565 is plenty. Render thread only. */
+    private fun renderOpaque(d: BookDocument, page: Int, w: Int, h: Int, m: Matrix): Bitmap {
+        val full = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        try {
+            d.renderBlocking(page, full, m)
+            return full.copy(Bitmap.Config.RGB_565, false) ?: throw OutOfMemoryError("page copy")
+        } finally {
+            full.recycle()
         }
     }
 
@@ -476,11 +618,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
             val r = rot[page]
             d.post {
                 if (gen != detailGen) return@post
-                val bmp = runCatching {
-                    val full = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                    d.renderBlocking(page, full, m)
-                    full.copy(Bitmap.Config.RGB_565, false).also { full.recycle() }
-                }.getOrNull() ?: return@post
+                val bmp = runCatching { renderOpaque(d, page, w, h, m) }.getOrNull() ?: return@post
                 post {
                     if (gen == detailGen && page < rot.size && rot[page] == r) {
                         details[page] = Detail(world, bmp, r)
@@ -664,6 +802,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private fun focusOn(page: Int, rect: RectF) {
         if (page !in 0 until pageCount) return
         flingAnim?.cancel()
+        pinnedPage = page
         val w = RectF(rect).also { unitToWorld(page).mapRect(it) }
         ty = -(w.top * scale) + height * 0.3f
         if (BookUnits.WIDTH * scale > width) tx = width / 2f - w.centerX() * scale
@@ -808,7 +947,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         downX = x; downY = y
         val buttonHeld = (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
         val eraserEnd = e.getToolType(index) == MotionEvent.TOOL_TYPE_ERASER
-        val erase = tool.erases || eraserEnd || (buttonHeld && buttonErases)
+        val erase = !readOnly && (tool.erases || eraserEnd || (buttonHeld && buttonErases))
         if (erase) {
             mode = Mode.ERASE
             eraseWhole = tool == BookTool.STROKE_ERASER
@@ -828,6 +967,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 val page = layout.pageAt(toWorld(x, y)[1])
                 if (page < 0) { mode = Mode.IGNORE; clearSelection(); return }
                 inkOf(page)
+                if (!canChange(page)) { mode = Mode.IGNORE; clearSelection(); return }
                 gesturePage = page
                 val u = viewToUnit(page, x, y)
                 lasso.clear(); lasso += u[0]; lasso += u[1]
@@ -838,13 +978,16 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 val page = layout.pageAt(toWorld(x, y)[1])
                 if (page < 0) { mode = Mode.IGNORE; return }
                 inkOf(page)
+                if (!canChange(page)) { mode = Mode.IGNORE; return }
                 val marker = tool == BookTool.MARKER
                 // Brush size in unrotated units, so it looks the same on a turned page.
                 val size = (if (marker) markerSize else penSize) / boxScale[page]
                 val color = if (marker) markerColor else penColor
                 val kind = if (marker) ToolKind.MARKER else ToolKind.PEN
                 predictor.record(e)
-                val id = inProgress.startStroke(e, stylusPointer, Brushes.brush(kind, color, size), Matrix(inverse), unitToWorld(page))
+                // The live stroke is not on the page layer yet: at night it gets the colour it will show as.
+                val live = if (nightMode) NightColors.apply(color) else color
+                val id = inProgress.startStroke(e, stylusPointer, Brushes.brush(kind, live, size), Matrix(inverse), unitToWorld(page))
                 pending[id] = Pending(page, kind, color, size)
                 strokeId = id
                 mode = Mode.DRAW
@@ -976,7 +1119,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                     Mode.ERASE -> finishErase()
                     Mode.PEN_PAN -> if (!panning) {
                         val note = noteAt(x, y)
-                        if (note != null) listener?.onNoteOpen(note) else clearHighlight()
+                        if (note != null) listener?.onNoteOpen(note)
+                        else { clearHighlight(); if (readOnly) listener?.onPageTap() }
                     }
                     Mode.AREA -> finishArea()
                     Mode.LASSO -> finishLasso()
@@ -1022,6 +1166,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private fun textTap(x: Float, y: Float) {
         val page = layout.pageAt(toWorld(x, y)[1])
         if (page < 0) return
+        inkOf(page)
+        if (!canChange(page)) return
         val u = viewToUnit(page, x, y)
         listener?.onTextRequest(page, u[0], u[1], textAt(page, u[0], u[1]))
     }
@@ -1043,7 +1189,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         val candidates = listOf(layout.pageAt(last[1]), layout.pageAt(w[1])).filter { it >= 0 }.toSet()
         for (p in candidates) {
             val ink = inkOf(p)
-            if (ink.strokes.isEmpty()) continue
+            if (p in lockedPages || ink.strokes.isEmpty()) continue
             val inv = Matrix().also { unitToWorld(p).invert(it) }
             val pts = floatArrayOf(last[0], last[1], w[0], w[1]).also { inv.mapPoints(it) }
             val radius = eraserRadiusDp * density / (scale * boxScale[p])
@@ -1065,7 +1211,9 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         for ((id, stroke) in strokes) {
             val p = pending.remove(id) ?: continue
             val ink = inkOf(p.page)
-            val s = PageStroke(newId(), p.tool, p.color, p.size, stroke)
+            // Stored in the real colour, whatever the night mode showed while writing.
+            val real = if (nightMode) Stroke(Brushes.brush(p.tool, p.color, p.size), stroke.inputs) else stroke
+            val s = PageStroke(newId(), p.tool, p.color, p.size, real)
             ink.add(s)
             step += PageEdit(p.page.toString(), emptyList(), listOf(s))
         }
@@ -1079,6 +1227,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     }
 
     private fun panBy(dx: Float, dy: Float) {
+        pinnedPage = -1
         // At fit width one finger only scrolls; two fingers move freely.
         val lockX = BookUnits.WIDTH * scale <= width && pinchDist == 0f
         if (!lockX) tx += dx
@@ -1104,6 +1253,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 if (e.pointerCount >= 2 && pinchDist > 0f) {
                     val d = hypot(e.getX(1) - e.getX(0), e.getY(1) - e.getY(0))
                     val mx = (e.getX(0) + e.getX(1)) / 2; val my = (e.getY(0) + e.getY(1)) / 2
+                    pinnedPage = -1
                     val newScale = (scale * d / pinchDist).coerceIn(minScale(), maxScale())
                     val f = newScale / scale
                     // Zoom about the fingers' midpoint and follow its movement: pinch and pan at once.
@@ -1152,12 +1302,17 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         val now = SystemClock.uptimeMillis()
         if (now - lastTapAt < 300 && hypot(x - lastTapX, y - lastTapY) < 48f * density) {
             lastTapAt = 0L
+            removeCallbacks(singleTap)
             val target = if (scale > fitScale * 1.3f) fitScale else fitScale * 2.5f
             animateZoom(target, x, y)
         } else {
             lastTapAt = now; lastTapX = x; lastTapY = y
+            // Only once it is clear that no second tap (zoom) follows.
+            if (readOnly) postDelayed(singleTap, 310)
         }
     }
+
+    private val singleTap = Runnable { listener?.onPageTap() }
 
     private fun startPinch(e: MotionEvent) {
         pinchDist = hypot(e.getX(1) - e.getX(0), e.getY(1) - e.getY(0)).coerceAtLeast(1f)
@@ -1184,6 +1339,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         val vxRaw = v.getXVelocity(panId.coerceAtLeast(0)).takeIf { !it.isNaN() } ?: 0f
         val vx = if (BookUnits.WIDTH * scale <= width) 0f else vxRaw
         if (abs(vy) < minFling * 2 && abs(vx) < minFling * 2) return
+        pinnedPage = -1
         val b = bounds()
         scroller.fling(tx.roundToInt(), ty.roundToInt(), vx.roundToInt(), vy.roundToInt(),
             b[0].roundToInt(), b[1].roundToInt(), b[2].roundToInt(), b[3].roundToInt())
@@ -1205,6 +1361,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
 
     private fun animateZoom(target: Float, fx: Float, fy: Float) {
         zoomAnim?.cancel()
+        pinnedPage = -1
         val from = scale
         val anchor = toWorld(fx, fy)
         zoomAnim = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -1279,6 +1436,15 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         private val ribbon = Paint(Paint.ANTI_ALIAS_FLAG)
         private val number = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x55000000; textAlign = Paint.Align.CENTER; textSize = 22f * density }
         private val nodes = HashMap<Int, Pair<Long, Any>>()
+        private val nightFilter = ColorMatrixColorFilter(NightColors.MATRIX)
+        private val nightLayer = Paint().apply { colorFilter = nightFilter }
+
+        fun nightChanged() {
+            bitmapPaint.colorFilter = if (nightMode) nightFilter else null
+            paper.color = if (nightMode) NightColors.PAPER else Color.WHITE
+            number.color = if (nightMode) 0x88FFFFFF.toInt() else 0x55000000
+            edge.color = if (nightMode) 0x24FFFFFF else 0x1F000000
+        }
 
         override fun onDraw(canvas: Canvas) {
             val visible = visiblePages()
@@ -1292,7 +1458,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 if (base != null) canvas.drawBitmap(base.bmp, null, r, bitmapPaint)
                 else {
                     requestBase(i)
-                    canvas.drawText("${i + 1}", r.centerX(), r.centerY(), number)
+                    canvas.drawText(if (pageUnreadable(i)) "Seite ${i + 1} nicht lesbar" else "${i + 1}", r.centerX(), r.centerY(), number)
                 }
                 details[i]?.takeIf { it.rotation == rot[i] }?.let { d ->
                     val dst = RectF(d.world).also { view.mapRect(it) }
@@ -1304,7 +1470,13 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 canvas.concat(unitToView(i))
                 drawAreas(canvas, i)
                 ensureInk(i)
-                inks[i]?.let { drawInk(canvas, i, it) }
+                inks[i]?.let { ink ->
+                    if (nightMode && (ink.strokes.isNotEmpty() || ink.items.isNotEmpty())) {
+                        val mark = canvas.saveLayer(0f, 0f, BookUnits.WIDTH, unitH[i], nightLayer)
+                        drawInk(canvas, i, ink)
+                        canvas.restoreToCount(mark)
+                    } else drawInk(canvas, i, ink)
+                }
                 if (i == highlightPage) drawHighlight(canvas, i)
                 canvas.restore()
                 canvas.drawRect(r, edge)
@@ -1361,11 +1533,9 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         private val hlFill = Paint(Paint.ANTI_ALIAS_FLAG)
         private val hlLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
 
-        /** Search hit or jump target: a soft marker-like box around the place. */
+        /** Search hit or jump target: a soft marker-like box around the place. [canvas] is in unrotated page units. */
         private fun drawHighlight(canvas: Canvas, page: Int) {
             if (highlightRects.isEmpty()) return
-            canvas.save()
-            canvas.concat(unitToView(page))
             val px = 1f / (scale * boxScale[page])
             hlFill.color = (accentColor and 0x00FFFFFF) or (0x38 shl 24)
             hlLine.color = (accentColor and 0x00FFFFFF) or (0xC8 shl 24)
@@ -1376,7 +1546,6 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 canvas.drawRoundRect(r.left - pad, r.top - pad, r.right + pad, r.bottom + pad, rr, rr, hlFill)
                 canvas.drawRoundRect(r.left - pad, r.top - pad, r.right + pad, r.bottom + pad, rr, rr, hlLine)
             }
-            canvas.restore()
         }
 
         private fun drawShadow(canvas: Canvas, r: RectF) {
@@ -1490,11 +1659,13 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
             val s = selection ?: return
             if (s.page !in 0 until pageCount) return
             val ink = inks[s.page] ?: return
+            val night = if (nightMode) canvas.saveLayer(null, Paint().apply { colorFilter = ColorMatrixColorFilter(NightColors.MATRIX) }) else -1
             canvas.save()
             canvas.concat(unitToView(s.page))
             canvas.concat(drag)
             layer.paintInk(canvas, s.page, ink, s.strokes, s.items, only = true)
             canvas.restore()
+            if (night >= 0) canvas.restoreToCount(night)
             val r = selectionViewRect(s)
             r.inset(-6f * density, -6f * density)
             selFrame.color = accentColor
@@ -1530,6 +1701,10 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     companion object {
         /** Note pin size on screen. */
         const val NOTE_DP = 26f
+        /** Pages beyond the screen, either way, that are still rendered ahead of the reader. */
+        const val RENDER_AHEAD = 3
+        /** Around the page at night: a bright desk would glare more than the page itself. */
+        const val NIGHT_DESK = 0xFF0F1012.toInt()
     }
 }
 

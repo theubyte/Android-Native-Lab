@@ -12,13 +12,16 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.ink.rendering.android.canvas.CanvasStrokeRenderer
+import de.millione.schulranzen.core.books.AreaText
 import de.millione.schulranzen.core.books.BookUnits
 import de.millione.schulranzen.core.books.Outline
 import de.millione.schulranzen.core.books.PageRotation
+import de.millione.schulranzen.core.books.ReadingPosition
 import de.millione.schulranzen.core.books.RenderMath
 import de.millione.schulranzen.core.books.SearchHit
 import de.millione.schulranzen.core.books.TextSearch
 import de.millione.schulranzen.core.books.UndoStack
+import de.millione.schulranzen.core.books.UnitRect
 import de.millione.schulranzen.design.InkPalette
 import de.millione.schulranzen.ink.Brushes
 import de.millione.schulranzen.ink.PageEdit
@@ -40,6 +43,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileNotFoundException
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -97,6 +101,16 @@ internal class BookSession(private val context: Context, val bookId: String, val
     /** Background text work of this book (text layer or recognition), or null. */
     var indexProgress by mutableStateOf<BookIndexer.Progress?>(null); private set
     var indexInfo by mutableStateOf<IndexInfo?>(null); private set
+    /** What went wrong with the text work, in German, or null. */
+    var indexProblem by mutableStateOf<String?>(null); private set
+    /** Reading mode (phone): nothing on the page can be changed from here. */
+    var readOnly by mutableStateOf(false); private set
+    /** Pages dark for reading at night; a setting of this device, kept across books. */
+    var night by mutableStateOf(prefs.getBoolean("night", false)); private set
+    /** Bars shown; a tap on the page hides and shows them in reading mode. */
+    var chrome by mutableStateOf(true); private set
+    /** A picture or text is being made from the marked area. */
+    var working by mutableStateOf(false); private set
     /** Marked rectangle in view pixels, for the action bar. */
     var areaFrame by mutableStateOf<RectF?>(null); private set
     /** Lasso selection in view pixels, for its action bar. */
@@ -115,6 +129,8 @@ internal class BookSession(private val context: Context, val bookId: String, val
     private val history = UndoStack<BookStep>()
     private val inkSaves = HashMap<Int, Job>()
     private var pageSave: Job? = null
+    /** One at a time and in order, so an older snapshot of a page can never overwrite a newer one. */
+    private val saves = Dispatchers.IO.limitedParallelism(1)
     private var toastJob: Job? = null
     private var searchJob: Job? = null
     private val marksLock = Mutex()
@@ -126,50 +142,109 @@ internal class BookSession(private val context: Context, val bookId: String, val
     fun open() {
         view.listener = this
         view.buttonErases = prefs.getBoolean("buttonErases", true)
+        view.nightMode = night
         applyTool()
         ui.launch {
+            // Outside the result of withContext: a cancelled caller never gets that result, and the document would stay open.
+            var fresh: BookDocument? = null
             try {
                 store.ensureLoaded()
                 val record = store.records.value.firstOrNull { it.id == bookId }
                     ?: run { error = "Dieses Buch gibt es nicht mehr."; return@launch }
                 title = record.title
+                val inkStore = BookInkStore(store.inkDir(bookId))
                 // Not cancellable: a document opened after the screen closed must still be closed.
-                val opened = withContext(Dispatchers.IO + NonCancellable) { BookDocument.open(store, bookId) to store.loadMarks(bookId) }
-                val d = opened.first
-                if (!isActive) { d.close(); return@launch }
+                val (loadedMarks, inkPages) = withContext(Dispatchers.IO + NonCancellable) {
+                    fresh = BookDocument.open(store, bookId)
+                    store.loadMarks(bookId) to inkStore.pagesWithInk()
+                }
+                val d = fresh!!
+                fresh = null
                 doc = d
-                marks = opened.second
+                marks = loadedMarks
                 pageCount = d.pageCount
                 val jump = pendingJump
                 pendingJump = null
-                page = (jump?.first ?: record.lastPage).coerceIn(0, d.pageCount - 1)
-                view.setDocument(d, BookInkStore(store.inkDir(bookId)), marks, page)
+                val start = if (jump != null) ReadingPosition(jump.first) else store.startOf(record)
+                val first = start.within(d.pageCount)
+                page = first.page
+                view.setDocument(d, inkStore, marks, first, inkPages)
                 jump?.second?.let { view.highlight(page, listOf(it)) }
                 loaded = true
                 store.scope.launch { store.update(bookId) { it.copy(openedAt = System.currentTimeMillis()) } }
+                store.savePosition(bookId, first.copy(readAt = System.currentTimeMillis()))
+            } catch (e: Throwable) {
+                fresh?.close()
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                error = openError(e)
+                return@launch
+            }
+            // The book is open: nothing below may turn into "does not open".
+            runCatching {
                 outline = withContext(Dispatchers.IO) { BookOutlines.cached(store, bookId) }
                 if (outline == null) BookOutlines.embedded(context, store, bookId)?.let { outline = it }
-                watchIndex()
-                BookIndexer.ensureText(store, bookId)
-            } catch (e: Throwable) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                error = "Das Buch lässt sich nicht öffnen."
-            }
+            }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+            watchIndex()
+            BookIndexer.ensureText(store, bookId)
         }
     }
+
+    private fun openError(e: Throwable): String = when (e) {
+        is SecurityException -> "Dieses PDF ist mit einem Passwort geschützt. Bitte das Passwort entfernen und das Buch neu importieren."
+        is FileNotFoundException -> "Die Buchdatei fehlt. Bitte das Buch neu importieren oder aus der Sicherung holen."
+        is OutOfMemoryError -> "Für dieses Buch reicht der Arbeitsspeicher gerade nicht. Andere Apps schließen und noch einmal öffnen."
+        else -> "Das Buch lässt sich nicht öffnen. Die Datei ist vielleicht beschädigt."
+    }
+
+    /** Follows the device class: a phone only reads, also when a foldable closes while a book is open. */
+    fun setReadingOnly(value: Boolean) {
+        if (readOnly == value) return
+        readOnly = value
+        view.readOnly = value
+        if (value) {
+            noteDraft = noteDraft?.takeIf { it.old != null }
+            textDraft = null
+            view.clearArea(); view.clearSelection()
+            select(BookTool.READ)
+        } else chrome = true
+    }
+
+    fun toggleNight() {
+        night = !night
+        view.nightMode = night
+        prefs.edit().putBoolean("night", night).apply()
+    }
+
+    override fun onPageTap() { if (readOnly) chrome = !chrome }
+
+    override fun onPageDamaged(page: Int, locked: Boolean) {
+        say(
+            if (locked) "Die Notizen auf Seite ${page + 1} lassen sich nicht lesen. Die Seite bleibt unverändert."
+            else "Die Notizen auf Seite ${page + 1} waren beschädigt. Lesbares ist geladen, eine Kopie der Datei bleibt erhalten.",
+        )
+    }
+
+    override fun onPageLocked(page: Int) { say("Seite ${page + 1} ist gesperrt: Ihre Notizen lassen sich nicht lesen, und nichts soll sie überschreiben.") }
 
     fun close() {
         // Write what is still waiting, then let go of the PDF.
         for ((p, job) in inkSaves) { job.cancel(); saveInkNow(p) }
         inkSaves.clear()
         pageSave?.cancel()
-        if (loaded) { val last = page; store.scope.launch { store.update(bookId) { it.copy(lastPage = last) } } }
+        if (loaded) savePlace(view.readingPosition())
         view.listener = null
         view.release()
         doc?.close()
         doc = null
         thumbs.evictAll()
         ui.cancel()
+    }
+
+    private fun savePlace(position: ReadingPosition) {
+        if (!store.exists(bookId)) return
+        store.savePosition(bookId, position.copy(readAt = System.currentTimeMillis()))
+        // Also in the shelf: a device without its own place yet starts here after restoring a backup.
+        store.scope.launch { store.update(bookId) { it.copy(lastPage = position.page) } }
     }
 
     /** Jumps to [page] and marks [rect] (unrotated units) there; before loading, where reading starts. */
@@ -255,18 +330,25 @@ internal class BookSession(private val context: Context, val bookId: String, val
     /** Snapshot on the main thread, write on the shelf's scope. */
     private fun saveInkNow(page: Int) {
         val ink = view.inkOf(page)
+        if (view.isPageLocked(page)) return
         val strokes: List<PageStroke> = ArrayList(ink.strokes)
         val items: List<PageItem> = ArrayList(ink.items)
         val files = BookInkStore(store.inkDir(bookId))
-        store.scope.launch { runCatching { files.save(page, strokes, items) } }
+        store.scope.launch(saves) {
+            if (!store.exists(bookId)) return@launch
+            runCatching { files.save(page, strokes, items) }.onFailure { complain("Notizen auf Seite ${page + 1} konnten nicht gespeichert werden.") }
+        }
     }
+
+    /** From a background save; the screen may be gone by then, and then there is nobody to tell. */
+    private fun complain(message: String) { ui.launch { say(message) } }
 
     override fun onVisiblePageChanged(page: Int) {
         this.page = page
         pageSave?.cancel()
         pageSave = ui.launch {
             delay(1200)
-            store.scope.launch { store.update(bookId) { it.copy(lastPage = page) } }
+            savePlace(view.readingPosition())
         }
     }
 
@@ -294,7 +376,11 @@ internal class BookSession(private val context: Context, val bookId: String, val
     private fun applyMarks(next: BookMarks) {
         marks = next
         view.setMarks(next)
-        store.scope.launch { marksLock.withLock { runCatching { store.saveMarks(bookId, marks) } } }
+        store.scope.launch {
+            marksLock.withLock {
+                if (store.exists(bookId)) runCatching { store.saveMarks(bookId, marks) }.onFailure { complain("Markierungen konnten nicht gespeichert werden.") }
+            }
+        }
     }
 
     val currentBookmarked get() = page in marks.bookmarks
@@ -350,12 +436,71 @@ internal class BookSession(private val context: Context, val bookId: String, val
         return BookLink(bookId, p, view.boxToUnits(p, rect), BookLink.label(title, p, area = true))
     }
 
-    /** Hands the area (or else the page) to [onMark] and says so. */
+    /**
+     * Hands the area (or else the page) to [onMark], the area with the words
+     * it holds: the exam material then says what it is about, not just where.
+     */
     fun markForExam(onMark: (BookLink) -> Unit, area: Boolean) {
-        val link = (if (area) linkForArea() else null) ?: linkForPage()
-        onMark(link)
-        if (area) view.clearArea()
-        say("Für die Prüfung gemerkt")
+        val plain = (if (area) linkForArea() else null) ?: linkForPage()
+        if (!area || plain.rect == null) { onMark(plain); return }
+        ui.launch {
+            val text = indexedText(plain)
+            view.clearArea()
+            onMark(if (text.isBlank()) plain else plain.copy(label = BookLink.label(title, plain.page, area = true, text = text), text = text))
+        }
+    }
+
+    /** Words of [link]'s area in the book's text index; empty when the page has none (yet). */
+    private suspend fun indexedText(link: BookLink): String {
+        val r = link.rect ?: return ""
+        return withContext(Dispatchers.IO) {
+            val pageText = runCatching { BookIndexer.index(store, bookId)?.page(link.page) }.getOrNull() ?: return@withContext ""
+            AreaText.extract(pageText, UnitRect(r.left, r.top, r.right, r.bottom))
+        }
+    }
+
+    /** The marked area as a picture card, without going through a notebook. */
+    fun learnImage(onLearn: (BookLearn) -> Unit) {
+        val link = linkForArea() ?: return
+        if (working) return
+        working = true
+        val dir = File(context.cacheDir, "book-clips").also { it.mkdirs() }
+        renderArea(dir) { file ->
+            working = false
+            if (file == null) { say("Der Ausschnitt ließ sich nicht erstellen. Bitte einen kleineren Bereich wählen."); return@renderArea }
+            view.clearArea()
+            onLearn(BookLearn.ImageCard(file, link))
+        }
+    }
+
+    /**
+     * Cards from the text of the marked area: from the text index, or read
+     * from the picture when the page has no text (yet), so a scanned page
+     * does not need the whole book recognised first.
+     */
+    fun learnText(onLearn: (BookLearn) -> Unit) {
+        val d = doc ?: return
+        val link = linkForArea() ?: return
+        val (p, rect) = view.areaSelection() ?: return
+        if (working) return
+        working = true
+        val toBox = view.unitToBoxMatrix(p)
+        val pts = d.pointsToUnits(p)
+        ui.launch {
+            try {
+                val text = indexedText(link).ifBlank {
+                    runCatching {
+                        val bmp = d.onRenderThread { renderPdfArea(d, p, rect, toBox, pts) }
+                        try { withContext(Dispatchers.IO) { BookIndexer.recognizeArea(bmp) } } finally { bmp.recycle() }
+                    }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }.getOrDefault("")
+                }
+                if (text.isBlank()) { say("In diesem Bereich ließ sich kein Text lesen."); return@launch }
+                view.clearArea()
+                onLearn(BookLearn.TextCards(text, link.copy(label = BookLink.label(title, p, area = true, text = text), text = text)))
+            } finally {
+                working = false
+            }
+        }
     }
 
     // -------------------------------------------------------------- text
@@ -393,8 +538,19 @@ internal class BookSession(private val context: Context, val bookId: String, val
      * into `filesDir/images/<uuid>.png` and hands the file to [onClip].
      */
     fun clipArea(onClip: (File) -> Unit) {
-        val d = doc ?: return
-        val (p, rect) = view.areaSelection() ?: return
+        renderArea(store.imageDir) { file ->
+            if (file != null) {
+                view.clearArea()
+                onClip(file)
+                say("Ausschnitt ins Heft übernommen")
+            } else say("Ausschnitt konnte nicht gespeichert werden. Ist der Speicher voll?")
+        }
+    }
+
+    /** The marked rectangle (PDF, ink, text) as a new PNG in [dir], or null when that failed. */
+    private fun renderArea(dir: File, done: (File?) -> Unit) {
+        val d = doc ?: return done(null)
+        val (p, rect) = view.areaSelection() ?: return done(null)
         val strokes = ArrayList(view.inkOf(p).strokes)
         val toBox = view.unitToBoxMatrix(p)
         val pts = d.pointsToUnits(p)
@@ -404,20 +560,30 @@ internal class BookSession(private val context: Context, val bookId: String, val
                 // Typed text on the main thread: the text painter is shared with the screen.
                 Canvas(bmp).apply { concat(unitToOut); view.paintItems(this, p) }
                 withContext(Dispatchers.IO) {
-                    val out = File(store.imageDir, "${UUID.randomUUID()}.png")
-                    val tmp = File(store.imageDir, out.name + ".tmp")
-                    tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                    bmp.recycle()
-                    if (!tmp.renameTo(out)) error("rename")
+                    val out = File(dir, "${UUID.randomUUID()}.png")
+                    val tmp = File(dir, out.name + ".tmp")
+                    try {
+                        tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                        if (!tmp.renameTo(out)) error("rename")
+                    } finally {
+                        bmp.recycle()
+                        tmp.delete()
+                    }
                     out
                 }
-            }.getOrNull()
-            if (file != null) {
-                view.clearArea()
-                onClip(file)
-                say("Ausschnitt ins Heft übernommen")
-            } else say("Ausschnitt konnte nicht gespeichert werden")
+            }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }.getOrNull()
+            done(file)
         }
+    }
+
+    /** Only the printed page in the marked rectangle, for reading text from it: no ink in the way. */
+    private fun renderPdfArea(d: BookDocument, page: Int, rect: RectF, toBox: Matrix, pts: Matrix): Bitmap {
+        val (w, h) = RenderMath.clipSize(rect.width(), rect.height())
+        val f = w / rect.width()
+        val out = Matrix(pts).apply { postConcat(toBox); postTranslate(-rect.left, -rect.top); postScale(f, f) }
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        d.renderBlocking(page, bmp, out)
+        return bmp
     }
 
     private fun renderClip(d: BookDocument, page: Int, rect: RectF, toBox: Matrix, pts: Matrix, strokes: List<PageStroke>): Pair<Bitmap, Matrix> {
@@ -439,6 +605,7 @@ internal class BookSession(private val context: Context, val bookId: String, val
 
     private fun watchIndex() {
         ui.launch { BookIndexer.running.map { it[bookId] }.distinctUntilChanged().collect { indexProgress = it } }
+        ui.launch { BookIndexer.problems.map { it[bookId] }.distinctUntilChanged().collect { indexProblem = it } }
         ui.launch {
             BookIndexer.revisions.map { it[bookId] ?: 0 }.distinctUntilChanged().collect {
                 val (info, cached) = withContext(Dispatchers.IO) {

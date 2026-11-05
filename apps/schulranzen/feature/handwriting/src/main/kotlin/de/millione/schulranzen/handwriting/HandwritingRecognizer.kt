@@ -18,12 +18,15 @@ import de.millione.schulranzen.core.shapes.Bounds
 import de.millione.schulranzen.core.shapes.LineGrouper
 import de.millione.schulranzen.core.shapes.TextLine
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.max
@@ -87,8 +90,13 @@ class HandwritingRecognizer(context: Context) {
     suspend fun recognize(strokes: List<FloatArray>): String? =
         recognizeLines(strokes)?.joinToString("\n") { it.text }?.takeIf { it.isNotBlank() }
 
-    /** Like [recognize] but with lines, words and their boxes; null when the model is missing. */
-    suspend fun recognizeLines(strokes: List<FloatArray>, downloadIfNeeded: Boolean = true): List<RecognizedLine>? {
+    /**
+     * Like [recognize] but with lines, words and their boxes; null when the
+     * model is missing. A line that cannot be read is left out, or with
+     * [complete] the whole answer is null: the index must not store half a
+     * page as done. Cancelling really stops: no partial result comes back.
+     */
+    suspend fun recognizeLines(strokes: List<FloatArray>, downloadIfNeeded: Boolean = true, complete: Boolean = false): List<RecognizedLine>? {
         val usable = strokes.indices.filter { strokes[it].size >= 3 }
         if (usable.isEmpty()) return emptyList()
         if (!Shared.ensure(app, downloadIfNeeded, allowMobileData = false)) return null
@@ -102,7 +110,10 @@ class HandwritingRecognizer(context: Context) {
             val text = try {
                 r.recognize(ink(order.map { strokes[it] }, line.bounds), context(line, before)).await()
                     .candidates.firstOrNull()?.text?.trim()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                if (complete) return null
                 null
             }
             if (text.isNullOrEmpty()) continue
@@ -180,34 +191,52 @@ class HandwritingRecognizer(context: Context) {
             return status.value
         }
 
-        suspend fun ensure(context: Context, download: Boolean, allowMobileData: Boolean): Boolean = lock.withLock {
-            if (recognizer != null && status.value == ModelState.Ready) return@withLock true
+        suspend fun ensure(context: Context, download: Boolean, allowMobileData: Boolean): Boolean {
+            // A download holds the lock for minutes: whoever only asks must not hang behind it.
+            if (!download && status.value == ModelState.Downloading) return false
+            return lock.withLock { ensureLocked(context, download, allowMobileData) }
+        }
+
+        private suspend fun ensureLocked(context: Context, download: Boolean, allowMobileData: Boolean): Boolean {
+            if (recognizer != null && status.value == ModelState.Ready) return true
             val m = model() ?: run {
                 status.value = ModelState.Failed("Für Deutsch gibt es kein Schriftmodell.")
-                return@withLock false
+                return false
             }
             try {
                 val manager = RemoteModelManager.getInstance()
                 if (manager.isModelDownloaded(m).await() != true) {
-                    if (!download) { status.value = ModelState.Missing; return@withLock false }
+                    if (!download) { status.value = ModelState.Missing; return false }
                     when (network(context)) {
-                        Net.NONE -> { status.value = ModelState.Offline; return@withLock false }
-                        Net.METERED -> if (!allowMobileData) { status.value = ModelState.WaitingForWifi; return@withLock false }
+                        Net.NONE -> { status.value = ModelState.Offline; return false }
+                        Net.METERED -> if (!allowMobileData) { status.value = ModelState.WaitingForWifi; return false }
                         Net.UNMETERED -> Unit
                     }
                     status.value = ModelState.Downloading
                     val conditions = DownloadConditions.Builder().apply { if (!allowMobileData) requireWifi() }.build()
-                    manager.download(m, conditions).await()
+                    // "Only on Wi-Fi" waits without end when the Wi-Fi goes away; everyone else waits behind this lock.
+                    withTimeout(DOWNLOAD_LIMIT_MS) { manager.download(m, conditions).await() }
                 }
                 if (recognizer == null) recognizer = DigitalInkRecognition.getClient(DigitalInkRecognizerOptions.builder(m).build())
                 status.value = ModelState.Ready
-                true
+                return true
+            } catch (e: TimeoutCancellationException) {
+                status.value = when (network(context)) {
+                    Net.NONE -> ModelState.Offline
+                    Net.METERED -> ModelState.WaitingForWifi
+                    Net.UNMETERED -> ModelState.Failed("Das Laden des Schriftmodells dauert zu lange. Später noch einmal versuchen.")
+                }
+                return false
+            } catch (e: CancellationException) {
+                // The caller went away, not the model: no error to show, and not "loading" for ever.
+                if (status.value == ModelState.Downloading) status.value = ModelState.Missing
+                throw e
             } catch (e: Exception) {
                 status.value = when (network(context)) {
                     Net.NONE -> ModelState.Offline
                     else -> ModelState.Failed("Schriftmodell konnte nicht geladen werden. Später noch einmal versuchen.")
                 }
-                false
+                return false
             }
         }
     }
@@ -215,6 +244,8 @@ class HandwritingRecognizer(context: Context) {
     private enum class Net { NONE, METERED, UNMETERED }
 
     private companion object {
+        const val DOWNLOAD_LIMIT_MS = 10 * 60 * 1000L
+
         fun network(context: Context): Net {
             val cm = context.getSystemService(ConnectivityManager::class.java) ?: return Net.NONE
             val caps = runCatching { cm.getNetworkCapabilities(cm.activeNetwork) }.getOrNull() ?: return Net.NONE
