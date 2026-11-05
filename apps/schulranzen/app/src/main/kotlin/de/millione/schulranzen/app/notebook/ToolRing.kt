@@ -226,7 +226,7 @@ private fun DrawScope.drawArcSegment(centre: Offset, r0: Float, r1: Float, start
     drawPath(path, color)
 }
 
-private fun colorName(argb: Int): String = when (argb) {
+internal fun colorName(argb: Int): String = when (argb) {
     InkPalette.pen[0] -> "Tinte"
     InkPalette.pen[1] -> "Königsblau"
     InkPalette.pen[2] -> "Korrekturrot"
@@ -238,5 +238,18 @@ private fun colorName(argb: Int): String = when (argb) {
     InkPalette.marker[2] -> "Rosa"
     InkPalette.marker[3] -> "Blau"
     InkPalette.marker[4] -> "Orange"
-    else -> "Farbe"
+    else -> ExtraColors.names[argb] ?: "Eigene Farbe"
+}
+
+/** More colours for the style panel, beside the ones in the ring. */
+internal object ExtraColors {
+    val pen = listOf(
+        0xFF6E6A62.toInt(), 0xFF2E86C1.toInt(), 0xFF1F8A8C.toInt(),
+        0xFFD9762B.toInt(), 0xFFB0307A.toInt(), 0xFF6B4A2F.toInt(),
+    )
+    val marker = listOf(0xFFC9A6F0.toInt())
+    val names = mapOf(
+        pen[0] to "Grau", pen[1] to "Himmelblau", pen[2] to "Türkis",
+        pen[3] to "Orange", pen[4] to "Magenta", pen[5] to "Braun", marker[0] to "Lila",
+    )
 }

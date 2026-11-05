@@ -84,6 +84,35 @@ interface LibraryDao {
         deleteNotebookRow(id)
     }
 
+    @Update
+    suspend fun updateSubject(s: Subject)
+
+    @Query("DELETE FROM subject WHERE id = :id")
+    suspend fun deleteSubjectRow(id: Long)
+
+    @Query("UPDATE notebook SET subjectId = NULL WHERE subjectId = :id")
+    suspend fun clearSubject(id: Long)
+
+    /** The notebooks stay and become "Ohne Fach". */
+    @Transaction
+    suspend fun deleteSubject(id: Long) {
+        clearSubject(id)
+        deleteSubjectRow(id)
+    }
+
+    // Single fields, not the whole row: a row read earlier must not undo what a save wrote since.
+    @Query("UPDATE notebook SET title = :title, subjectId = :subjectId, updatedAt = :at WHERE id = :id")
+    suspend fun renameNotebook(id: String, title: String, subjectId: Long?, at: Long)
+
+    @Query("UPDATE notebook SET trashedAt = :at WHERE id = :id")
+    suspend fun setTrashed(id: String, at: Long?)
+
+    @Query("UPDATE notebook SET paper = :paper WHERE id = :id")
+    suspend fun setDefaultPaper(id: String, paper: String)
+
+    @Query("SELECT DISTINCT background FROM page WHERE background IS NOT NULL")
+    suspend fun backgrounds(): List<String>
+
     @Query("SELECT * FROM notebook WHERE id = :id")
     suspend fun notebook(id: String): Notebook?
 
@@ -129,6 +158,10 @@ interface LibraryDao {
     @Query("UPDATE page SET paper = :paper WHERE id = :id")
     suspend fun setPaper(id: String, paper: String)
 
+    /** Worksheets keep their picture and locked pages stay as they are. */
+    @Query("UPDATE page SET paper = :paper WHERE notebookId = :notebookId AND background IS NULL AND locked = 0")
+    suspend fun setPaperAll(notebookId: String, paper: String)
+
     @Query("UPDATE page SET bookmarked = :on WHERE id = :id")
     suspend fun setBookmarked(id: String, on: Boolean)
 
@@ -152,6 +185,36 @@ interface LibraryDao {
     suspend fun removePage(notebookId: String, id: String, remaining: List<String>) {
         deletePage(id)
         reorder(notebookId, remaining)
+    }
+
+    @Query("UPDATE page SET notebookId = :notebookId, position = :position WHERE id = :id")
+    suspend fun setPageHome(id: String, notebookId: String, position: Int)
+
+    @Query("SELECT COUNT(*) FROM page WHERE notebookId = :notebookId")
+    suspend fun pageCountOf(notebookId: String): Int
+
+    /** Page [id] moves to the end of notebook [to]; [remaining] is the order left in [from]. */
+    @Transaction
+    suspend fun movePage(id: String, from: String, to: String, remaining: List<String>, at: Long) {
+        setPageHome(id, to, pageCountOf(to))
+        reorder(from, remaining)
+        recount(to)
+        touch(from, at)
+        touch(to, at)
+    }
+
+    @Transaction
+    suspend fun insertNotebookWithPages(n: Notebook, pages: List<Page>) {
+        insertNotebook(n)
+        pages.forEach { insertPage(it) }
+        recount(n.id)
+    }
+
+    @Transaction
+    suspend fun appendPages(notebookId: String, pages: List<Page>, at: Long) {
+        pages.forEach { insertPage(it) }
+        recount(notebookId)
+        touch(notebookId, at)
     }
 
     @Transaction

@@ -85,8 +85,18 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import de.millione.schulranzen.app.RanzenApp
 import de.millione.schulranzen.app.data.Library
+import de.millione.schulranzen.app.notebook.PdfShare
+import de.millione.schulranzen.core.notebook.NotebookNames
+import de.millione.schulranzen.core.notebook.NotebookSort
+import de.millione.schulranzen.core.notebook.UserMessages
+import de.millione.schulranzen.handwriting.InkInput
 import de.millione.schulranzen.app.data.Notebook
 import de.millione.schulranzen.app.data.Subject
 import de.millione.schulranzen.app.notebook.PaperSwatch
@@ -112,7 +122,9 @@ private sealed interface Sheet {
     data object None : Sheet
     data object New : Sheet
     data class Edit(val notebook: Notebook) : Sheet
+    data class Merge(val notebook: Notebook) : Sheet
     data object NewSubject : Sheet
+    data class EditSubject(val subject: Subject) : Sheet
     data class Trashed(val notebook: Notebook) : Sheet
     data class EditBook(val book: BookInfo) : Sheet
 }
@@ -147,12 +159,35 @@ fun LibraryScreen(
     val books by (shelf?.books ?: kotlinx.coroutines.flow.flowOf(emptyList())).collectAsState(initial = emptyList())
     var bookMessage by remember { mutableStateOf<String?>(null) }
     var pdfProgress by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val app = context.applicationContext as RanzenApp
+    var sort by remember { mutableStateOf(NotebookSort.of(app.settings.librarySort)) }
+    // Long work with a word about it; survives leaving this screen, a failure is said plainly.
+    fun work(busy: String, what: String, block: suspend () -> String?) {
+        app.scope.launch {
+            pdfProgress = busy
+            val result = try { block() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (t: Throwable) { UserMessages.of(t, what) }
+            pdfProgress = result
+            if (result != null) { delay(3500); if (pdfProgress == result) pdfProgress = null }
+        }
+    }
+    // Copied pages are new to the search index.
+    fun indexPages(notebookId: String, pageIds: Set<String>?) {
+        app.scope.launch {
+            runCatching {
+                for (p in library.loadPages(notebookId)) {
+                    if (pageIds != null && p.id !in pageIds) continue
+                    app.handwriting.indexPage(notebookId, p.id, InkInput.handwriting(p.ink.strokes))
+                }
+            }
+        }
+    }
     val notebookFromPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
             pdfProgress = "PDF wird gelesen …"
             val id = runCatching {
                 library.createNotebookFromPdf(uri, filterOf(tab, subjects)) { done, total -> pdfProgress = "Seite $done von $total …" }
-            }.onFailure { pdfProgress = it.message ?: "PDF konnte nicht gelesen werden"; kotlinx.coroutines.delay(3000) }.getOrNull()
+            }.onFailure { if (it !is kotlinx.coroutines.CancellationException) { pdfProgress = UserMessages.ofPdf(it); delay(4000) } }.getOrNull()
             pdfProgress = null
             if (id != null) onOpen(id)
         }
@@ -167,7 +202,10 @@ fun LibraryScreen(
             kotlinx.coroutines.delay(3000); bookMessage = null
         }
     }
-    LaunchedEffect(Unit) { runCatching { library.emptyOldTrash() } }
+    LaunchedEffect(Unit) {
+        library.onNotebookGone = { id -> app.handwriting.removeNotebook(id) }
+        runCatching { library.emptyOldTrash() }
+    }
 
     val trashTab = subjects.size + 1
     val inTrash = tab == trashTab
@@ -181,6 +219,13 @@ fun LibraryScreen(
         (filter == null || nb.subjectId == filter) &&
             (q.isEmpty() || nb.title.lowercase(Locale.GERMANY).contains(q) ||
                 (nb.subjectId?.let(subjectOf::get)?.name?.lowercase(Locale.GERMANY)?.contains(q) == true))
+    }.let { list ->
+        // The bin stays in the order things were thrown away.
+        if (inTrash) list else when (sort) {
+            NotebookSort.RECENT -> list
+            NotebookSort.TITLE -> list.sortedWith(compareBy(NotebookNames.titleOrder) { it.title })
+            NotebookSort.CREATED -> list.sortedByDescending { it.createdAt }
+        }
     }
 
     Box(Modifier.fillMaxSize().background(c.desk)) {
@@ -198,8 +243,15 @@ fun LibraryScreen(
                     onSelect = { tab = it },
                 )
                 Box(
-                    Modifier.padding(bottom = 4.dp).clip(RoundedCornerShape(12.dp)).clickable { sheet = Sheet.NewSubject }.padding(10.dp),
+                    Modifier.padding(bottom = 4.dp).clip(RoundedCornerShape(12.dp))
+                        .clickable(role = Role.Button) { sheet = Sheet.NewSubject }.semantics { contentDescription = "Neues Fach" }.padding(14.dp),
                 ) { RanzenIcon(RanzenIcons.Plus, tint = c.inkMuted, size = 20.dp) }
+                filter?.let(subjectOf::get)?.let { s ->
+                    Box(
+                        Modifier.padding(bottom = 4.dp).clip(RoundedCornerShape(12.dp))
+                            .clickable(role = Role.Button) { sheet = Sheet.EditSubject(s) }.semantics { contentDescription = "Fach ${s.name} bearbeiten" }.padding(14.dp),
+                    ) { RanzenIcon(RanzenIcons.Settings, tint = c.inkMuted, size = 20.dp) }
+                }
             }
             // The open drawer of the satchel
             if (ready) PaperPanel(Modifier.fillMaxSize().padding(bottom = 24.dp), corner = 26.dp) {
@@ -218,7 +270,11 @@ fun LibraryScreen(
                             Spacer(Modifier.weight(1f))
                             if (inTrash) Text("Hefte im Papierkorb werden nach 30 Tagen gelöscht.", style = Ranzen.type.caption, color = c.inkMuted)
                             else {
-                                pdfProgress?.let { Text(it, style = Ranzen.type.caption, color = c.inkMuted); Spacer(Modifier.width(14.dp)) }
+                                pdfProgress?.let { Text(it, style = Ranzen.type.caption, color = c.inkMuted, modifier = Modifier.weight(1f, fill = false)); Spacer(Modifier.width(14.dp)) }
+                                QuietButton("Sortiert: ${sort.label}", {
+                                    sort = sort.next(); app.settings.librarySort = sort.name
+                                }, color = c.inkMuted)
+                                Spacer(Modifier.width(10.dp))
                                 QuietButton("Heft aus PDF", { notebookFromPdf.launch(arrayOf("application/pdf")) }, color = c.ink)
                                 Spacer(Modifier.width(10.dp))
                                 SignalButton("Neues Heft", { sheet = Sheet.New }, icon = RanzenIcons.Plus)
@@ -278,6 +334,22 @@ fun LibraryScreen(
                 presetSubject = filter,
                 onCancel = { sheet = Sheet.None },
                 onTrash = editing?.let { { scope.launch { library.trash(it) }; sheet = Sheet.None } },
+                onDuplicate = editing?.let { nb -> {
+                    sheet = Sheet.None
+                    work("Heft wird kopiert …", "Kopieren") {
+                        val id = library.duplicateNotebook(nb)
+                        indexPages(id, null)
+                        "„${nb.title}“ kopiert"
+                    }
+                } },
+                onMerge = editing?.let { nb -> { sheet = Sheet.Merge(nb) } },
+                onShare = editing?.let { nb -> {
+                    sheet = Sheet.None
+                    work("PDF wird erstellt …", "PDF teilen") {
+                        val file = library.pdfForSharing(library.loadPages(nb.id), nb.title)
+                        if (PdfShare.open(context, file)) null else "Keine App zum Teilen gefunden"
+                    }
+                } },
                 onSave = { title, subject, paper ->
                     scope.launch {
                         if (editing != null) library.rename(editing, title, subject)
@@ -319,12 +391,38 @@ fun LibraryScreen(
                 onDelete = { scope.launch { shelf.delete(b.id) }; sheet = Sheet.None })
         }
         AnimatedVisibility(
-            current is Sheet.NewSubject,
+            current is Sheet.NewSubject || current is Sheet.EditSubject,
             enter = fadeIn() + scaleIn(spring(dampingRatio = 0.7f), initialScale = 0.9f), exit = fadeOut() + scaleOut(targetScale = 0.95f),
         ) {
-            SubjectSheet(nextColor = subjects.size, onCancel = { sheet = Sheet.None }) { name, color ->
-                scope.launch { library.addSubject(name, color, subjects.size) }
+            val editing = (current as? Sheet.EditSubject)?.subject
+            SubjectSheet(
+                nextColor = subjects.size, editing = editing, onCancel = { sheet = Sheet.None },
+                onDelete = editing?.let { s -> {
+                    sheet = Sheet.None
+                    tab = 0
+                    scope.launch {
+                        library.deleteSubject(s)
+                        // Books carry their subject separately; they must not point at nothing.
+                        books.filter { it.subjectId == s.id }.forEach { shelf?.setSubject(it.id, null) }
+                    }
+                } },
+            ) { name, color ->
+                scope.launch { if (editing != null) library.updateSubject(editing, name, color) else library.addSubject(name, color, subjects.size) }
                 sheet = Sheet.None
+            }
+        }
+        AnimatedVisibility(
+            current is Sheet.Merge,
+            enter = fadeIn() + scaleIn(spring(dampingRatio = 0.7f), initialScale = 0.9f), exit = fadeOut() + scaleOut(targetScale = 0.95f),
+        ) {
+            val source = (current as? Sheet.Merge)?.notebook
+            if (source != null) MergeSheet(source, notebooks.filter { it.id != source.id }, onCancel = { sheet = Sheet.None }) { target ->
+                sheet = Sheet.None
+                work("Hefte werden zusammengeführt …", "Zusammenführen") {
+                    val pages = library.mergeNotebooks(source, target)
+                    indexPages(target.id, pages.toSet())
+                    "„${source.title}“ hängt jetzt an „${target.title}“. Das alte Heft liegt 30 Tage im Papierkorb."
+                }
             }
         }
         }
@@ -387,7 +485,7 @@ private fun NotebookCover(nb: Notebook, subject: Subject?, onClick: () -> Unit, 
                 .softRaise(16.dp, depth, c.bevelLight, c.bevelShadow)
                 .clip(shape)
                 .background(c.raised)
-                .combinedClickable(source, indication = null, onClick = onClick, onLongClick = onLongClick)
+                .combinedClickable(source, indication = null, role = Role.Button, onClickLabel = "Öffnen", onLongClickLabel = "Heft bearbeiten", onClick = onClick, onLongClick = onLongClick)
                 .drawBehind {
                     // spine with stitching
                     val spine = 16.dp.toPx()
@@ -423,7 +521,7 @@ private fun NotebookCover(nb: Notebook, subject: Subject?, onClick: () -> Unit, 
             Row(Modifier.align(Alignment.BottomStart).padding(start = 30.dp, bottom = 14.dp, end = 14.dp)) {
                 Text("${nb.pageCount} S.", style = Ranzen.type.mono, color = c.inkMuted)
                 Spacer(Modifier.weight(1f))
-                Text(date, style = Ranzen.type.mono, color = c.inkFaint)
+                Text(date, style = Ranzen.type.mono, color = c.inkMuted)
             }
         }
     }
@@ -462,6 +560,9 @@ private fun NotebookSheet(
     presetSubject: Long?,
     onCancel: () -> Unit,
     onTrash: (() -> Unit)?,
+    onDuplicate: (() -> Unit)?,
+    onMerge: (() -> Unit)?,
+    onShare: (() -> Unit)?,
     onSave: (String, Long?, PaperStyle) -> Unit,
 ) {
     val c = Ranzen.colors
@@ -487,7 +588,7 @@ private fun NotebookSheet(
                 modifier = Modifier.fillMaxWidth().focusRequester(focus)
                     .drawBehind { drawLine(c.line, Offset(0f, size.height + 6.dp.toPx()), Offset(size.width, size.height + 6.dp.toPx()), 1.5.dp.toPx()) },
                 decorationBox = { inner ->
-                    if (title.isEmpty()) Text("z. B. Mathe Klasse 11", style = Ranzen.type.title, color = c.inkFaint)
+                    if (title.isEmpty()) Text("z. B. Mathe Klasse 11", style = Ranzen.type.title, color = c.inkMuted)
                     inner()
                 },
             )
@@ -525,6 +626,14 @@ private fun NotebookSheet(
                     }
                 }
             }
+            if (editing != null) {
+                Spacer(Modifier.height(22.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    onDuplicate?.let { QuietButton("Duplizieren", it, color = c.ink) }
+                    onMerge?.let { QuietButton("Zusammenführen …", it, color = c.ink) }
+                    onShare?.let { QuietButton("Als PDF teilen", it, color = c.ink) }
+                }
+            }
             Spacer(Modifier.height(30.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (onTrash != null) QuietButton("In den Papierkorb", onTrash, color = c.signal)
@@ -537,17 +646,61 @@ private fun NotebookSheet(
     }
 }
 
+/** Which notebook gets [source]'s pages at its end. */
 @Composable
-private fun SubjectSheet(nextColor: Int, onCancel: () -> Unit, onSave: (String, Int) -> Unit) {
+private fun MergeSheet(source: Notebook, targets: List<Notebook>, onCancel: () -> Unit, onPick: (Notebook) -> Unit) {
     val c = Ranzen.colors
-    var name by remember { mutableStateOf("") }
-    var color by remember { mutableStateOf(nextColor % SubjectPalette.colors.size) }
+    var target by remember(source) { mutableStateOf<Notebook?>(null) }
+    PaperPanel(corner = 26.dp) {
+        Column(Modifier.padding(30.dp).width(520.dp)) {
+            Text("Zusammenführen", style = Ranzen.type.title, color = c.ink)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Die ${source.pageCount} Seiten von „${source.title}“ kommen ans Ende des gewählten Hefts. Das alte Heft bleibt 30 Tage im Papierkorb.",
+                style = Ranzen.type.caption, color = c.inkMuted,
+            )
+            Spacer(Modifier.height(14.dp))
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                targets.forEach { nb ->
+                    val active = nb.id == target?.id
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp))
+                            .background(if (active) c.raised else Color.Transparent)
+                            .border(1.dp, if (active) c.signal else Color.Transparent, RoundedCornerShape(12.dp))
+                            .clickable { target = nb }.padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RanzenIcon(RanzenIcons.Notebook, size = 22.dp)
+                        Spacer(Modifier.width(14.dp))
+                        Text(nb.title, style = Ranzen.type.body, color = c.ink, modifier = Modifier.weight(1f))
+                        Text("${nb.pageCount} S.", style = Ranzen.type.mono, color = c.inkMuted)
+                    }
+                }
+                if (targets.isEmpty()) Text("Es gibt noch kein anderes Heft.", style = Ranzen.type.body, color = c.inkMuted)
+            }
+            Spacer(Modifier.height(18.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.weight(1f))
+                QuietButton("Abbrechen", onCancel)
+                Spacer(Modifier.width(10.dp))
+                target?.let { t -> SignalButton("Anhängen an „${t.title.take(24)}“", { onPick(t) }) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubjectSheet(nextColor: Int, editing: Subject? = null, onCancel: () -> Unit, onDelete: (() -> Unit)? = null, onSave: (String, Int) -> Unit) {
+    val c = Ranzen.colors
+    var name by remember(editing) { mutableStateOf(editing?.name ?: "") }
+    var color by remember(editing) { mutableStateOf(editing?.colorIndex?.let { Math.floorMod(it, SubjectPalette.colors.size) } ?: (nextColor % SubjectPalette.colors.size)) }
+    var confirm by remember(editing) { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    LaunchedEffect(Unit) { if (editing == null) runCatching { focus.requestFocus() } }
     PaperPanel(corner = 26.dp) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(30.dp).width(440.dp)) {
-            Text("Neues Fach", style = Ranzen.type.title, color = c.ink)
+            Text(if (editing == null) "Neues Fach" else "Fach bearbeiten", style = Ranzen.type.title, color = c.ink)
             Spacer(Modifier.height(20.dp))
             BasicTextField(
                 name, { name = it }, singleLine = true,
@@ -557,27 +710,33 @@ private fun SubjectSheet(nextColor: Int, onCancel: () -> Unit, onSave: (String, 
                 modifier = Modifier.fillMaxWidth().focusRequester(focus)
                     .drawBehind { drawLine(c.line, Offset(0f, size.height + 6.dp.toPx()), Offset(size.width, size.height + 6.dp.toPx()), 1.5.dp.toPx()) },
                 decorationBox = { inner ->
-                    if (name.isEmpty()) Text("z. B. Physik", style = Ranzen.type.title, color = c.inkFaint)
+                    if (name.isEmpty()) Text("z. B. Physik", style = Ranzen.type.title, color = c.inkMuted)
                     inner()
                 },
             )
             Spacer(Modifier.height(24.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 SubjectPalette.colors.forEachIndexed { i, col ->
                     Box(
-                        Modifier.size(36.dp).clip(CircleShape)
+                        Modifier.size(48.dp).clip(CircleShape)
                             .border(if (i == color) 2.dp else 0.dp, if (i == color) c.ink else Color.Transparent, CircleShape)
-                            .clickable { color = i },
+                            .clickable(role = Role.RadioButton) { color = i }
+                            .semantics { contentDescription = "Farbe ${i + 1}" },
                         contentAlignment = Alignment.Center,
                     ) { Lamp(col, size = 22.dp, glow = i == color) }
                 }
             }
+            if (confirm) {
+                Spacer(Modifier.height(14.dp))
+                Text("Die Hefte des Fachs bleiben erhalten, sie stehen dann unter „Alle“ ohne Fach.", style = Ranzen.type.caption, color = c.inkMuted)
+            }
             Spacer(Modifier.height(28.dp))
-            Row {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (onDelete != null) QuietButton(if (confirm) "Wirklich löschen?" else "Fach löschen", { if (confirm) onDelete() else confirm = true }, color = c.signal)
                 Spacer(Modifier.weight(1f))
                 QuietButton("Abbrechen", onCancel)
                 Spacer(Modifier.width(10.dp))
-                SignalButton("Anlegen", { if (name.isNotBlank()) onSave(name, color) })
+                SignalButton(if (editing == null) "Anlegen" else "Speichern", { if (name.isNotBlank()) onSave(name, color) })
             }
         }
     }
@@ -603,9 +762,12 @@ private fun SearchField(query: String, onQuery: (String) -> Unit) {
                 keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
                 modifier = Modifier.fillMaxWidth(),
             )
-            if (query.isEmpty()) Text("Hefte suchen", style = Ranzen.type.body, color = c.inkFaint)
+            if (query.isEmpty()) Text("Hefte suchen", style = Ranzen.type.body, color = c.inkMuted)
         }
-        if (query.isNotEmpty()) Box(Modifier.clip(CircleShape).clickable { onQuery("") }.padding(4.dp)) {
+        if (query.isNotEmpty()) Box(
+            Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button) { onQuery("") }.semantics { contentDescription = "Suche leeren" },
+            contentAlignment = Alignment.Center,
+        ) {
             RanzenIcon(RanzenIcons.Close, tint = c.inkMuted, size = 18.dp)
         }
     }
@@ -679,7 +841,7 @@ fun ClipTargetSheet(library: Library, onPick: (Notebook) -> Unit, onCancel: () -
                 Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
                     notebooks.forEach { nb ->
                         Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onPick(nb) }.padding(horizontal = 10.dp, vertical = 12.dp),
+                            Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable { onPick(nb) }.padding(horizontal = 10.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             RanzenIcon(RanzenIcons.Notebook, size = 22.dp)

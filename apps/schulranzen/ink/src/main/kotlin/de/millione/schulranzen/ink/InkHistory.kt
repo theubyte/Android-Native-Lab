@@ -33,5 +33,19 @@ class InkHistory(private val limit: Int = 200) {
         return step.mapTo(HashSet()) { it.page }
     }
 
+    /** Pages the next undo would change. */
+    fun undoPages(): Set<String> = undo.lastOrNull()?.mapTo(HashSet()) { it.page } ?: emptySet()
+
+    /** Pages the next redo would change. */
+    fun redoPages(): Set<String> = redo.lastOrNull()?.mapTo(HashSet()) { it.page } ?: emptySet()
+
+    /** A page left this notebook: its edits are gone, so undo never spends a press on nothing. */
+    fun forget(page: String) {
+        for (stack in listOf(undo, redo)) {
+            val kept = stack.mapNotNull { step -> step.filter { it.page != page }.ifEmpty { null } }
+            stack.clear(); stack.addAll(kept)
+        }
+    }
+
     fun clear() { undo.clear(); redo.clear() }
 }
