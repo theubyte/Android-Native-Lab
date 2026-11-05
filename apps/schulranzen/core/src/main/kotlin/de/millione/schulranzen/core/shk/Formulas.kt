@@ -25,7 +25,10 @@ data class Formula(
     val explanation: String,
     val calculatorId: String? = null,
     val keywords: List<String> = emptyList(),
-)
+) {
+    /** Simplified or built on assumed values: shown as "Richtwert". */
+    val guide: Boolean get() = id in Formulas.GUIDE_IDS
+}
 
 private fun v(symbol: String, meaning: String, unit: String) = FormulaVariable(symbol, meaning, unit)
 
@@ -76,7 +79,7 @@ object Formulas {
         Formula(
             "expansion", H, "Längenausdehnung", "Δl = l₀ · α · ΔT",
             listOf(v("Δl", "Längenänderung", "mm"), v("l₀", "Ausgangslänge", "m"), v("α", "Längenausdehnungskoeffizient", "mm/(m·K)"), v("ΔT", "Temperaturänderung", "K")),
-            "Rohre dehnen sich beim Erwärmen. Kupfer 0,0166, Stahl 0,012, PE-X etwa 0,2 mm/(m·K).",
+            "Rohre dehnen sich beim Erwärmen. Kupfer 0,0166, Stahl 0,012, Mehrschichtverbund etwa 0,026, PE-X 0,15–0,2 mm/(m·K).",
             "expansion", listOf("dehnung", "ausdehnung", "kompensator", "rohr"),
         ),
         Formula(
@@ -211,7 +214,7 @@ object Formulas {
         Formula(
             "efficiency", B, "Wirkungsgrad", "η = P_ab / P_zu",
             listOf(v("η", "Wirkungsgrad", "– oder %"), v("P_ab", "abgegebene Leistung", "kW"), v("P_zu", "zugeführte Leistung", "kW")),
-            "Immer kleiner als 1 (100 %). Mehrere Stufen: η = η₁ · η₂ · …",
+            "Immer kleiner als 1 (100 %), wenn beide Leistungen auf denselben Energiewert bezogen sind. Brennwertkessel erreichen auf den Heizwert bezogen scheinbar über 100 %. Mehrere Stufen: η = η₁ · η₂ · …",
             "efficiency", listOf("nutzungsgrad", "verluste"),
         ),
         Formula(
@@ -237,16 +240,16 @@ object Formulas {
             "mag", FormulaCategory.DESIGN, "Membran-Ausdehnungsgefäß", "V_N = (V_e + V_V) · (p_e + 1) / (p_e − p₀)",
             listOf(
                 v("V_N", "Nennvolumen", "l"), v("V_e", "Ausdehnungsvolumen = V_A · n", "l"), v("V_V", "Wasservorlage", "l"),
-                v("p_e", "Enddruck = p_SV − 0,5", "bar"), v("p₀", "Vordruck = h_st / 10 + 0,2", "bar"),
+                v("p_e", "Enddruck = p_SV − 0,5", "bar"), v("p₀", "Vordruck = h_st / 10 + 0,2, mindestens 1", "bar"),
             ),
-            "Das MAG nimmt die Ausdehnung des Heizwassers auf. Vereinfacht nach EN 12828, für die Ausbildung.",
+            "Das MAG nimmt die Ausdehnung des Heizwassers auf. Vereinfacht nach EN 12828 und Herstellerunterlagen, für die Ausbildung. Ersetzt nicht die Fachplanung.",
             "mag", listOf("ausdehnungsgefäss", "vordruck", "druckhaltung"),
         ),
         Formula(
             "radiator", FormulaCategory.DESIGN, "Heizkörperleistung umrechnen", "Φ = Φ_N · (ΔT_ln / ΔT_ln,N)ⁿ",
             listOf(
                 v("Φ_N", "Normleistung bei 75/65/20", "W"), v("ΔT_ln", "(ϑ_V − ϑ_R) / ln((ϑ_V − ϑ_i)/(ϑ_R − ϑ_i))", "K"),
-                v("ΔT_ln,N", "49,8 K bei 75/65/20", "K"), v("n", "Heizkörperexponent ≈ 1,3", ""),
+                v("ΔT_ln,N", "49,83 K bei 75/65/20", "K"), v("n", "Heizkörperexponent ≈ 1,3, genau im Datenblatt", ""),
             ),
             "Katalogleistung auf die echten Systemtemperaturen umrechnen, z. B. für Wärmepumpen mit 55/45 °C.",
             "radiator", listOf("heizkörper", "übertemperatur", "exponent"),
@@ -254,7 +257,7 @@ object Formulas {
         Formula(
             "tw_peak", FormulaCategory.DESIGN, "Trinkwasser-Spitzendurchfluss", "V̇_S = a · (ΣV̇_R)^b − c",
             listOf(v("V̇_S", "Spitzendurchfluss", "l/s"), v("ΣV̇_R", "Summe der Berechnungsdurchflüsse", "l/s"), v("a, b, c", "Konstanten je Gebäudeart", "")),
-            "Nicht alle Zapfstellen laufen gleichzeitig. Vereinfacht nach DIN 1988-300, für die Ausbildung.",
+            "Nicht alle Zapfstellen laufen gleichzeitig. Vereinfacht nach DIN 1988-300, für die Ausbildung. Ersetzt nicht die Fachplanung.",
             "tw_peak", listOf("trinkwasser", "gleichzeitigkeit", "1988"),
         ),
         Formula(
@@ -263,6 +266,12 @@ object Formulas {
             "Die Pumpe muss den Druckverlust des ungünstigsten Kreises überwinden. 10 kPa ≈ 1 m Förderhöhe.",
             "pump_head", listOf("umwälzpumpe", "betriebspunkt", "druckverlust"),
         ),
+    )
+
+    /** Idealised (no losses, fixed water values) or simplified; the plain definitions are not listed. */
+    internal val GUIDE_IDS = setOf(
+        "water_energy", "heating_time", "mixing", "expansion", "flow_from_power", "power_from_flow", "mass_flow",
+        "hydrostatic", "bar_mws", "pump_power", "mag", "radiator", "tw_peak", "pump_head",
     )
 
     fun byId(id: String): Formula? = all.firstOrNull { it.id == id }

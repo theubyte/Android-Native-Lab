@@ -189,6 +189,63 @@ object SchemaGeometry {
         return out
     }
 
+    /** Index of the interior corner of [pipe] nearest to [p] within [tolerance]; the ends belong to their ports. */
+    fun cornerAt(pipe: SchemaPipe, p: Pt, tolerance: Double): Int? =
+        (1 until pipe.points.size - 1).filter { pipe.points[it].dist(p) <= tolerance }.minByOrNull { pipe.points[it].dist(p) }
+
+    /**
+     * Moves corner [index] to [to]. Its neighbours slide along so every stretch
+     * stays straight; a pipe end stays on its port and gets a new corner instead.
+     */
+    fun moveCorner(points: List<Pt>, index: Int, to: Pt): List<Pt> {
+        if (index <= 0 || index >= points.size - 1) return points
+        val old = points[index]
+        fun neighbour(i: Int): Pt {
+            val n = points[i]
+            return if (n.y == old.y) Pt(n.x, to.y) else Pt(to.x, n.y)
+        }
+        val out = ArrayList<Pt>()
+        out += points.subList(0, index - 1)
+        if (index - 1 == 0) {
+            val first = points[0]
+            out += first
+            if (first.x != to.x && first.y != to.y) out += if (first.y == old.y) Pt(to.x, first.y) else Pt(first.x, to.y)
+        } else out += neighbour(index - 1)
+        out += to
+        if (index + 1 == points.size - 1) {
+            val last = points.last()
+            if (last.x != to.x && last.y != to.y) out += if (last.y == old.y) Pt(to.x, last.y) else Pt(last.x, to.y)
+            out += last
+        } else {
+            out += neighbour(index + 1)
+            out += points.subList(index + 2, points.size)
+        }
+        return simplify(out)
+    }
+
+    /**
+     * Shifts straight stretch [segment] sideways so it runs through [to]. At a
+     * pipe end the end stays on its port and a short leg connects to the stretch.
+     */
+    fun moveSegment(points: List<Pt>, segment: Int, to: Pt): List<Pt> {
+        if (segment < 0 || segment >= points.size - 1) return points
+        val a = points[segment]; val b = points[segment + 1]
+        val horizontal = a.y == b.y
+        fun shifted(q: Pt) = if (horizontal) Pt(q.x, to.y) else Pt(to.x, q.y)
+        val out = ArrayList<Pt>()
+        out += points.subList(0, segment)
+        if (segment == 0) out += a
+        out += shifted(a)
+        out += shifted(b)
+        if (segment + 1 == points.size - 1) out += b
+        out += points.subList(segment + 2, points.size)
+        return simplify(out)
+    }
+
+    /** Index of the segment that [p] lies on, or null. */
+    fun segmentAt(points: List<Pt>, p: Pt): Int? =
+        points.zipWithNext().indexOfFirst { (a, b) -> distanceToSegment(p, a, b) < 1e-6 }.takeIf { it >= 0 }
+
     /**
      * Moves the end of an orthogonal polyline to [to] and keeps it
      * orthogonal by sliding the neighbouring point along with it.
@@ -260,6 +317,61 @@ object SchemaOps {
         val horizontalFirst = abs(to.x - from.x) >= abs(to.y - from.y)
         val pts = SchemaGeometry.route(a.at, b.at, horizontalFirst)
         return schema.copy(pipes = schema.pipes + SchemaPipe(id, kind, pts, a.port, b.port, pipeId))
+    }
+
+    /** Drags a corner of a pipe; everything snaps to the grid so pipes stay on the sheet's raster. */
+    fun moveCorner(schema: Schema, pipeId: String, index: Int, to: Pt): Schema =
+        updatePipe(schema, pipeId) { it.copy(points = SchemaGeometry.moveCorner(it.points, index, SchemaGeometry.grid(to))) }
+
+    fun moveSegment(schema: Schema, pipeId: String, segment: Int, to: Pt): Schema =
+        updatePipe(schema, pipeId) { it.copy(points = SchemaGeometry.moveSegment(it.points, segment, SchemaGeometry.grid(to))) }
+
+    /**
+     * Cuts pipe [pipeId] at [at] and joins both parts with a tee there. A typed
+     * length is shared out by drawn length, so the sum stays what was measured.
+     * Returns the schema unchanged when [at] is not inside the pipe.
+     */
+    fun splitWithTee(schema: Schema, pipeId: String, at: Pt, teeId: String, secondPipeId: String): Schema {
+        val pipe = schema.pipes.firstOrNull { it.id == pipeId } ?: return schema
+        val seg = SchemaGeometry.segmentAt(pipe.points, at) ?: return schema
+        if (at == pipe.points.first() || at == pipe.points.last()) return schema
+        val first = SchemaGeometry.simplify(pipe.points.subList(0, seg + 1) + at)
+        val second = SchemaGeometry.simplify(listOf(at) + pipe.points.subList(seg + 1, pipe.points.size))
+        val total = SchemaGeometry.length(pipe.points)
+        fun share(part: List<Pt>) = pipe.lengthM?.let { it * SchemaGeometry.length(part) / total }
+        val a = pipe.copy(points = first, end = PortRef(teeId, 0), lengthM = share(first))
+        val b = pipe.copy(id = secondPipeId, points = second, start = PortRef(teeId, 1), lengthM = share(second))
+        return schema.copy(
+            symbols = schema.symbols + SchemaSymbol(teeId, SymbolType.TEE, at),
+            pipes = schema.pipes.flatMap { if (it.id == pipeId) listOf(a, b) else listOf(it) },
+        )
+    }
+
+    /** A pipe of the same medium whose run passes through [at] (not one that merely ends there). */
+    private fun pipeThrough(schema: Schema, kind: PipeKind, at: Pt): SchemaPipe? = schema.pipes.firstOrNull { p ->
+        p.kind == kind && at != p.points.first() && at != p.points.last() && SchemaGeometry.segmentAt(p.points, at) != null
+    }
+
+    /**
+     * Like [addPipe], but an end dropped onto a running pipe of the same medium
+     * makes a real junction: a tee goes in and counts in the material list.
+     */
+    fun addPipeWithTees(schema: Schema, id: String, kind: PipeKind, from: Pt, to: Pt, pipeId: String?, newId: () -> String): Schema {
+        val a = SchemaGeometry.snap(schema, from)
+        val b = SchemaGeometry.snap(schema, to)
+        if (a.at == b.at) return schema
+        var s = schema
+        fun join(end: SnapResult): PortRef? {
+            end.port?.let { return it }
+            val through = pipeThrough(s, kind, end.at) ?: return null
+            val tee = newId()
+            s = splitWithTee(s, through.id, end.at, tee, newId())
+            return PortRef(tee, 2)
+        }
+        val startRef = join(a)
+        val endRef = join(b)
+        val horizontalFirst = abs(to.x - from.x) >= abs(to.y - from.y)
+        return s.copy(pipes = s.pipes + SchemaPipe(id, kind, SchemaGeometry.route(a.at, b.at, horizontalFirst), startRef, endRef, pipeId))
     }
 
     /** Re-attaches all pipe ends connected to symbol [symbolId] after it moved, turned or flipped. */

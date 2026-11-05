@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,6 +61,7 @@ import de.millione.schulranzen.core.shk.Formula
 import de.millione.schulranzen.core.shk.FormulaCategory
 import de.millione.schulranzen.core.shk.Formulas
 import de.millione.schulranzen.core.shk.Quantity
+import de.millione.schulranzen.core.shk.Reliability
 import de.millione.schulranzen.core.shk.ShkCalcResult
 import de.millione.schulranzen.core.shk.ShkCalculator
 import de.millione.schulranzen.core.shk.ShkCalculators
@@ -297,10 +299,15 @@ private fun CalculatorDetail(
                 Lamp(if (result is ShkCalcResult.Ok) c.signal else c.inkFaint, size = 7.dp, glow = result is ShkCalcResult.Ok)
                 Spacer(Modifier.width(10.dp))
                 Caption("Ergebnis")
+                if (calc.reliability == Reliability.GUIDE) {
+                    Spacer(Modifier.width(10.dp))
+                    GuideMark()
+                }
             }
             Spacer(Modifier.height(8.dp))
             when (result) {
-                is ShkCalcResult.Ok -> result.outputs.forEachIndexed { i, out ->
+                is ShkCalcResult.Ok -> {
+                    result.outputs.forEachIndexed { i, out ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Bottom) {
                         Text(out.symbol, style = Ranzen.type.mono.copy(fontSize = 16.sp), color = c.inkMuted, modifier = Modifier.width(40.dp))
                         Text(out.label, style = Ranzen.type.body.copy(hyphens = Hyphens.Auto, localeList = androidx.compose.ui.text.intl.LocaleList("de-DE")), color = c.inkMuted, modifier = Modifier.weight(1f))
@@ -313,6 +320,8 @@ private fun CalculatorDetail(
                         Spacer(Modifier.width(8.dp))
                         Text(out.unit, style = Ranzen.type.mono.copy(fontSize = 16.sp), color = c.inkMuted, modifier = Modifier.widthIn(min = 52.dp))
                     }
+                    }
+                    ResultNotes(result.warnings, calc.needsPlanner)
                 }
                 ShkCalcResult.Incomplete -> Text("Werte eingeben, das Ergebnis erscheint sofort.", style = Ranzen.type.body, color = c.inkMuted)
                 is ShkCalcResult.Invalid -> Text(result.message, style = Ranzen.type.body, color = c.signal)
@@ -351,6 +360,8 @@ private fun CalculatorDetail(
                             unit = input.unit,
                             placeholder = "0",
                             error = bad,
+                            // The number pad of some keyboards has no minus sign; temperatures can be below zero.
+                            keyboard = if (input.unit == "°C") KeyboardType.Text else KeyboardType.Decimal,
                             modifier = Modifier.width(if (side) 210.dp else 250.dp),
                         )
                     }
@@ -417,6 +428,7 @@ private fun UnitDetail(q: Quantity, values: MutableMap<String, String>, from: Mu
             onValueChange = { values[q.name] = it },
             unit = fromSymbol,
             error = text.isNotBlank() && value == null,
+            keyboard = if (q == Quantity.TEMPERATURE) KeyboardType.Text else KeyboardType.Decimal,
             modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth(),
         )
         Spacer(Modifier.height(14.dp))
@@ -436,8 +448,11 @@ private fun UnitDetail(q: Quantity, values: MutableMap<String, String>, from: Mu
         }
         Spacer(Modifier.height(22.dp))
         Column(Modifier.fillMaxWidth().recessed(18.dp).padding(vertical = 8.dp)) {
+            val problem = value?.let { Units.problem(q, it, fromSymbol) }
             if (value == null) {
                 Text("Wert eingeben", style = Ranzen.type.body, color = c.inkMuted, modifier = Modifier.padding(20.dp))
+            } else if (problem != null) {
+                Text(problem, style = Ranzen.type.body, color = c.signal, modifier = Modifier.padding(20.dp))
             } else {
                 Units.convertAll(q, value, fromSymbol).forEach { (u, v) ->
                     val isFrom = u.symbol == fromSymbol
@@ -574,6 +589,10 @@ private fun FormulaDetail(formula: Formula, favorite: Boolean, onToggleFavorite:
                 Caption(formula.category.title, color = accent)
                 Spacer(Modifier.height(4.dp))
                 Text(formula.title, style = Ranzen.type.title, color = c.ink)
+                if (formula.guide) {
+                    Spacer(Modifier.height(6.dp))
+                    GuideMark()
+                }
             }
             TactileKey(onClick = onToggleFavorite, selected = favorite, contentDescription = if (favorite) "Favorit entfernen" else "Als Favorit merken") {
                 RanzenIcon(if (favorite) RechnenIcons.StarFilled else RechnenIcons.Star, tint = if (favorite) c.signal else c.ink)
@@ -600,5 +619,7 @@ private fun FormulaDetail(formula: Formula, favorite: Boolean, onToggleFavorite:
             Spacer(Modifier.height(24.dp))
             SignalButton("Im Schnellrechner rechnen", { onCalculate(id) }, icon = RechnenIcons.Calculator)
         }
+        Spacer(Modifier.height(16.dp))
+        ExercisePanel(formula.id)
     }
 }

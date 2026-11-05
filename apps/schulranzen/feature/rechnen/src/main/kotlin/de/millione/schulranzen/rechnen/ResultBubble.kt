@@ -30,6 +30,8 @@ import de.millione.schulranzen.design.RanzenIcons
 /**
  * Small paper slip with the result of a circled calculation, placed by the
  * caller next to the handwriting. It springs open; a tap anywhere closes it.
+ * An uncertain reading says so and lists what else it could be, because the
+ * expression shown is what was computed, not necessarily what was written.
  */
 @Composable
 fun ResultBubble(result: MathResult, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
@@ -46,11 +48,15 @@ fun ResultBubble(result: MathResult, onDismiss: () -> Unit, modifier: Modifier =
             Modifier.defaultMinSize(minHeight = 56.dp).padding(start = 16.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Lamp(c.signal, size = 8.dp)
+            Lamp(if (result.uncertain) c.inkFaint else c.signal, size = 8.dp)
             Spacer(Modifier.width(12.dp))
             Column {
+                if (result.uncertain) Text("Unsicher gelesen, bitte prüfen", style = Ranzen.type.label, color = c.signal, maxLines = 1)
                 Text(result.prettyExpression, style = Ranzen.type.mono.copy(fontSize = 13.sp), color = c.inkMuted, maxLines = 1)
                 Text("= ${result.text}", style = Ranzen.type.monoLarge.copy(fontSize = 26.sp, lineHeight = 30.sp), color = c.ink, maxLines = 1)
+                result.alternatives.forEach { alt ->
+                    Text("oder: $alt", style = Ranzen.type.mono.copy(fontSize = 13.sp), color = c.inkMuted, maxLines = 1)
+                }
             }
             Spacer(Modifier.width(10.dp))
             RanzenIcon(RanzenIcons.Close, tint = c.inkFaint, size = 16.dp)

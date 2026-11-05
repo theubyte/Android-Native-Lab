@@ -113,6 +113,30 @@ internal fun NumberField(
     }
 }
 
+/** Marks a value as simplified or resting on assumptions, so nothing poses as certain. */
+@Composable
+internal fun GuideMark(modifier: Modifier = Modifier) {
+    val c = Ranzen.colors
+    Text(
+        "Richtwert", style = Ranzen.type.caption, color = c.signal,
+        modifier = modifier.border(0.75.dp, c.signal, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 2.dp),
+    )
+}
+
+/** Warnings of a calculation and, for sizing with normative weight, the note about the design engineer. */
+@Composable
+internal fun ResultNotes(warnings: List<String>, needsPlanner: Boolean) {
+    val c = Ranzen.colors
+    warnings.forEach { w ->
+        Spacer(Modifier.height(6.dp))
+        Text(w, style = Ranzen.type.label, color = c.signal)
+    }
+    if (needsPlanner) {
+        Spacer(Modifier.height(6.dp))
+        Text(de.millione.schulranzen.core.shk.ShkDesign.PLANNER_NOTE, style = Ranzen.type.caption, color = c.inkMuted)
+    }
+}
+
 /** A list row in the left column: lamp, title, optional mono subtitle; the chosen one sits on paper. */
 @Composable
 internal fun ListRow(

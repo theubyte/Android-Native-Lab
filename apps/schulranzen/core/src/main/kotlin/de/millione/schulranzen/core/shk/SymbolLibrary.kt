@@ -28,10 +28,10 @@ sealed interface Prim {
 /** A connection point. [name] is shown in the editor ("VL", "RL" …). */
 data class PortDef(val at: Pt, val name: String = "")
 
-enum class SymbolGroup(val title: String) { GENERATOR("Wärmeerzeuger"), CONSUMER("Verbraucher"), VALVE("Armaturen"), COMPONENT("Bauteile") }
+enum class SymbolGroup(val title: String) { GENERATOR("Wärmeerzeuger"), CONSUMER("Verbraucher"), VALVE("Armaturen"), COMPONENT("Bauteile"), FITTING("Formteile") }
 
 /** Symbol types of the schema editor. */
-enum class SymbolType { PUMP, MAG, STORAGE, BOILER, HEAT_PUMP, RADIATOR, FLOOR_HEATING, VALVE, CHECK_VALVE, THERMO_VALVE, THREE_WAY, SAFETY_VALVE, MIXER, VENT, STRAINER, HEAT_EXCHANGER, SENSOR }
+enum class SymbolType { PUMP, MAG, STORAGE, BOILER, HEAT_PUMP, RADIATOR, FLOOR_HEATING, VALVE, CHECK_VALVE, THERMO_VALVE, THREE_WAY, SAFETY_VALVE, MIXER, VENT, STRAINER, HEAT_EXCHANGER, SENSOR, TEE }
 
 /**
  * One library symbol: outline, ports and the calculator it opens.
@@ -206,6 +206,13 @@ object SymbolLibrary {
                 line(-1.0, 0.0, -0.7, 0.0), line(0.7, 0.0, 1.0, 0.0), line(-0.35, 0.35, 0.35, -0.35, dashed = true),
             ),
             materialGroup = MaterialGroup.VALVE,
+        ),
+        // All three ports sit on the centre: the tee adds no drawn length, so measured pipe lengths stay right.
+        SymbolDef(
+            SymbolType.TEE, "T-Stück", SymbolGroup.FITTING, 0.5, 0.5,
+            listOf(PortDef(p(0.0, 0.0), "A"), PortDef(p(0.0, 0.0), "B"), PortDef(p(0.0, 0.0), "Abzweig")),
+            listOf(line(-0.5, 0.0, 0.5, 0.0), line(0.0, 0.0, 0.0, 0.5), Prim.Circle(p(0.0, 0.0), 0.2, filled = true)),
+            materialGroup = MaterialGroup.FITTING,
         ),
         SymbolDef(
             SymbolType.SENSOR, "Temperaturfühler", SymbolGroup.COMPONENT, 0.5, 1.0,

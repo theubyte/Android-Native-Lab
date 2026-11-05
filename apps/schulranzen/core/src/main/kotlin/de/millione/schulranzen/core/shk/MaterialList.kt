@@ -62,7 +62,8 @@ object MaterialPlanner {
         val runs = ArrayList<PipeRun>(); val ins = ArrayList<PipeRun>(); val items = ArrayList<CountItem>()
         project.rooms.flatMap { it.positions }.forEach { p ->
             val q = p.quantity ?: return@forEach
-            if (q <= 0.0) return@forEach
+            // Negative lines are deductions on site: they stay in and reduce the sum.
+            if (q == 0.0) return@forEach
             val pipe = PipeCatalog.byId(p.pipeId)
             when (p.kind) {
                 PositionKind.PIPE ->
@@ -91,9 +92,18 @@ object MaterialPlanner {
         }
         schema.symbols.forEach { s ->
             val def = SymbolLibrary.def(s.type)
-            items += CountItem(def.materialGroup, def.title, 1.0, "Stk")
+            items += CountItem(def.materialGroup, itemTitle(schema, s, def.title), 1.0, "Stk")
         }
         return MaterialInput(runs, emptyList(), items)
+    }
+
+    /** A tee is ordered by the pipes it joins, so "T-Stück Cu 22 × 1" and "T-Stück" stay apart. */
+    private fun itemTitle(schema: Schema, s: SchemaSymbol, title: String): String {
+        if (s.type != SymbolType.TEE) return title
+        val sizes = schema.pipes.filter { it.start?.symbolId == s.id || it.end?.symbolId == s.id }
+            .mapNotNull { PipeCatalog.byId(it.pipeId) }.distinct()
+            .sortedByDescending { it.outerMm }.map { it.fullLabel }
+        return if (sizes.isEmpty()) title else "$title ${sizes.joinToString(" / ")}"
     }
 
     fun plan(input: MaterialInput, settings: MaterialSettings = MaterialSettings()): MaterialList {
@@ -104,6 +114,7 @@ object MaterialPlanner {
         input.runs.groupBy { it.pipeId }.toSortedMap(compareBy { id -> PipeCatalog.all.indexOfFirst { it.id == id } }).forEach { (id, runs) ->
             val size = PipeCatalog.byId(id) ?: return@forEach
             val measured = runs.sumOf { it.lengthM }
+            if (measured <= 0.0) return@forEach
             val need = measured * waste
             val bars = up(need / size.material.barLengthM)
             lines += MaterialLine(
@@ -125,16 +136,18 @@ object MaterialPlanner {
             val required = ShkDesign.insulationMm(size.innerMm, settings.insulationCase)
             val stock = ShkDesign.insulationStockMm(required)
             val need = runs.sumOf { it.lengthM } * (1.0 + settings.insulationWastePercent / 100.0)
+            if (need <= 0.0) return@forEach
             lines += MaterialLine(
                 MaterialGroup.INSULATION, "Dämmschlauch ${size.fullLabel}, $stock mm", up(need / settings.insulationPieceM),
                 "Stück à ${n(settings.insulationPieceM, 1)} m",
-                "GEG ${settings.insulationCase.title}: mind. ${n(required, 1)} mm, ${n(need)} m inkl. Verschnitt",
+                "Dämmung ${settings.insulationCase.title}: mind. ${n(required, 1)} mm, ${n(need)} m inkl. Verschnitt",
             )
         }
 
         // Counted parts; fittings get the small-parts allowance.
         input.items.groupBy { Triple(it.group, it.title, it.unit) }.forEach { (k, list) ->
             val sum = list.sumOf { it.quantity }
+            if (sum <= 0.0) return@forEach
             val (group, title, unit) = k
             val counted = unit == "Stk"
             val q = when {

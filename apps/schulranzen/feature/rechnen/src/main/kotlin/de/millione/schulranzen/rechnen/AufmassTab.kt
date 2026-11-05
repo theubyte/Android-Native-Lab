@@ -259,7 +259,7 @@ private fun ProjectDetail(
                     val bad = AufmassMath.invalid(project)
                     if (bad.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
-                        Text("${bad.size} Rechnung(en) nicht lesbar – sie zählen als 0.", style = Ranzen.type.label, color = c.signal)
+                        Text("${bad.size} Rechnung(en) nicht lesbar, in den Summen nicht enthalten. Dezimalzahlen mit Komma schreiben.", style = Ranzen.type.label, color = c.signal)
                     }
                     Spacer(Modifier.height(80.dp))
                 }
@@ -398,12 +398,14 @@ internal fun aufmassPdf(out: java.io.OutputStream, project: AufmassProject) {
     val sections = project.rooms.map { r ->
         PdfSection(
             r.name, listOf("Art", "Bezeichnung", "Rechnung", "Menge", "Einheit"), listOf(1.1f, 2.4f, 1.9f, 0.9f, 0.6f),
-            r.positions.map { p -> listOf(p.kind.title, p.title + if (p.insulate) " (gedämmt)" else "", p.expression, ShkCsv.num(p.quantity, 2), p.unit) },
+            r.positions.map { p -> listOf(p.kind.title, p.title + if (p.insulate) " (gedämmt)" else "", p.expression, ShkCsv.quantityText(p, 2), p.unit) },
             rightAligned = setOf(3),
         )
     } + PdfSection(
         "Summen", listOf("Art", "Bezeichnung", "Menge", "Einheit"), listOf(1.1f, 3.6f, 1f, 0.6f),
         AufmassMath.sums(project).map { listOf(it.kind.title, it.title, ShkCsv.num(it.quantity, 2), it.unit) }, rightAligned = setOf(2),
     )
-    ShkExport.tablePdf(out, "Aufmaß: ${project.name}", listOf(project.address, "Stand ${ShkExport.stamp()}").filter { it.isNotBlank() }.joinToString(" · "), sections)
+    val bad = AufmassMath.invalid(project).size
+    val warning = if (bad > 0) "Achtung: $bad Rechnung(en) nicht lesbar, in den Summen nicht enthalten" else ""
+    ShkExport.tablePdf(out, "Aufmaß: ${project.name}", listOf(project.address, "Stand ${ShkExport.stamp()}", warning).filter { it.isNotBlank() }.joinToString(" · "), sections)
 }

@@ -81,10 +81,18 @@ private fun TableDetail(table: ShkTable, onCalculate: (String) -> Unit) {
         Caption("Tabelle", color = SubjectPalette.of(table.id.hashCode()))
         Spacer(Modifier.height(4.dp))
         Text(table.title, style = Ranzen.type.title, color = c.ink)
+        if (table.guide) {
+            Spacer(Modifier.height(6.dp))
+            GuideMark()
+        }
         Spacer(Modifier.height(18.dp))
         Grid(table.columns, table.rows, highlight = -1)
         Spacer(Modifier.height(16.dp))
         Text(table.note, style = Ranzen.type.body, color = c.inkMuted)
+        if (table.source.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text("Quelle: " + table.source, style = Ranzen.type.caption, color = c.inkMuted)
+        }
         table.calculatorId?.let { id ->
             Spacer(Modifier.height(20.dp))
             SignalButton("Im Schnellrechner rechnen", { onCalculate(id) }, icon = RechnenIcons.Calculator)
@@ -143,6 +151,8 @@ private fun PressureDropTable(onCalculate: (String) -> Unit) {
         Caption("Rohrdimensionierung", color = SubjectPalette.of(0))
         Spacer(Modifier.height(4.dp))
         Text("Druckverlust R je Rohr", style = Ranzen.type.title, color = c.ink)
+        Spacer(Modifier.height(6.dp))
+        GuideMark()
         Spacer(Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Φ", style = Ranzen.type.mono.copy(fontSize = 18.sp), color = SubjectPalette.of(0), modifier = Modifier.width(36.dp))
@@ -176,7 +186,7 @@ private fun PressureDropTable(onCalculate: (String) -> Unit) {
             )
         }
         Spacer(Modifier.height(12.dp))
-        Text("Wasser 60 °C, Darcy-Weisbach. " + ShkDesign.SOURCE, style = Ranzen.type.caption, color = c.inkMuted)
+        Text("Wasser 60 °C, neue Rohre, Darcy-Weisbach mit Swamee-Jain; im Übergangsbereich unter Re ≈ 5000 ungenauer. " + ShkDesign.SOURCE, style = Ranzen.type.caption, color = c.inkMuted)
         Spacer(Modifier.height(20.dp))
         SignalButton("Im Schnellrechner rechnen", { onCalculate("pipe_sizing") }, icon = RechnenIcons.Calculator)
     }

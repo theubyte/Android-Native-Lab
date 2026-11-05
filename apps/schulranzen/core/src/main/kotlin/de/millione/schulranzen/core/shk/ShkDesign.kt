@@ -1,16 +1,22 @@
 package de.millione.schulranzen.core.shk
 
+import de.millione.schulranzen.core.math.GermanNumber
 import kotlin.math.ceil
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 
-/** Where a pipe runs; decides the GEG insulation share. */
+/**
+ * Where a pipe runs; decides the insulation share of GModG (formerly GEG), Annex 8 No. 1a.
+ * Entries are stored by name in the material settings: only ever append.
+ */
 enum class InsulationCase(val title: String, val share: Double) {
     NORMAL("Normal (100 %)", 1.0),
-    HALF("Durchbrüche, Verteiler, zwischen Nutzern (50 %)", 0.5),
-    FLOOR("Im Fußbodenaufbau (6 mm)", 0.0),
+    HALF("Durchbrüche, Kreuzungen, Verbindungen, Verteiler, zwischen Nutzern (50 %)", 0.5),
+    /** Annex 8 gg refers to ff: floor build-up between heated rooms of different users only. */
+    FLOOR("Fußbodenaufbau zwischen Nutzern (6 mm)", 0.0),
+    OUTDOOR("An Außenluft (200 %)", 2.0),
 }
 
 /** Draw-off point for the drinking-water peak flow with its design flow V̇R in l/s. */
@@ -22,8 +28,8 @@ enum class TapPoint(val title: String, val flowLs: Double) {
     WC("WC-Spülkasten", 0.13),
     WASHER("Waschmaschine", 0.15),
     DISHWASHER("Geschirrspüler", 0.07),
-    URINAL("Urinal (Spülventil)", 0.30),
-    TAP15("Auslaufventil DN 15", 0.30),
+    URINAL("Urinal (Druckspüler)", 0.30),
+    TAP15("Auslaufventil DN 15 ohne Strahlregler", 0.30),
 }
 
 /** Building type with the peak-flow constants a, b, c of DIN 1988-300. */
@@ -56,6 +62,8 @@ data class MagResult(
  */
 object ShkDesign {
     const val SOURCE = "Vereinfacht, für die Ausbildung. Für Planung und Abnahme gelten Norm und Herstellerangaben."
+    /** Shown with sizing that has normative weight (drinking water, safety equipment, heat load). */
+    const val PLANNER_NOTE = "Diese Rechnung ersetzt nicht die Fachplanung."
 
     // ---------------------------------------------------------------- Wasser
 
@@ -80,27 +88,50 @@ object ShkDesign {
     val MAG_SIZES = listOf(8, 12, 18, 25, 35, 50, 80, 100, 140, 200, 250, 300, 400, 500, 600, 800, 1000)
 
     /**
-     * Membrane expansion vessel for a closed heating system (simplified EN 12828).
+     * Membrane expansion vessel for a closed heating system, following the planning
+     * rules of the Reflex documentation (EN 12828): p₀ ≥ h/10 + 0,2 and at least 1 bar,
+     * water seal 0,5 % of V_A with at least 3 l, for vessels up to 15 l instead 20 % of V_N.
+     * Limited to 100 °C: above that the vapour pressure enters p₀, which is not modelled.
      * @param systemL water content of the system in l
      * @param staticM static height above the vessel in m
      * @param maxFlowC highest flow temperature in °C
      * @param safetyBar opening pressure of the safety valve in bar
      */
     fun mag(systemL: Double, staticM: Double, maxFlowC: Double, safetyBar: Double): MagResult {
-        require(maxFlowC in 20.0..110.0) { "Vorlauftemperatur zwischen 20 und 110 °C" }
+        require(maxFlowC in 20.0..100.0) { "Vorlauftemperatur zwischen 20 und 100 °C (darüber Fachplanung)" }
+        require(staticM >= 0.0) { "Statische Höhe: Wert ≥ 0" }
         val n = expansionPercent(maxFlowC)
         val ve = systemL * n / 100.0
-        val vv = max(systemL * 0.005, 3.0)
-        val p0 = max(staticM / 10.0 + 0.2, 0.7)
+        val p0 = max(staticM / 10.0 + 0.2, MIN_PRECHARGE)
         val pe = if (safetyBar <= 5.0) safetyBar - 0.5 else safetyBar * 0.9
         require(pe > p0) { "Sicherheitsventil zu niedrig für diese Anlagenhöhe" }
-        val vn = (ve + vv) * (pe + 1.0) / (pe - p0)
+        val factor = (pe + 1.0) / (pe - p0)
+        var vv = max(systemL * 0.005, 3.0)
+        var vn = (ve + vv) * factor
+        // Small vessels: the seal is 20 % of V_N, so V_N = (V_e + 0,2·V_N)·f.
+        if (vn <= 15.0 && 0.2 * factor < 1.0) {
+            val small = ve * factor / (1.0 - 0.2 * factor)
+            if (small <= 15.0) { vn = small; vv = 0.2 * small }
+        }
         return MagResult(n, ve, vv, p0, pe, p0 + 0.3, vn, MAG_SIZES.firstOrNull { it >= vn })
+    }
+
+    const val MIN_PRECHARGE = 1.0
+
+    /** The opening pressure should stay this far above the pre-charge, else the vessel works badly. */
+    fun magWarnings(staticM: Double, safetyBar: Double): List<String> {
+        val p0 = max(staticM / 10.0 + 0.2, MIN_PRECHARGE)
+        val gap = if (safetyBar <= 5.0) 1.5 else 2.0
+        return if (safetyBar < p0 + gap) listOf("Empfohlen ist p_SV ≥ p₀ + ${GermanNumber.format(gap, 1)} bar. Sicherheitsventil oder Höhe prüfen.") else emptyList()
     }
 
     // ---------------------------------------------------------------- Sicherheitsventil
 
-    /** Inlet size of the safety valve for a heat generator (DIN EN 12828, simplified table). */
+    /**
+     * Inlet size of the safety valve for a heat generator: manufacturer table for
+     * 2,5 bar (SYR 1915, after TRD 721). A higher opening pressure allows more,
+     * so this errs on the safe side at 3 bar.
+     */
     val SAFETY_VALVES = listOf(50.0 to 15, 100.0 to 20, 200.0 to 25, 350.0 to 32, 600.0 to 40, 900.0 to 50)
 
     /** Minimum inlet DN for [powerKw]; null above the table. */
@@ -108,7 +139,7 @@ object ShkDesign {
 
     // ---------------------------------------------------------------- Dämmung (GEG)
 
-    /** GEG minimum insulation thickness in mm at λ = 0,035 W/(m·K) for [innerMm]. */
+    /** Minimum insulation thickness in mm at λ = 0,035 W/(m·K) for [innerMm] (GModG, formerly GEG, Annex 8 No. 1a). */
     fun insulationMm(innerMm: Double, case: InsulationCase = InsulationCase.NORMAL): Double {
         if (case == InsulationCase.FLOOR) return 6.0
         val full = when {
@@ -123,7 +154,9 @@ object ShkDesign {
     /** Usual insulation thicknesses on the market; the next one up is ordered. */
     val INSULATION_STOCK = listOf(6, 9, 13, 20, 25, 30, 40, 50, 60, 80, 100)
 
-    fun insulationStockMm(required: Double): Int = INSULATION_STOCK.firstOrNull { it >= required - 1e-9 } ?: INSULATION_STOCK.last()
+    /** Above the largest common size the next ten is named, never less than required. */
+    fun insulationStockMm(required: Double): Int =
+        INSULATION_STOCK.firstOrNull { it >= required - 1e-9 } ?: (ceil(required / 10.0 - 1e-9).toInt() * 10)
 
     // ---------------------------------------------------------------- Trinkwasser
 
