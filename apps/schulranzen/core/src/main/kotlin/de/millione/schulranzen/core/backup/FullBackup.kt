@@ -155,6 +155,7 @@ object FullBackup {
         if (!stage.mkdirs()) throw BackupException("Arbeitsordner für die Wiederherstellung konnte nicht angelegt werden.")
         openZip(zip).use { z ->
             val manifest = readManifest(z)
+            Space.require(stage, manifest.totalSize, "Das Auspacken")
             val expected = manifest.entries.associateBy { it.path }
             for (e in manifest.entries) {
                 if (e.path.substringBefore('/') !in allowedRoots) throw BackupException("Unerwarteter Bereich im Backup: ${e.path}")
@@ -198,6 +199,7 @@ object FullBackup {
             val missing = expected.keys - got
             if (missing.isNotEmpty()) throw BackupException("Backup unvollständig, es fehlt: ${missing.first()}")
             for (r in allowedRoots) File(stage, r).mkdirs()
+            RemoteIndex.write(stage, manifest.entries)
             return manifest
         }
     }
@@ -208,21 +210,32 @@ object FullBackup {
      * renames in one file system are atomic, so a folder is always either
      * the old or the new version. If any step fails, everything moved so
      * far is moved back. [preserve] lists paths (e.g. "shared_prefs/x.xml")
-     * copied from the live data into the stage first, so they survive.
+     * copied from the live data into the stage first, so they survive; such a
+     * path that does not exist here is removed from the stage, so a backup
+     * cannot bring in a foreign device's account.
+     *
+     * A journal next to [trash] covers the process dying half way: as long as
+     * it exists, [recover] (at every app start) puts the old folders back.
      */
     fun swap(stage: File, targets: Map<String, File>, trash: File, preserve: List<String> = emptyList()) {
         for (p in preserve) {
             val root = p.substringBefore('/')
             val live = targets[root] ?: continue
             val src = File(live, p.substringAfter('/'))
+            val dst = ZipPaths.resolve(stage, p)
             if (src.isFile) {
-                val dst = ZipPaths.resolve(stage, p)
                 dst.parentFile?.mkdirs()
                 src.copyTo(dst, overwrite = true)
+            } else {
+                dst.delete()
             }
         }
+        // Old data of an interrupted swap is still the user's data: never delete it unseen.
+        recover(trash, targets)
         trash.deleteTree()
         if (!trash.mkdirs()) throw BackupException("Arbeitsordner für die Wiederherstellung konnte nicht angelegt werden.")
+        val journal = journalOf(trash)
+        atomicWrite(journal, targets.keys.joinToString("\n"))
         val movedOut = ArrayList<String>()
         val movedIn = ArrayList<String>()
         try {
@@ -241,9 +254,40 @@ object FullBackup {
             // Roll back: put the old folders back where they were.
             for (name in movedIn) targets[name]?.let { live -> live.renameTo(File(stage, name)) || live.deleteTree() }
             for (name in movedOut) targets[name]?.let { live -> File(trash, name).renameTo(live) }
+            journal.delete()
             throw if (e is BackupException) e else BackupException("Wiederherstellung fehlgeschlagen: ${e.message}", e)
         }
+        // The point of no return: from here on the new data counts.
+        journal.delete()
         trash.deleteTree()
         stage.deleteTree()
+    }
+
+    private fun journalOf(trash: File) = File(trash.parentFile, trash.name + ".journal")
+
+    /**
+     * Finishes what a killed [swap] left behind. With a journal the swap was
+     * not done: every folder set aside goes back to its place. Without one
+     * only leftovers remain, which are removed. Returns true when old data
+     * was put back. Must run before anything opens the data.
+     */
+    fun recover(trash: File, targets: Map<String, File>): Boolean {
+        val journal = journalOf(trash)
+        if (!journal.exists()) {
+            trash.deleteTree()
+            return false
+        }
+        var restored = false
+        for ((name, live) in targets) {
+            val old = File(trash, name)
+            if (!old.exists()) continue
+            live.deleteTree()
+            live.parentFile?.mkdirs()
+            if (!old.renameTo(live)) throw BackupException("Alte Daten konnten nicht zurückgelegt werden ($name).")
+            restored = true
+        }
+        journal.delete()
+        trash.deleteTree()
+        return restored
     }
 }

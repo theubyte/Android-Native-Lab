@@ -70,7 +70,10 @@ object V15Backup {
             return z.getInputStream(e).use { it.readBytes().toString(Charsets.UTF_8) }
         }
 
-        fun bytes(name: String): ByteArray? = entries[name]?.let { e -> z.getInputStream(e).use { it.readBytes() } }
+        fun bytes(name: String): ByteArray? = entries[name]?.let { e ->
+            if (e.size > MAX_TEXT) { warnings += "Datei zu groß, übersprungen: $name"; return null }
+            z.getInputStream(e).use { it.readBytes() }
+        }
 
         fun prefs(name: String): Map<String, Any> {
             val b = bytes("shared_prefs/$name.xml") ?: return emptyMap()
