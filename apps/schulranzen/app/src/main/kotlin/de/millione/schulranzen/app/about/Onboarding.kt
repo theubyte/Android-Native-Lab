@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -100,7 +101,7 @@ fun StartupOverlays(modifier: Modifier = Modifier) {
 fun Introduction(modifier: Modifier = Modifier, onDone: () -> Unit) {
     val c = Ranzen.colors
     val pages = if (rememberIsPhone()) PhonePages else TabletPages
-    var index by rememberSaveable { mutableStateOf(0) }
+    var index by rememberSaveable { mutableIntStateOf(0) }
     val page = pages[index.coerceIn(pages.indices)]
     val last = index >= pages.lastIndex
     BackHandler { if (index > 0) index-- else onDone() }
