@@ -1,0 +1,7 @@
+body { font: 14px/1.45 ui-monospace, Menlo, Consolas, monospace; margin: 16px; background: #f8f5ee; color: #1c1b19; }
+h1 { font-size: 20px; margin: 0 0 12px; }
+h2 { font-size: 14px; margin: 16px 0 4px; }
+.good { color: #1f6b3a; }
+.bad { color: #a8321a; font-weight: 600; overflow-wrap: anywhere; }
+.line { white-space: pre-wrap; }
+@media (prefers-color-scheme: dark) { body { background: #22211e; color: #ede8dd; } .good { color: #7fcf9b; } .bad { color: #ff9a7d; } }
