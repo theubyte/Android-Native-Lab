@@ -107,6 +107,10 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         fun onTextRequest(page: Int, x: Float, y: Float, existing: TextItem?) {}
         /** A single tap on the page that did nothing else (reading mode only). */
         fun onPageTap() {}
+        /** Page [page] came from a broken file; [locked]: it could not be read and stays unchanged. */
+        fun onPageDamaged(page: Int, locked: Boolean) {}
+        /** Someone tried to write on a page locked because its file could not be read. */
+        fun onPageLocked(page: Int) {}
     }
 
     var listener: Listener? = null
@@ -178,6 +182,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private val inks = HashMap<Int, PageInk>()
     private val inkFiles = HashSet<Int>()
     private val inkLoading = HashSet<Int>()
+    /** Pages whose file could not be read: nothing may change them, or the next save would replace the file. */
+    private val lockedPages = HashSet<Int>()
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "book-ink") }
     private var nextStrokeId = SystemClock.elapsedRealtimeNanos()
     fun newId() = nextStrokeId++
@@ -270,7 +276,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     fun setDocument(document: BookDocument, store: BookInkStore, marks: BookMarks, start: ReadingPosition, inkPages: Set<Int>) {
         doc = document
         inkStore = store
-        inks.clear(); inkLoading.clear()
+        inks.clear(); inkLoading.clear(); lockedPages.clear()
         inkFiles.clear(); inkFiles += inkPages
         baseFailures.clear()
         selection = null; drag.reset(); highlightPage = -1; highlightRects = emptyList()
@@ -368,9 +374,25 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     fun inkOf(page: Int): PageInk = inks[page] ?: loadInkNow(page)
 
     private fun loadInkNow(page: Int): PageInk {
-        val ink = if (page in inkFiles) inkStore?.load(page) ?: PageInk() else PageInk()
-        inks[page] = ink
-        return ink
+        val loaded = if (page in inkFiles) inkStore?.load(page) else null
+        return if (loaded != null) adopt(page, loaded) else PageInk().also { inks[page] = it }
+    }
+
+    private fun adopt(page: Int, loaded: LoadedPage): PageInk {
+        inks[page] = loaded.ink
+        if (loaded.unreadable) lockedPages += page
+        if (loaded.damaged || loaded.unreadable) listener?.onPageDamaged(page, loaded.unreadable)
+        return loaded.ink
+    }
+
+    /** True when this page must not be saved or changed; see [BookInkStore.load]. */
+    fun isPageLocked(page: Int) = page in lockedPages
+
+    /** True when [page] can be written on; otherwise says so. Ink must be loaded first. */
+    private fun canChange(page: Int): Boolean {
+        if (page !in lockedPages) return true
+        listener?.onPageLocked(page)
+        return false
     }
 
     private fun ensureInk(page: Int) {
@@ -380,10 +402,10 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         inkLoading += page
         runCatching {
             io.execute {
-                val ink = store.load(page)
+                val loaded = store.load(page)
                 post {
                     inkLoading -= page
-                    if (page !in inks) { inks[page] = ink; layer.invalidate() }
+                    if (page !in inks) { adopt(page, loaded); layer.invalidate() }
                 }
             }
         }
@@ -945,6 +967,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 val page = layout.pageAt(toWorld(x, y)[1])
                 if (page < 0) { mode = Mode.IGNORE; clearSelection(); return }
                 inkOf(page)
+                if (!canChange(page)) { mode = Mode.IGNORE; clearSelection(); return }
                 gesturePage = page
                 val u = viewToUnit(page, x, y)
                 lasso.clear(); lasso += u[0]; lasso += u[1]
@@ -955,6 +978,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 val page = layout.pageAt(toWorld(x, y)[1])
                 if (page < 0) { mode = Mode.IGNORE; return }
                 inkOf(page)
+                if (!canChange(page)) { mode = Mode.IGNORE; return }
                 val marker = tool == BookTool.MARKER
                 // Brush size in unrotated units, so it looks the same on a turned page.
                 val size = (if (marker) markerSize else penSize) / boxScale[page]
@@ -1142,6 +1166,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private fun textTap(x: Float, y: Float) {
         val page = layout.pageAt(toWorld(x, y)[1])
         if (page < 0) return
+        inkOf(page)
+        if (!canChange(page)) return
         val u = viewToUnit(page, x, y)
         listener?.onTextRequest(page, u[0], u[1], textAt(page, u[0], u[1]))
     }
@@ -1163,7 +1189,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         val candidates = listOf(layout.pageAt(last[1]), layout.pageAt(w[1])).filter { it >= 0 }.toSet()
         for (p in candidates) {
             val ink = inkOf(p)
-            if (ink.strokes.isEmpty()) continue
+            if (p in lockedPages || ink.strokes.isEmpty()) continue
             val inv = Matrix().also { unitToWorld(p).invert(it) }
             val pts = floatArrayOf(last[0], last[1], w[0], w[1]).also { inv.mapPoints(it) }
             val radius = eraserRadiusDp * density / (scale * boxScale[p])

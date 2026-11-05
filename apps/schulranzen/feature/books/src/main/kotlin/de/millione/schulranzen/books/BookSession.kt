@@ -217,6 +217,15 @@ internal class BookSession(private val context: Context, val bookId: String, val
 
     override fun onPageTap() { if (readOnly) chrome = !chrome }
 
+    override fun onPageDamaged(page: Int, locked: Boolean) {
+        say(
+            if (locked) "Die Notizen auf Seite ${page + 1} lassen sich nicht lesen. Die Seite bleibt unverändert."
+            else "Die Notizen auf Seite ${page + 1} waren beschädigt. Lesbares ist geladen, eine Kopie der Datei bleibt erhalten.",
+        )
+    }
+
+    override fun onPageLocked(page: Int) { say("Seite ${page + 1} ist gesperrt: Ihre Notizen lassen sich nicht lesen, und nichts soll sie überschreiben.") }
+
     fun close() {
         // Write what is still waiting, then let go of the PDF.
         for ((p, job) in inkSaves) { job.cancel(); saveInkNow(p) }
@@ -321,6 +330,7 @@ internal class BookSession(private val context: Context, val bookId: String, val
     /** Snapshot on the main thread, write on the shelf's scope. */
     private fun saveInkNow(page: Int) {
         val ink = view.inkOf(page)
+        if (view.isPageLocked(page)) return
         val strokes: List<PageStroke> = ArrayList(ink.strokes)
         val items: List<PageItem> = ArrayList(ink.items)
         val files = BookInkStore(store.inkDir(bookId))

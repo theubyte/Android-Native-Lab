@@ -42,6 +42,7 @@ Pfade: `books/` = `feature/books/.../books/`, `hw/` = `feature/handwriting/.../h
 | 20 | `books/BookIndexer.kt:111-112, 274-277` | Fehler komplett still | „Nichts gefunden“ bei unlesbarem Text | `BookIndexer.problems`, Anzeige in Suche und Inhalt |
 | 21 | `books/BookOutlines.kt:69` | Lesezeichen, die aufeinander zeigen, ohne Titel: die Grenze griff nie | Endlosschleife beim Öffnen eines kaputten PDFs | Knoten- und Tiefengrenze |
 | 22 | `books/BookInkStore.kt:39` | Leere Textdatei je Seite | Seite galt für immer als „hat Tinte“ | Datei wird gelöscht |
+| 22a | `books/BookInkStore.kt:31-34` (Fund von `heft`) | Unlesbare Datei galt als leer, das nächste Speichern schrieb darüber | **Datenverlust** | Lesbares wird geladen, `.damaged`-Kopie bleibt, Meldung; ganz unlesbare Seite ist gesperrt und wird nicht gespeichert. Nutzt `InkCodec.readChecked` und `SafeFile.keepCopy` aus `agent/heft` |
 | 23 | `core/books/TextSearch.kt:123` | Zerlegte Umlaute (u + Trema) blieben Zeichen im Text | „Übung“ fand diese PDFs nicht | Zeichen werden übergangen |
 | 24 | `core/books/TextSearch.kt:108` | Nur `-` galt als Trennstrich; weicher und Unicode-Trennstrich nicht; Kompositum am Zeilenende bekam ein Leerzeichen | „Widerstand“, „Heizungs-Wasser“ nicht gefunden | alle Formen behandelt |
 | 25 | `core/books/TextIndex.kt:128` | Leere Scan-Seiten galten immer als offen | Hinweis verschwand nie, jeder Lauf las sie neu | Erkannt und leer zählt als erledigt |
