@@ -1,0 +1,42 @@
+{
+  "format": "schulranzen-inhaltspaket",
+  "formatVersion": 1,
+  "id": "schulranzen.beispiel.app-kennenlernen",
+  "titel": "Beispiel: Die App kennenlernen",
+  "version": "1.0.0",
+  "stand": "2026-11",
+  "beispiel": true,
+  "beschreibung": "Nur ein Beispiel, damit du den Ablauf siehst. Die Karten handeln von der Bedienung dieser App und enthalten keinen Fachstoff.",
+  "autor": "Schulranzen",
+  "lizenz": "Frei verwendbar",
+  "stapel": [
+    {
+      "id": "bedienung",
+      "name": "Beispiel: Bedienung",
+      "fach": "Beispiel",
+      "thema": "Bedienung",
+      "quelle": { "buch": "Anleitung dieser App", "seite": "1" },
+      "karten": [
+        { "id": "umdrehen", "vorne": "Welche Taste dreht am PC die Karte um?", "hinten": "Leertaste", "geprüft": true },
+        { "id": "bewerten", "vorne": "Welche Tasten bewerten eine Antwort am PC?", "hinten": "1 bis 4", "geprüft": true },
+        { "id": "nochmal", "vorne": "Wann kommt eine Karte zurück, die du mit Nochmal bewertest?", "hinten": "Noch heute", "geprüft": true },
+        { "id": "zurueck", "vorne": "Mit welcher Taste nimmst du die letzte Antwort zurück?", "hinten": "U", "geprüft": true },
+        { "id": "luecke", "vorne": "Wie legst du selbst eine Lücke auf einer Karte fest?", "hinten": "Mit {{c1::doppelten geschweiften Klammern}} um das Wort.", "geprüft": true },
+        { "id": "ungeprueft", "vorne": "Was bedeutet die Marke Ungeprüft auf einer Karte?", "hinten": "Noch niemand hat sie mit der Quelle verglichen.", "geprüft": false }
+      ]
+    },
+    {
+      "id": "daten",
+      "name": "Beispiel: Deine Daten",
+      "fach": "Beispiel",
+      "thema": "Daten",
+      "quelle": { "buch": "Anleitung dieser App", "seite": "2" },
+      "karten": [
+        { "id": "ort", "vorne": "Wo liegen deine Karten?", "hinten": "Nur in diesem Browser", "geprüft": true },
+        { "id": "konto", "vorne": "Brauchst du ein Konto?", "hinten": "Nein", "geprüft": true },
+        { "id": "sicherung", "vorne": "Wie schützt du dich vor Datenverlust?", "hinten": "Mit einer Sicherung als Datei", "geprüft": true },
+        { "id": "safari", "vorne": "Welcher Browser kann Daten nach einigen Wochen ohne Besuch löschen?", "hinten": "Safari", "geprüft": true }
+      ]
+    }
+  ]
+}

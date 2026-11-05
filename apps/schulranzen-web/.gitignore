@@ -1,0 +1,3 @@
+# Eigene Inhaltspakete bleiben lokal: Buchinhalte gehören nicht in das öffentliche Repo.
+inhalt/*
+!inhalt/LIESMICH.md
