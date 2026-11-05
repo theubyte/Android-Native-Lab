@@ -60,8 +60,8 @@ object ExamPlanner {
      * the exam: every due card plus a fair share of the new ones.
      */
     fun cardsToday(dueCards: Int, newCards: Int, today: LocalDate, exam: LocalDate?): Int {
-        if (newCards <= 0) return dueCards
+        if (newCards <= 0) return dueCards.coerceAtLeast(0)
         val days = exam?.let { daysUntil(today, it) }?.coerceAtLeast(1) ?: 7
-        return dueCards + ceil(newCards.toDouble() / days).toInt()
+        return dueCards.coerceAtLeast(0) + ceil(newCards.toDouble() / days).toInt()
     }
 }

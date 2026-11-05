@@ -1,7 +1,7 @@
 package de.millione.schulranzen.core.study
 
 /** Where a suggested card came from; the UI may show it as a small hint. */
-enum class SuggestionKind { DEFINITION, TERM, LIST, ASSISTANT }
+enum class SuggestionKind { DEFINITION, TERM, LIST, ASSISTANT, GAP }
 
 /** A card proposal the learner still has to confirm. */
 data class CardSuggestion(val front: String, val back: String, val kind: SuggestionKind)

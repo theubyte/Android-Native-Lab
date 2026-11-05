@@ -52,8 +52,11 @@ object Repetition {
         examDate: LocalDate? = null,
     ): CardSchedule {
         val day = today.toEpochDay()
+        // Failing a card again in the same sitting says nothing new about it; punishing every
+        // retry would push it to the minimum ease for good ("ease hell").
+        val retryToday = rating == Rating.AGAIN && state.reps == 0 && state.lastReviewEpochDay == day
         val ease = (state.ease + when (rating) {
-            Rating.AGAIN -> -0.20
+            Rating.AGAIN -> if (retryToday) 0.0 else -0.20
             Rating.HARD -> -0.15
             Rating.GOOD -> 0.0
             Rating.EASY -> 0.15
@@ -85,10 +88,17 @@ object Repetition {
         return CardSchedule(reps, interval, ease, lapses, due, day)
     }
 
-    /** Interval for a card in the review phase (at least two successful reviews). */
+    /**
+     * Interval for a card in the review phase (at least two successful reviews).
+     * A review before the due day (pulled forward by a mock exam, capped by an exam date,
+     * extra practice) only proves what was actually waited, so it grows from the days
+     * elapsed, not from the planned interval.
+     */
     private fun grow(state: CardSchedule, rating: Rating, ease: Double, today: Long): Int {
-        val current = max(1, state.intervalDays)
-        val delay = state.lastReviewEpochDay?.let { max(0L, today - (it + current)) }?.toInt() ?: 0
+        val planned = max(1, state.intervalDays)
+        val elapsed = state.lastReviewEpochDay?.let { (today - it).coerceAtLeast(0L).toInt() } ?: planned
+        val current = if (elapsed < planned) max(1, elapsed) else planned
+        val delay = max(0, elapsed - planned)
         val hard = max(current + 1, (current * HARD_FACTOR).roundToInt())
         val good = max(hard + 1, ((current + delay / 2.0) * ease).roundToInt())
         val easy = max(good + 1, ((current + delay) * ease * EASY_BONUS).roundToInt())
