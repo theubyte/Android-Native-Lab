@@ -1424,6 +1424,12 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     // --------------------------------------------------------- rendering
 
     private inner class PageLayer : View(context) {
+        /** The ink's display lists may be gone after the background; this view would not redraw by itself. */
+        override fun onWindowVisibilityChanged(visibility: Int) {
+            super.onWindowVisibilityChanged(visibility)
+            if (visibility == VISIBLE) invalidate()
+        }
+
         private val renderer by lazy { CanvasStrokeRenderer.create() }
         private val identity = Matrix()
         private val paper = Paint().apply { color = Color.WHITE }
@@ -1513,7 +1519,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                     it.setPosition(0, 0, BookUnits.WIDTH.toInt(), unitH[page].roundToInt().coerceAtLeast(1))
                     it.clipToBounds = false
                 }
-                if (cached == null || cached.first != key) {
+                // The system may have thrown the list away (background, low memory); it would draw nothing.
+                if (cached == null || cached.first != key || !node.hasDisplayList()) {
                     val rc = node.beginRecording()
                     try { paintInk(rc, page, ink, hideS, hideI) } finally { node.endRecording() }
                     nodes[page] = key to node

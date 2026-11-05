@@ -663,11 +663,12 @@ private fun SyncSection(
         }
         Spacer(Modifier.height(10.dp))
         val auto = AutoSync.installed && ready
+        CheckRow("Live-Abgleich", st.syncLive, enabled = auto, hint = "Solange die App offen ist: alle 30 Sekunden und beim Schließen eines Hefts. In ein offenes Heft kommt nichts hinein, das zeigt sich beim nächsten Öffnen.") { settings.setSyncLive(it) }
         CheckRow("Beim Öffnen der App abgleichen", st.syncOnOpen, enabled = auto) { settings.setSyncOnOpen(it) }
         CheckRow("Im Hintergrund abgleichen", st.syncBackground, enabled = auto, hint = "Etwa alle 6 Stunden, nie während ein Heft offen ist") {
             settings.setSyncBackground(it); AutoSync.apply(context.applicationContext)
         }
-        if (st.syncOnOpen || st.syncBackground) {
+        if (st.syncLive || st.syncOnOpen || st.syncBackground) {
             CheckRow("Automatisch nur im WLAN", st.syncWifiOnly) { settings.setSyncWifiOnly(it); AutoSync.apply(context.applicationContext) }
         }
         Spacer(Modifier.height(6.dp))

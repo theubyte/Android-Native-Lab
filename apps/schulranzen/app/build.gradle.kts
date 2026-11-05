@@ -20,7 +20,7 @@ plugins {
 // One place for the version. Code = major*1 000 000 + minor*10 000 + patch*100 + build,
 // so it always rises with the name and leaves two spare digits for a rebuild of the
 // same version. 0.4.2 was the last hand-numbered release (versionCode 7).
-val appVersion = listOf(0, 5, 0)
+val appVersion = listOf(0, 5, 1)
 val appBuild = 0
 
 android {

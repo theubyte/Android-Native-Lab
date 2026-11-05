@@ -6,7 +6,7 @@ Plan und Design im Detail: [PLAN.md](PLAN.md). Regeln für parallele Agenten: [A
 
 Legende: `[x]` erledigt · `[ ]` offen · `[~]` teilweise · **(T)** nur auf dem echten Tablet prüfbar
 
-Letzte Aktualisierung: 05.11.2026, Version **0.5.0**
+Letzte Aktualisierung: 05.11.2026, Version **0.5.1**
 
 
 ---
@@ -14,18 +14,20 @@ Letzte Aktualisierung: 05.11.2026, Version **0.5.0**
 ## Offen: Runde 4 (nach 0.5.0)
 
 ### Wartet auf dich
-- [ ] **Lerninhalte:** Speicherort von SHK-Fachbuch und Tabellenbuch nennen (auf `A:`, Benutzerordner und NAS nicht gefunden).
+- [ ] **Lerninhalte:** Die Bücher liegen auf dem NAS unter `/mnt/user/appdata/shk-lernwerk/public/books/`; Inhaltspakete daraus sind noch nicht gebaut.
       Daraus entstehen Inhaltspakete für Android und PWA. Buchinhalte nie ins öffentliche Repo; vor Verkauf oder öffentlichem Angebot Rechte beim Verlag klären.
-- [ ] **Unraid-Server aktualisieren** (Befehl unten), sonst meldet „Jetzt abgleichen“: Server zu alt. Empfehlung: danach `REGISTRATION=closed`.
+- [ ] **Auf Tablet und Handy anmelden:** Sichern → Unraid-Server, Adresse `192.168.2.5:8788`, dein Konto. Danach läuft der Live-Abgleich von selbst. Empfehlung: `REGISTRATION=closed` am Server setzen.
+- [ ] **PWA-Subdomain:** Name fehlt. Bis dahin nur `http://192.168.2.5:8850` (ohne Offline und Installation).
+- [ ] **`shk-lernwerk` liefert die kompletten Buch-PDFs über Port 24568 aus.** Prüfen, ob das von außen erreichbar ist.
 - [ ] **Erstes Update veröffentlichen:** Freigabe für `tools/release.sh` und GitHub-Release, siehe [UPDATE.md](UPDATE.md). Bis dahin meldet der Update-Knopf HTTP 404. Das Repo ist öffentlich, die APK wäre für alle ladbar.
-- [ ] **PWA hosten:** Wohin? HTTPS ist Pflicht ([README](../../schulranzen-web/README.md)).
 - [ ] **Ausbilder liest gegen:** Liste in [audit/rechnen.md](audit/rechnen.md) (Trinkwasser, Abwasser, Stahl-Schellenabstände, MAG).
 - [ ] **Vor Weitergabe an andere:** rechtliche Prüfung (Minderjährige, Datenschutztext ohne Anbieterangaben, Anthropic-Bedingungen). Entwürfe in `docs/store/`.
 
 ### Nur auf echter Hardware prüfbar
 - [ ] **Handy:** Dokumentenscanner von ML Kit (im Emulator: „Something went wrong“, weil dort Play-Modul/Kamera fehlen), Teilen an die App aus der Galerie.
 - [ ] **Tablet:** S Pen, Hand-Ablage, Zwei-Finger-Zoom, Handschrift-Modell (Als Text, Kreis-Ausrechnen, Handschriftsuche), neue Stift-Favoriten.
-- [ ] **Abgleich mit zwei echten Geräten und Unraid:** Handy scannt, Tablet schreibt. Mit echtem Docker-Server ungeprüft (nur Flask-Testserver).
+- [ ] **Live-Abgleich auf echten Geräten:** auf Emulatoren mit dem echten Server-Container geprüft, nicht auf Tablet und Handy, nicht mit dem Live-Konto.
+- [ ] **Schwarze Blätter auf dem echten Tablet gegenprüfen:** Im Emulator erschien das Blatt leer und grau, nicht schwarz; dieselbe Ursache ist wahrscheinlich, aber am Gerät noch nicht bestätigt.
 - [ ] **Update von einer Version zur nächsten:** echte Installation, Abweisung fremder Signatur, Rückkehr aus „Unbekannte Apps“.
 - [ ] **Erinnerungen:** Benachrichtigung und Berechtigungsabfrage.
 - [ ] **Claude mit echtem Schlüssel:** Streaming, Antwort bewerten, Fragen aus Text (nur Ablehnung mit ungültigem Schlüssel geprüft).
@@ -118,6 +120,13 @@ Letzte Aktualisierung: 05.11.2026, Version **0.5.0**
 ---
 
 ## Erledigt
+
+### 0.5.1 – Blätter und Live-Abgleich (05.11.2026)
+- **Leere/schwarze Blätter behoben:** Android verwirft die aufgezeichneten Seiten im Hintergrund, bei Speichermangel oder außerhalb des Bildes; die App zeichnete danach eine leere Seite. Daten waren nie betroffen. Sie prüft das jetzt und zeichnet neu, auch beim Buch. Im Emulator nachgestellt (Home + Speicherfreigabe) und nach der Korrektur erneut geprüft.
+- **Live-Abgleich:** Solange die App offen ist alle 30 Sekunden, beim Schließen eines Hefts sofort, beim Verlassen der App noch einmal. Standardmäßig an, sobald angemeldet; „nur im WLAN“ gilt auch hier. In ein offenes Heft kommt nichts hinein, es zeigt sich beim nächsten Öffnen.
+- **Server** auf API 2 aktualisiert; Sicherung unter `/mnt/user/appdata/digitaler-schulranzen-sync-backup-*`, Konto und Daten blieben.
+- **PWA** als Container `schulranzen-web` auf Port 8850 (`apps/schulranzen-web/deploy/`).
+- Geprüft mit zwei Emulatoren gegen einen getrennten Testserver: Heft, Prüfung und Scan kamen ohne Knopfdruck an; Tablet schreibt und Handy scannt ins selbe Heft: Strich und neue Seite blieben erhalten.
 
 ### 0.5.0 – Runde 3: geprüft, ausgebaut, Handy (05.11.2026)
 Acht Agenten, Prüfberichte in [docs/audit/](audit/). Entscheidung: erstmal kein Play Store, Verteilung als APK mit Update-Funktion.

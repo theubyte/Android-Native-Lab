@@ -20,7 +20,14 @@ import de.millione.schulranzen.core.backup.MergeParticipant
 import de.millione.schulranzen.core.backup.SyncError
 import de.millione.schulranzen.core.backup.SyncException
 import de.millione.schulranzen.core.backup.SyncPasswordException
+import android.net.ConnectivityManager
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -115,9 +122,11 @@ object AutoSync {
         hooksOf = hooks
         app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityStarted(activity: Activity) {
-                if (started++ == 0) opened(app)
+                if (started++ == 0) { opened(app); LiveSync.start(app) }
             }
-            override fun onActivityStopped(activity: Activity) { started-- }
+            override fun onActivityStopped(activity: Activity) {
+                if (--started == 0) { LiveSync.stop(); left(app) }
+            }
             override fun onActivityCreated(activity: Activity, state: Bundle?) {}
             override fun onActivityResumed(activity: Activity) {}
             override fun onActivityPaused(activity: Activity) {}
@@ -125,6 +134,14 @@ object AutoSync {
             override fun onActivityDestroyed(activity: Activity) {}
         })
         apply(app)
+    }
+
+    /** What was just scanned or learnt should not wait until the app is opened again. */
+    private fun left(context: Context) {
+        val s = BackupSettings.get(context).state.value
+        if (!s.syncLive) return
+        val req = OneTimeWorkRequestBuilder<SyncWorker>().setConstraints(constraints(s)).build()
+        runCatching { WorkManager.getInstance(context).enqueueUniqueWork(ONCE, ExistingWorkPolicy.KEEP, req) }
     }
 
     private fun opened(context: Context) {
@@ -155,6 +172,64 @@ object AutoSync {
         .setRequiredNetworkType(if (s.syncWifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
         .setRequiresStorageNotLow(true)
         .build()
+}
+
+/**
+ * The devices in step while the app is open. A pass that finds nothing costs
+ * one small request and a look at the file times, so it can run often. Pages
+ * held by an open notebook stay out of it ([EditGate]); closing one syncs at once.
+ */
+internal object LiveSync {
+    private const val TICK_MS = 2_000L
+    private const val PAUSE_MS = 30_000L
+    private const val MAX_PAUSE_MS = 5 * 60_000L
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var job: Job? = null
+
+    fun start(context: Context) {
+        job?.cancel()
+        val app = context.applicationContext
+        job = scope.launch { loop(app) }
+    }
+
+    fun stop() {
+        job?.cancel()
+        job = null
+    }
+
+    private suspend fun loop(context: Context) {
+        val settings = BackupSettings.get(context)
+        val network = context.getSystemService(ConnectivityManager::class.java)
+        var next = 0L
+        var failures = 0
+        var wasEditing = false
+        while (true) {
+            delay(TICK_MS)
+            val s = settings.state.value
+            val participants = AutoSync.participants(context)
+            // Read anew each time: signing in happens on another instance, on the backup screen.
+            val account = SyncAccount(context)
+            if (!s.syncLive || participants == null || !account.state.value.loggedIn) continue
+            val editing = EditGate.editing
+            if (wasEditing && !editing) next = 0
+            wasEditing = editing
+            if (editing || System.currentTimeMillis() < next) continue
+            if (s.syncWifiOnly && network?.isActiveNetworkMetered != false) continue
+            try {
+                BackupManager(context, AutoSync.hooks(context)).syncNow(account, participants, settings.password())
+                failures = 0
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: EditorOpenException) {
+                // A notebook opened meanwhile: its closing starts the next pass.
+            } catch (_: Exception) {
+                // Away from home or the server is down; syncNow noted it for the backup screen.
+                failures++
+            }
+            next = System.currentTimeMillis() + (PAUSE_MS shl failures.coerceAtMost(4)).coerceAtMost(MAX_PAUSE_MS)
+        }
+    }
 }
 
 /** One automatic sync. Never asks anything: what needs the user waits for the button and is shown there. */

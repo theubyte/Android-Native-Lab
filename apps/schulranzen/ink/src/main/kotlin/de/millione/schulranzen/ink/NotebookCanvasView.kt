@@ -1222,6 +1222,33 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
 
         /** A picture finished decoding: pages recorded without it record again on the next draw. */
         fun imageReady() { imageEpoch++; invalidate() }
+
+        /** This view's own list survives while the pages' lists may not, so nothing would redraw by itself. */
+        private val memory = object : android.content.ComponentCallbacks2 {
+            override fun onTrimMemory(level: Int) { post { invalidate() } }
+            override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {}
+            @Deprecated("Deprecated in Java") override fun onLowMemory() { post { invalidate() } }
+        }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            context.applicationContext.registerComponentCallbacks(memory)
+        }
+
+        override fun onDetachedFromWindow() {
+            context.applicationContext.unregisterComponentCallbacks(memory)
+            super.onDetachedFromWindow()
+        }
+
+        override fun onWindowVisibilityChanged(visibility: Int) {
+            super.onWindowVisibilityChanged(visibility)
+            if (visibility == VISIBLE) invalidate()
+        }
+
+        override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+            super.onWindowFocusChanged(hasWindowFocus)
+            if (hasWindowFocus) invalidate()
+        }
         private var imageEpoch = 0
 
         /** Soft paper shadow: a few widening, fading rings below-right of the sheet. */
@@ -1303,8 +1330,11 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                 val key = ink.contentRevision * 31 + page.paper.ordinal * 7 + (sel?.hashCode()?.toLong() ?: 0L)
                 val n = nodes.getOrPut(page.id) { PageNode() }
                 val count = ink.strokes.size
+                // The system throws display lists away (app in the background, low memory, off screen)
+                // without telling us; drawing such a node paints nothing and the sheet goes blank.
                 val fresh = (n.recorded == -1) || n.key != key || i in dirtyPages || count < n.recorded ||
-                    (n.incomplete && n.epoch != imageEpoch)
+                    (n.incomplete && n.epoch != imageEpoch) ||
+                    !n.base.hasDisplayList() || (n.recorded > n.baseCount && !n.tail.hasDisplayList())
                 if (fresh || !n.canAppend(page, count)) {
                     val rc = n.base.beginRecording(WIDTH.toInt(), HEIGHT.toInt())
                     try { n.incomplete = !PagePainter.paint(rc, page, hideStrokes = hideS, hideItems = hideI, asyncImages = true) } finally { n.base.endRecording() }
