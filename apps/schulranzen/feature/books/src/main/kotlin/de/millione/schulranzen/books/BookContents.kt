@@ -42,11 +42,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import de.millione.schulranzen.core.books.NightColors
 import de.millione.schulranzen.core.books.OutlineEntry
 import de.millione.schulranzen.core.books.OutlineSource
 import de.millione.schulranzen.core.books.PageBlocks
@@ -97,7 +102,7 @@ private fun OutlineTab(session: BookSession, onClose: () -> Unit) {
     LaunchedEffect(entries.size) { if (current > 2) list.scrollToItem(current - 2) }
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = 22.dp, vertical = 12.dp)) {
-            if (running != null) {
+            if (running != null || session.indexProblem != null) {
                 IndexStatus(session)
             } else if (outline != null) {
                 Text(outline.summary(), style = Ranzen.type.caption, color = c.inkMuted)
@@ -185,12 +190,22 @@ private fun Thumb(session: BookSession, page: Int, current: Boolean, bookmarked:
     val rotation = session.marks.rotation(page)
     val image by produceState<ImageBitmap?>(null, page, rotation) { value = session.thumbnail(page)?.asImageBitmap() }
     val shape = RoundedCornerShape(6.dp)
-    Column(Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
+    val night = session.night
+    Column(
+        Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClickLabel = "Seite öffnen", onClick = onClick)
+            .semantics(mergeDescendants = true) { contentDescription = "Seite ${page + 1}" + if (bookmarked) ", Lesezeichen" else "" },
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Box(
-            Modifier.fillMaxWidth().aspectRatio(1f / session.boxAspect(page)).clip(shape).background(Color.White)
+            Modifier.fillMaxWidth().aspectRatio(1f / session.boxAspect(page)).clip(shape).background(if (night) Color(NightColors.PAPER) else Color.White)
                 .border(if (current) 2.dp else 1.dp, if (current) c.signal else c.line, shape),
         ) {
-            image?.let { Image(it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+            image?.let {
+                Image(
+                    it, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit,
+                    colorFilter = if (night) ColorFilter.colorMatrix(ColorMatrix(NightColors.MATRIX)) else null,
+                )
+            }
             if (bookmarked) RanzenIcon(RanzenIcons.Bookmark, tint = c.signal, size = 18.dp, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp))
         }
         Spacer(Modifier.height(4.dp))
@@ -206,6 +221,8 @@ private fun MarksTab(session: BookSession, onClose: () -> Unit) {
     val bookmarks = m.bookmarks.sorted()
     val areas = m.areas.sortedBy { it.page }
     val notes = m.notes.sortedBy { it.page }
+    // Bookmarks are the reader's own on any device; areas and notes are only changed where they are written.
+    val edit = !session.readOnly
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp)) {
         item { Section("Lesezeichen") }
         if (bookmarks.isEmpty()) item { Hint("Noch keine. Das Lesezeichen oben merkt die aktuelle Seite.") }
@@ -213,14 +230,22 @@ private fun MarksTab(session: BookSession, onClose: () -> Unit) {
             MarkRow(RanzenIcons.Bookmark, c.signal, "Seite ${p + 1}", null, onOpen = { session.goTo(p); onClose() }, onDelete = { session.toggleBookmark(p) })
         }
         item { Section("Markierte Bereiche") }
-        if (areas.isEmpty()) item { Hint("Mit dem Bereich-Werkzeug ein Rechteck ziehen und „Merken“ wählen.") }
+        if (areas.isEmpty()) item { Hint(if (edit) "Mit dem Bereich-Werkzeug ein Rechteck ziehen und „Merken“ wählen." else "Noch keine. Markiert wird auf dem Tablet.") }
         items(areas, key = { "a${it.id}" }) { a ->
-            MarkRow(BookIcons.Star, c.signal, a.label, "S. ${a.page + 1}", onOpen = { session.goTo(a.page); onClose() }, onDelete = { session.deleteArea(a.id) })
+            MarkRow(
+                BookIcons.Star, c.signal, a.label, "S. ${a.page + 1}",
+                onOpen = { session.openAt(a.page, android.graphics.RectF(a.left, a.top, a.right, a.bottom)); onClose() },
+                onDelete = if (edit) ({ session.deleteArea(a.id) }) else null,
+            )
         }
         item { Section("Notizen") }
-        if (notes.isEmpty()) item { Hint("Mit dem Notiz-Werkzeug auf eine Stelle tippen.") }
+        if (notes.isEmpty()) item { Hint(if (edit) "Mit dem Notiz-Werkzeug auf eine Stelle tippen." else "Noch keine. Notizen entstehen auf dem Tablet.") }
         items(notes, key = { "n${it.id}" }) { n ->
-            MarkRow(BookIcons.Note, Color(0xFFC99A2E), n.text, "S. ${n.page + 1}", onOpen = { session.goTo(n.page); onClose() }, onDelete = { session.deleteNote(n.id) })
+            MarkRow(
+                BookIcons.Note, Color(0xFFC99A2E), n.text, "S. ${n.page + 1}",
+                onOpen = { session.goTo(n.page); onClose() },
+                onDelete = if (edit) ({ session.deleteNote(n.id) }) else null,
+            )
         }
     }
 }
@@ -239,7 +264,7 @@ private fun Hint(text: String) {
 }
 
 @Composable
-private fun MarkRow(icon: ImageVector, tint: Color, title: String, page: String?, onOpen: () -> Unit, onDelete: () -> Unit) {
+private fun MarkRow(icon: ImageVector, tint: Color, title: String, page: String?, onOpen: () -> Unit, onDelete: (() -> Unit)?) {
     val c = Ranzen.colors
     Row(
         Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(onClick = onOpen).padding(start = 22.dp, end = 6.dp),
@@ -249,8 +274,14 @@ private fun MarkRow(icon: ImageVector, tint: Color, title: String, page: String?
         Spacer(Modifier.width(14.dp))
         Text(title, style = Ranzen.type.body, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         if (page != null) { Spacer(Modifier.width(10.dp)); Text(page, style = Ranzen.type.mono, color = c.inkMuted) }
-        Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onDelete), contentAlignment = Alignment.Center) {
-            RanzenIcon(RanzenIcons.Close, tint = c.inkFaint, size = 18.dp)
-        }
+        if (onDelete != null) {
+            Box(
+                Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onDelete)
+                    .semantics { contentDescription = "Löschen: $title" },
+                contentAlignment = Alignment.Center,
+            ) {
+                RanzenIcon(RanzenIcons.Close, tint = c.inkFaint, size = 18.dp)
+            }
+        } else Spacer(Modifier.width(16.dp))
     }
 }

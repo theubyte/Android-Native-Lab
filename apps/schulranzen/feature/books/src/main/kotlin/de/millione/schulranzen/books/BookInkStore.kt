@@ -36,6 +36,6 @@ internal class BookInkStore(private val dir: File) {
     fun save(page: Int, strokes: List<PageStroke>, items: List<PageItem>) {
         dir.mkdirs()
         if (strokes.isEmpty()) file(page).delete() else InkCodec.write(file(page), strokes)
-        ItemCodec.write(itemsFile(page), items)
+        if (items.isEmpty()) itemsFile(page).delete() else ItemCodec.write(itemsFile(page), items)
     }
 }

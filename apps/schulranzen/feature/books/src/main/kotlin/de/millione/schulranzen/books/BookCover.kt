@@ -41,9 +41,12 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import de.millione.schulranzen.design.Ranzen
+import de.millione.schulranzen.design.rememberIsPhone
 import de.millione.schulranzen.design.softRaise
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -52,7 +55,8 @@ import kotlinx.coroutines.withContext
  * A school book on the shelf: a hardcover with a cloth spine in the subject
  * colour ([accent]), the first page as its cover, the page block showing at
  * the edges and a label with title and reading progress. Same size and
- * press feel as the notebook covers, but clearly a book.
+ * press feel as the notebook covers, but clearly a book. On a phone the long
+ * press (edit the book) does nothing: books are changed on the tablet.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -76,13 +80,23 @@ fun BookCover(
         value = coverFile?.let { f -> withContext(Dispatchers.IO) { runCatching { BitmapFactory.decodeFile(f.path)?.asImageBitmap() }.getOrNull() } }
     }
     val board = RoundedCornerShape(topStart = 4.dp, bottomStart = 4.dp, topEnd = 10.dp, bottomEnd = 10.dp)
+    val phone = rememberIsPhone()
+    val spoken = book.title + ", " + when {
+        book.openedAt > 0 -> "Seite ${book.lastPage + 1} von ${book.pageCount}, ${book.percent} Prozent gelesen"
+        else -> "${book.pageCount} Seiten"
+    } + (subject?.let { ", $it" } ?: "")
 
     Box(
         modifier
             .fillMaxWidth()
             .aspectRatio(0.72f)
             .scale(s)
-            .combinedClickable(source, indication = null, onClick = onClick, onLongClick = onLongClick),
+            .combinedClickable(
+                source, indication = null,
+                onClickLabel = "Buch öffnen", onClick = onClick,
+                onLongClickLabel = if (phone) null else "Buch bearbeiten", onLongClick = if (phone) null else onLongClick,
+            )
+            .semantics(mergeDescendants = true) { contentDescription = spoken },
     ) {
         // The page block, peeking out right and below the boards.
         Box(

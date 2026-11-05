@@ -4,12 +4,16 @@ import android.content.Context
 import android.graphics.RectF
 import de.millione.schulranzen.core.shapes.Bounds
 import de.millione.schulranzen.core.shapes.TextSearch
+import de.millione.schulranzen.design.isPhone
 import de.millione.schulranzen.ink.PageStroke
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -47,13 +51,17 @@ data class PageRef(val notebookId: String, val pageId: String)
  * [quietMs] and skips pages whose strokes did not change. Without the model
  * (not downloaded, no Wi-Fi) pages are remembered as pending and indexed by
  * [indexPending] later. The model is downloaded automatically only on Wi-Fi.
+ *
+ * On a phone nothing is written, so nothing is indexed and no model is
+ * fetched: the phone searches the index that came along with the backup.
  */
 class HandwritingIndex(
     context: Context,
     private val recognizer: HandwritingRecognizer = HandwritingRecognizer(context),
     private val quietMs: Long = 3_000,
 ) {
-    private val dir = File(context.applicationContext.filesDir, "handwriting").also { it.mkdirs() }
+    private val app = context.applicationContext
+    private val dir = File(app.filesDir, "handwriting").also { it.mkdirs() }
     private val pagesDir = File(dir, "pages").also { it.mkdirs() }
     private val pendingFile = File(dir, "pending.json")
     private val json = Json { ignoreUnknownKeys = true }
@@ -61,6 +69,12 @@ class HandwritingIndex(
     private val jobs = ConcurrentHashMap<String, Job>()
     private val cache = ConcurrentHashMap<String, PageEntry>()
     private val io = Mutex()
+    /**
+     * One page at a time, first come first served: of two runs over a page
+     * (saving while the first indexing goes through all pages) the older can
+     * otherwise finish last and overwrite the newer, or bring a deleted page back.
+     */
+    private val work = Mutex()
     @Volatile private var loaded = false
 
     /** Model state for status displays (shared with [HandwritingRecognizer]). */
@@ -81,37 +95,61 @@ class HandwritingIndex(
         scheduleRaw(notebookId, pageId) { strokes }
 
     private fun scheduleRaw(notebookId: String, pageId: String, strokes: () -> List<Pair<Long, FloatArray>>) {
+        if (isPhone(app)) return
         jobs.remove(pageId)?.cancel()
-        jobs[pageId] = scope.launch {
+        lateinit var job: Job
+        job = scope.launch(start = CoroutineStart.LAZY) {
             delay(quietMs)
-            runCatching { indexPage(notebookId, pageId, strokes()) }
-            jobs.remove(pageId)
+            try {
+                indexPage(notebookId, pageId, strokes())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Not indexed now; the next change of the page tries again.
+            } finally {
+                // Only its own entry: a newer run for this page must stay cancellable.
+                jobs.remove(pageId, job)
+            }
         }
+        jobs[pageId] = job
+        job.start()
     }
 
-    /** Recognises and stores the page now. Empty strokes remove it from the index. */
-    suspend fun indexPage(notebookId: String, pageId: String, strokes: List<Pair<Long, FloatArray>>) = withContext(Dispatchers.Default) {
-        ensureLoaded()
-        if (strokes.isEmpty()) { remove(pageId); return@withContext }
-        val sig = signature(strokes)
-        val old = cache[pageId]
-        if (old != null && old.signature == sig && old.notebookId == notebookId) { dropPending(pageId); return@withContext }
-        // Download on Wi-Fi only; otherwise keep the page for later.
-        val lines = recognizer.recognizeLines(strokes.map { it.second }, downloadIfNeeded = true)
-        if (lines == null) { addPending(PageRef(notebookId, pageId)); return@withContext }
-        val entry = PageEntry(
-            notebookId, pageId, sig, System.currentTimeMillis(),
-            lines.map { l -> LineEntry(l.text, Box.of(l.bounds), l.words.map { w -> WordEntry(w.text, Box.of(w.bounds)) }) },
-        )
-        cache[pageId] = entry
-        io.withLock { writeAtomic(pageFile(pageId), json.encodeToString(PageEntry.serializer(), entry)) }
-        dropPending(pageId)
+    /** Recognises and stores the page now. Empty strokes remove it from the index. Does nothing on a phone. */
+    suspend fun indexPage(notebookId: String, pageId: String, strokes: List<Pair<Long, FloatArray>>) {
+        if (isPhone(app)) return
+        withContext(Dispatchers.Default) {
+            ensureLoaded()
+            work.withLock {
+                if (strokes.isEmpty()) { forget(pageId); return@withLock }
+                val sig = signature(strokes)
+                val old = cache[pageId]
+                if (old != null && old.signature == sig && old.notebookId == notebookId) { dropPending(pageId); return@withLock }
+                // Download on Wi-Fi only; otherwise keep the page for later. Half a page is not stored as done.
+                val lines = recognizer.recognizeLines(strokes.map { it.second }, downloadIfNeeded = true, complete = true)
+                if (lines == null) { addPending(PageRef(notebookId, pageId)); return@withLock }
+                ensureActive()
+                val entry = PageEntry(
+                    notebookId, pageId, sig, System.currentTimeMillis(),
+                    lines.map { l -> LineEntry(l.text, Box.of(l.bounds), l.words.map { w -> WordEntry(w.text, Box.of(w.bounds)) }) },
+                )
+                // File first: what the search sees is what a restart will see.
+                io.withLock { writeAtomic(pageFile(pageId), json.encodeToString(PageEntry.serializer(), entry)) }
+                cache[pageId] = entry
+                dropPending(pageId)
+            }
+        }
     }
 
     /** Forgets a page (deleted page or emptied). */
     suspend fun remove(pageId: String) = withContext(Dispatchers.IO) {
         ensureLoaded()
         jobs.remove(pageId)?.cancel()
+        work.withLock { forget(pageId) }
+    }
+
+    /** Not by way of [remove]: a scheduled run emptying its own page would cancel itself mid-way. */
+    private suspend fun forget(pageId: String) {
         cache.remove(pageId)
         io.withLock { pageFile(pageId).delete() }
         dropPending(pageId)
@@ -175,6 +213,7 @@ class HandwritingIndex(
      * after the download button or at app start.
      */
     suspend fun indexPending(load: suspend (PageRef) -> List<Pair<Long, FloatArray>>?) {
+        if (isPhone(app)) return
         for (ref in pending()) {
             val strokes = load(ref)
             if (strokes == null) { remove(ref.pageId); continue }

@@ -15,6 +15,20 @@ internal object BookIcons {
         moveTo(12f, 9f); arcToRelative(3f, 3f, 0f, true, true, 0f, 6f); arcToRelative(3f, 3f, 0f, true, true, 0f, -6f)
     }
 
+    /** Reading at night: a crescent. */
+    val Moon = RanzenIcons.line("moon") {
+        moveTo(19.5f, 14.2f)
+        arcToRelative(8f, 8f, 0f, true, true, -9.7f, -9.7f)
+        arcToRelative(6.4f, 6.4f, 0f, false, false, 9.7f, 9.7f)
+        close()
+    }
+
+    /** A flash card with a corner turned: this becomes something to learn. */
+    val Card = RanzenIcons.line("learn-card") {
+        moveTo(3.5f, 6.5f); lineTo(20.5f, 6.5f); lineTo(20.5f, 17.5f); lineTo(3.5f, 17.5f); close()
+        moveTo(7f, 10.5f); lineTo(17f, 10.5f); moveTo(7f, 13.5f); lineTo(13f, 13.5f)
+    }
+
     /** Turn the page clockwise. */
     val Rotate = RanzenIcons.line("rotate") {
         moveTo(19.5f, 12.5f)

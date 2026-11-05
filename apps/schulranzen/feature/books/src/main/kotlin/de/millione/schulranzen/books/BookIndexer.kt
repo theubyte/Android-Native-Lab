@@ -13,6 +13,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
+import de.millione.schulranzen.core.books.AreaText
 import de.millione.schulranzen.core.books.BookTextIndex
 import de.millione.schulranzen.core.books.BookUnits
 import de.millione.schulranzen.core.books.PageText
@@ -56,6 +57,9 @@ internal object BookIndexer {
     /** Bumped for a book whenever its index or outline changed; sessions reload then. */
     val revisions = MutableStateFlow<Map<String, Int>>(emptyMap())
 
+    /** What went wrong with a book's text work, in German; reading is never affected. */
+    val problems = MutableStateFlow<Map<String, String>>(emptyMap())
+
     private val jobs = HashMap<String, Job>()
     private val phases = HashMap<String, Phase>()
     /** The last two books' indexes: the open one and one indexing in the background. */
@@ -97,6 +101,7 @@ internal object BookIndexer {
         synchronized(this) {
             if (jobs[id]?.isActive == true) return
             phases[id] = phase
+            problems.update { it - id }
             val job = store.scope.launch {
                 try {
                     // Never two passes writing the same index file.
@@ -110,6 +115,7 @@ internal object BookIndexer {
                     throw e
                 } catch (_: Throwable) {
                     // A broken PDF just has no searchable text; reading it still works.
+                    problems.update { it + (id to "Der Text dieses Buchs lässt sich nicht lesen. Suche und Inhalt gehen deshalb nicht, lesen schon.") }
                 } finally {
                     running.update { it - id }
                     synchronized(this@BookIndexer) { if (jobs[id] == coroutineContext[Job]) jobs.remove(id) }
@@ -208,21 +214,35 @@ internal object BookIndexer {
             ParcelFileDescriptor.open(store.pdf(id), ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
                 PdfRenderer(pfd).use { renderer ->
                     val batch = ArrayList<PageText>()
+                    var failed = 0
                     todo.forEachIndexed { k, page ->
                         coroutineContext.ensureActive()
                         running.update { it + (id to Progress(Phase.OCR, k, todo.size)) }
                         if (page >= renderer.pageCount) return@forEachIndexed
-                        batch += runCatching { recognizePage(renderer, page, recognizer) }.getOrElse { PageText.empty(page, TextSource.OCR) }
+                        // A failed page stays open, unlike a blank one: the next run tries it again.
+                        runCatching { recognizePage(renderer, page, recognizer) }.onSuccess { batch += it }.onFailure { failed++ }
                         if (batch.size >= CHUNK_OCR) { index = index.withAll(batch); batch.clear(); publish(store, id, index) }
                     }
                     index = index.withAll(batch)
                     publish(store, id, index)
+                    if (failed > 0) problems.update { it + (id to (if (failed == 1) "1 Seite konnte nicht erkannt werden." else "$failed Seiten konnten nicht erkannt werden.")) }
                 }
             }
         } finally {
             // Whatever was recognised so far is saved; the outline uses it.
             BookOutlines.fromIndex(store, id, index)
             changed(id)
+            recognizer.close()
+        }
+    }
+
+    /** Text in a picture (a marked area of a page without text layer), lines joined; call off the main thread. */
+    fun recognizeArea(bitmap: Bitmap): String {
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        try {
+            val text = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0)))
+            return AreaText.join(text.textBlocks.flatMap { block -> block.lines.map { it.text } })
+        } finally {
             recognizer.close()
         }
     }
@@ -274,6 +294,9 @@ internal object BookIndexer {
         runCatching {
             tmp.outputStream().use { TextIndexCodec.write(it, index) }
             if (!tmp.renameTo(file)) { file.delete(); if (!tmp.renameTo(file)) throw IOException("rename") }
+        }.onFailure {
+            tmp.delete()
+            problems.update { it + (id to "Der Text konnte nicht gespeichert werden. Ist der Speicher voll?") }
         }
         synchronized(cache) { cache[id] = index }
         changed(id)
@@ -281,9 +304,13 @@ internal object BookIndexer {
 
     private fun changed(id: String) = revisions.update { it + (id to ((it[id] ?: 0) + 1)) }
 
-    /** Forget a deleted book. */
-    fun forget(id: String) {
-        stop(id)
+    /** Forget a book about to be deleted: when this returns, nothing writes to its files any more. */
+    suspend fun forget(id: String) {
+        val job = synchronized(this) { jobs.remove(id) }
+        job?.cancelAndJoin()
+        running.update { it - id }
+        problems.update { it - id }
+        revisions.update { it - id }
         synchronized(cache) { cache.remove(id) }
     }
 }
