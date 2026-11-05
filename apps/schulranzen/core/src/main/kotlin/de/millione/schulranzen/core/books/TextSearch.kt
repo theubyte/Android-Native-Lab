@@ -22,8 +22,9 @@ data class SearchHit(
 /**
  * Full-text search over a [BookTextIndex]. Matching ignores case, accents
  * and umlauts ("Ubung" finds "Übung", "strasse" finds "Straße"), runs of
- * white space, and words split by a hyphen at the end of a line
- * ("Wider-\nstand" is found as "Widerstand").
+ * white space, soft hyphens and combining accents, and words split by a
+ * hyphen at the end of a line ("Wider-\nstand" is found as "Widerstand",
+ * "Heizungs-\nWasser" as "Heizungs-Wasser").
  */
 object TextSearch {
     const val MAX_HITS = 300
@@ -95,6 +96,11 @@ object TextSearch {
  */
 class Folded private constructor(val text: String, val map: IntArray) {
     companion object {
+        private const val SOFT_HYPHEN = '\u00AD'
+
+        /** Plain, Unicode and non-breaking hyphen, all typed as '-'. A soft hyphen ends a line like one. */
+        private fun isHyphen(c: Char) = c == '-' || c == SOFT_HYPHEN || c == '\u2010' || c == '\u2011'
+
         fun of(original: String): Folded {
             val sb = StringBuilder(original.length)
             val map = IntArray(original.length * 2 + 1)
@@ -104,18 +110,22 @@ class Folded private constructor(val text: String, val map: IntArray) {
             fun put(c: Char, from: Int) { map[sb.length] = from; sb.append(c) }
             while (i < n) {
                 val c = original[i]
-                // Hyphen at a line end between letters joins the word.
-                if (c == '-' && i + 1 < n && original[i + 1] == '\n' && i > 0 && original[i - 1].isLetter() &&
-                    i + 2 < n && original[i + 2].isLowerCase()) { i += 2; continue }
+                // Hyphen at a line end: joins the word before a small letter, keeps a compound before a capital.
+                if (isHyphen(c) && i + 1 < n && original[i + 1] == '\n' && i > 0 && original[i - 1].isLetter() && i + 2 < n) {
+                    if (original[i + 2].isLowerCase()) { i += 2; continue }
+                    if (original[i + 2].isLetterOrDigit()) { put('-', i); lastSpace = true; i += 2; continue }
+                }
+                // Invisible in print, and PDFs from Word or macOS leave them in the text layer.
+                if (c == SOFT_HYPHEN || Character.getType(c) == Character.NON_SPACING_MARK.toInt()) { i++; continue }
                 if (c.isWhitespace()) {
                     if (!lastSpace) put(' ', i)
                     lastSpace = true
                     i++; continue
                 }
                 lastSpace = false
-                when (c) {
-                    'ß' -> { put('s', i); put('s', i) }
-                    'ẞ' -> { put('s', i); put('s', i) }
+                when {
+                    c == 'ß' || c == 'ẞ' -> { put('s', i); put('s', i) }
+                    isHyphen(c) -> put('-', i)
                     else -> {
                         val lower = c.lowercaseChar()
                         if (lower.code < 128) put(lower, i)

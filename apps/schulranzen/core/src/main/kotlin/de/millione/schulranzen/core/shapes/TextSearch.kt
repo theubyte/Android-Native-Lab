@@ -18,13 +18,16 @@ object TextSearch {
 
     /** Lower case, ä→ae, ö→oe, ü→ue, ß→ss, accents removed, punctuation as spaces. */
     fun normalize(s: String): String = clean(
-        s.lowercase(Locale.GERMAN).replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss"),
+        composed(s).lowercase(Locale.GERMAN).replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss"),
     )
 
     /** Like [normalize] but folds umlauts to the bare vowel (ä→a), for people who type without them. */
     fun fold(s: String): String = clean(
-        s.lowercase(Locale.GERMAN).replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss"),
+        composed(s).lowercase(Locale.GERMAN).replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss"),
     )
+
+    /** "ü" typed as u + combining dots is the same letter, and must spell the same. */
+    private fun composed(s: String) = Normalizer.normalize(s, Normalizer.Form.NFC)
 
     private val marks = Regex("\\p{M}+")
     private val separators = Regex("[^\\p{L}\\p{N}]+")

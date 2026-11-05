@@ -56,4 +56,9 @@ class TextSearchTest {
         assertTrue(text.length <= 50)
         assertTrue(text.startsWith("…"))
     }
+
+    @Test fun decomposedUmlautSpellsLikeTheComposedOne() {
+        assertEquals(TextSearch.normalize("Müll"), TextSearch.normalize("Mu\u0308ll"))
+        assertEquals(1f, TextSearch.wordScore("Muell", "Mu\u0308ll"))
+    }
 }

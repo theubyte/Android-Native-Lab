@@ -492,16 +492,27 @@ object ShapeRecognizer {
         return s
     }
 
-    /** Total signed turning of a closed loop (±2π for one simple turn around). */
+    /**
+     * Total signed turning of a closed loop (±2π for one simple turn around).
+     * Measured over points well apart: where the pen comes back to its start,
+     * the last tiny step points anywhere, and its turn can add or take away a
+     * whole round (a clean square then "turned" 0 times and was rejected).
+     */
     private fun ringTurn(p: List<Pt>): Float {
-        val ring = ArrayList<Pt>(p.size)
-        for (q in p) if (ring.isEmpty() || dist(ring.last(), q) > 1e-3f) ring += q
-        while (ring.size > 2 && dist(ring.first(), ring.last()) <= 1e-3f) ring.removeAt(ring.size - 1)
+        val fine = ArrayList<Pt>(p.size)
+        for (q in p) if (fine.isEmpty() || dist(fine.last(), q) > 1e-3f) fine += q
+        if (fine.size < 3) return 0f
+        val stride = max(1, fine.size / RING_POINTS)
+        val ring = fine.filterIndexedTo(ArrayList()) { i, _ -> i % stride == 0 }
+        val spacing = PathMath.length(ring) / (ring.size - 1).coerceAtLeast(1)
+        while (ring.size > 3 && dist(ring.first(), ring.last()) < 0.5f * spacing) ring.removeAt(ring.size - 1)
         if (ring.size < 3) return 0f
         var s = 0f
         for (i in ring.indices) s += turnAt(ring[(i - 1 + ring.size) % ring.size], ring[i], ring[(i + 1) % ring.size])
         return s
     }
+
+    private const val RING_POINTS = 48
 
     private fun flat(v: List<Pt>) = FloatArray(v.size * 2).also { a -> v.forEachIndexed { i, q -> a[i * 2] = q.x; a[i * 2 + 1] = q.y } }
 }

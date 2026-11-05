@@ -17,7 +17,7 @@ object BookUnits {
     const val GAP = 36f
 
     /** Unrotated page height in units for a PDF page of [w] × [h] points. */
-    fun height(w: Float, h: Float): Float = if (w <= 0f) WIDTH * 1.414f else WIDTH * h / w
+    fun height(w: Float, h: Float): Float = if (w <= 0f || h <= 0f) WIDTH * 1.414f else WIDTH * h / w
 }
 
 /** Quarter turns of a page. Only 0, 90, 180 and 270 exist. */
@@ -82,6 +82,23 @@ class ColumnLayout(private val aspects: FloatArray, private val gap: Float = Boo
             if (tops[mid] <= y) lo = mid else hi = mid - 1
         }
         return lo
+    }
+
+    /**
+     * The page that takes up most of the column span [y0, y1]; the first one
+     * when several show equally much. A fixed reading line would call the next
+     * page current when pages are short (slides on a phone), and every reopen
+     * of the book would then move on by one page.
+     */
+    fun dominant(y0: Float, y1: Float): Int {
+        val range = visible(y0, y1)
+        if (range.isEmpty()) return -1
+        var best = range.first; var most = -1f
+        for (i in range) {
+            val shown = min(bottom(i), y1) - max(top(i), y0)
+            if (shown > most + 0.5f) { most = shown; best = i }
+        }
+        return best
     }
 
     /** Pages overlapping the column span [y0, y1]. Empty when there are no pages. */
@@ -169,8 +186,75 @@ object RenderMath {
     fun baseWidth(fitPageWidthPx: Float, minPx: Int = 600, maxPx: Int = 1600): Int =
         fitPageWidthPx.roundToInt().coerceIn(minPx, maxPx)
 
+    /** At most this many pixels for a cached page: about A4 at 1600 px wide, with room to spare. */
+    const val MAX_BASE_PIXELS = 4_600_000
+
+    /**
+     * Pixel size of the cached bitmap of a page with display [aspect]
+     * (height / width) at [widthPx]. Strip-like pages get smaller rather than
+     * a bitmap of hundreds of megabytes; details render on top when zoomed.
+     */
+    fun baseSize(widthPx: Int, aspect: Float, maxPixels: Int = MAX_BASE_PIXELS): Pair<Int, Int> {
+        val a = if (aspect > 0f && aspect.isFinite()) aspect else 1.414f
+        val w = widthPx.coerceAtLeast(1)
+        val pixels = w.toDouble() * w * a
+        val f = if (pixels > maxPixels) kotlin.math.sqrt(maxPixels / pixels) else 1.0
+        return max(1, (w * f).roundToInt()) to max(1, (w * f * a).roundToInt())
+    }
+
     /** Whether the cached page bitmap would look soft at the shown width. */
     fun needsDetail(shownWidthPx: Float, baseWidthPx: Int): Boolean = shownWidthPx > baseWidthPx * 1.15f
+}
+
+/**
+ * Where a reader stands in a book on this device: [page], [offset] how far
+ * down that page the top of the screen is (0..1), and when it was read last.
+ * Kept per device: a phone and a tablet sharing a backup each keep their place.
+ */
+@kotlinx.serialization.Serializable
+data class ReadingPosition(val page: Int, val offset: Float = 0f, val readAt: Long = 0L) {
+    /** Within a book of [pageCount] pages. */
+    fun within(pageCount: Int) = copy(
+        page = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0)),
+        offset = if (offset.isNaN()) 0f else offset.coerceIn(0f, 1f),
+    )
+}
+
+/** How far through a book someone is. */
+object ReadingProgress {
+    /** 0..1: page one is the start, the last page the end. */
+    fun fraction(page: Int, pageCount: Int): Float =
+        if (pageCount <= 1) (if (pageCount == 1) 1f else 0f) else (page.coerceIn(0, pageCount - 1) / (pageCount - 1f))
+
+    fun percent(page: Int, pageCount: Int): Int = (fraction(page, pageCount) * 100).roundToInt()
+}
+
+/**
+ * Colours for reading at night: light turned to dark while hues stay what
+ * they are, a red stays red. White paper becomes a soft dark grey, not pure
+ * black, so text does not glare. As a 4×5 colour matrix, so bitmaps, ink and
+ * single colours all come out the same.
+ */
+object NightColors {
+    private const val DIM = 0.86f
+    private const val FLOOR = 24f
+
+    val MATRIX: FloatArray = floatArrayOf(
+        DIM * 0.574f, DIM * -1.43f, DIM * -0.144f, 0f, DIM * 255f + FLOOR,
+        DIM * -0.426f, DIM * -0.43f, DIM * -0.144f, 0f, DIM * 255f + FLOOR,
+        DIM * -0.426f, DIM * -1.43f, DIM * 0.856f, 0f, DIM * 255f + FLOOR,
+        0f, 0f, 0f, 1f, 0f,
+    )
+
+    /** The page's white as it shows at night. */
+    val PAPER: Int = apply(0xFFFFFFFF.toInt())
+
+    /** One colour (ARGB) through [MATRIX]. */
+    fun apply(argb: Int): Int {
+        val a = argb ushr 24; val r = (argb shr 16 and 255).toFloat(); val g = (argb shr 8 and 255).toFloat(); val b = (argb and 255).toFloat()
+        fun row(k: Int) = (MATRIX[k] * r + MATRIX[k + 1] * g + MATRIX[k + 2] * b + MATRIX[k + 4]).roundToInt().coerceIn(0, 255)
+        return (a shl 24) or (row(0) shl 16) or (row(5) shl 8) or row(10)
+    }
 }
 
 /** The title shown on the shelf: the PDF's own title when it is a real one, else the file name. */

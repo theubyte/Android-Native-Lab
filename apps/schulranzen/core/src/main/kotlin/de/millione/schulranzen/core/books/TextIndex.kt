@@ -124,8 +124,15 @@ class BookTextIndex(val pageCount: Int, pages: Map<Int, PageText>, val textDone:
 
     val pagesWithText get() = map.values.count { it.hasText }
 
-    /** Pages still without any text (candidates for text recognition). */
-    fun pagesWithoutText(): List<Int> = (0 until pageCount).filter { map[it]?.hasText != true }
+    /**
+     * Pages still without any text (candidates for text recognition). A page
+     * recognition has read and found empty stays out: a blank page of a scan
+     * has nothing to find, and would otherwise be read again on every run.
+     */
+    fun pagesWithoutText(): List<Int> = (0 until pageCount).filter { p ->
+        val page = map[p]
+        page == null || (!page.hasText && page.source != TextSource.OCR)
+    }
 
     /** No page has a text layer: a scanned book. */
     val looksScanned get() = textDone && map.values.none { it.source == TextSource.PDF && it.hasText }
@@ -141,11 +148,13 @@ class BookTextIndex(val pageCount: Int, pages: Map<Int, PageText>, val textDone:
 /**
  * Index file: gzip of "RIX1", version, page count, done flag, page entries.
  * Each entry: page, source, text (UTF-8, length-prefixed), word count, then
- * per word start, end and the box as four shorts in quarter units.
+ * per word start, end and the box as four shorts in quarter units. Since
+ * version 2 each page says its own step, so a very long page (a poster, a
+ * strip) keeps its boxes instead of being cut off at 8191 units.
  */
 object TextIndexCodec {
     private const val MAGIC = 0x52495831 // "RIX1"
-    private const val VERSION = 1
+    private const val VERSION = 2
     private const val Q = 4f
 
     fun write(out: OutputStream, index: BookTextIndex) {
@@ -162,9 +171,11 @@ object TextIndexCodec {
             val bytes = p.text.toByteArray(Charsets.UTF_8)
             d.writeInt(bytes.size); d.write(bytes)
             d.writeInt(p.wordCount)
+            val q = stepFor(p.boxes)
+            d.writeFloat(q)
             for (i in 0 until p.wordCount) {
                 d.writeInt(p.starts[i]); d.writeInt(p.ends[i])
-                for (k in 0 until 4) d.writeShort(quant(p.boxes[i * 4 + k]))
+                for (k in 0 until 4) d.writeShort(quant(p.boxes[i * 4 + k], q))
             }
         }
         d.flush()
@@ -175,7 +186,8 @@ object TextIndexCodec {
     fun read(input: InputStream): BookTextIndex {
         val d = DataInputStream(GZIPInputStream(input.buffered(64 * 1024)))
         if (d.readInt() != MAGIC) throw IOException("not an index")
-        if (d.readInt() != VERSION) throw IOException("index version")
+        val version = d.readInt()
+        if (version !in 1..VERSION) throw IOException("index version")
         val pageCount = d.readInt()
         val done = d.readBoolean()
         val n = d.readInt()
@@ -190,16 +202,24 @@ object TextIndexCodec {
             val text = String(bytes, Charsets.UTF_8)
             val words = d.readInt()
             if (words < 0 || words > PageTextBuilder.MAX_CHARS) throw IOException("bad words")
+            val q = if (version >= 2) d.readFloat() else Q
+            if (q <= 0f || q.isNaN()) throw IOException("bad step")
             val starts = IntArray(words); val ends = IntArray(words); val boxes = FloatArray(words * 4)
             for (i in 0 until words) {
                 starts[i] = d.readInt(); ends[i] = d.readInt()
                 if (starts[i] < 0 || ends[i] > text.length || starts[i] > ends[i]) throw IOException("bad word")
-                for (k in 0 until 4) boxes[i * 4 + k] = d.readShort() / Q
+                for (k in 0 until 4) boxes[i * 4 + k] = d.readShort() / q
             }
             pages[page] = PageText(page, source, text, starts, ends, boxes)
         }
         return BookTextIndex(pageCount, pages, done)
     }
 
-    private fun quant(v: Float): Int = (v * Q).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+    /** Quarter units unless the page is too long for them in a short. */
+    private fun stepFor(boxes: FloatArray): Float {
+        val far = boxes.maxOfOrNull { kotlin.math.abs(it) } ?: 0f
+        return if (far * Q <= Short.MAX_VALUE) Q else Short.MAX_VALUE / far
+    }
+
+    private fun quant(v: Float, q: Float): Int = (v * q).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
 }
