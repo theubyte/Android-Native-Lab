@@ -109,7 +109,7 @@ internal fun QuestionCardFace(
         Spacer(Modifier.height(14.dp))
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
             if (text.isNotBlank()) {
-                Text(text, style = if (phone) Ranzen.type.heading else Ranzen.type.title, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                Text(de.millione.schulranzen.core.study.QuestionMaker.plain(text), style = if (phone) Ranzen.type.heading else Ranzen.type.title, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             }
             card.frontImage?.let { img ->
                 StudyImage(img, Modifier.fillMaxWidth().height(220.dp).padding(vertical = 8.dp).clickable(onClickLabel = "Bild groß") { onZoom(img) })
@@ -128,7 +128,7 @@ internal fun SolutionBlock(card: Card, solution: String = card.back, onZoom: (St
     Spacer(Modifier.height(10.dp))
     Text("LÖSUNG", style = Ranzen.type.mono, color = c.inkMuted)
     Spacer(Modifier.height(4.dp))
-    if (solution.isNotBlank()) Text(solution, style = Ranzen.type.heading, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+    if (solution.isNotBlank()) Text(de.millione.schulranzen.core.study.QuestionMaker.plain(solution), style = Ranzen.type.heading, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
     card.backImage?.let { img ->
         StudyImage(img, Modifier.fillMaxWidth().height(220.dp).padding(vertical = 8.dp).clickable(onClickLabel = "Bild groß") { onZoom(img) })
     }
@@ -237,5 +237,5 @@ private fun MatchCell(text: String, selected: Boolean, done: Boolean, wrong: Boo
             .clickable(enabled = !done, role = Role.Button, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         contentAlignment = Alignment.CenterStart,
-    ) { Text(text, style = Ranzen.type.label, color = c.ink) }
+    ) { Text(de.millione.schulranzen.core.study.QuestionMaker.plain(text), style = Ranzen.type.label, color = c.ink) }
 }

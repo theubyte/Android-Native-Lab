@@ -381,7 +381,7 @@ internal fun FlipCard(card: Card, flipped: Boolean, onFlip: () -> Unit, onZoom: 
                         if (showBack && card.front.isNotBlank()) {
                             Text(card.front, style = Ranzen.type.body, color = c.inkMuted, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth())
                         }
-                        val text = if (showBack) card.back else card.front
+                        val text = if (showBack) de.millione.schulranzen.core.study.QuestionMaker.plain(card.back) else card.front
                         if (text.isNotBlank()) {
                             Text(text, style = Ranzen.type.heading, color = c.ink, textAlign = TextAlign.Center, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp))
                         }
@@ -393,7 +393,7 @@ internal fun FlipCard(card: Card, flipped: Boolean, onFlip: () -> Unit, onZoom: 
                                     Text(card.front, style = Ranzen.type.body, color = c.inkMuted, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                                     Spacer(Modifier.height(14.dp))
                                 }
-                                Text(card.back.ifBlank { "–" }, style = Ranzen.type.title, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                                Text(de.millione.schulranzen.core.study.QuestionMaker.plain(card.back).ifBlank { "–" }, style = Ranzen.type.title, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                             } else {
                                 Text(card.front, style = Ranzen.type.title, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                             }

@@ -154,7 +154,7 @@ object AnswerCheck {
     private fun sameValue(a: Double, b: Double) = abs(a - b) <= 1e-9 * max(1.0, max(abs(a), abs(b)))
 
     /** Remarks in brackets are extras on a card: "60 °C (Legionellenschutz)". */
-    private fun stripBrackets(s: String) = s.replace(Regex("\\([^)]*\\)"), " ").replace(Regex("\\[[^]]*]"), " ")
+    private fun stripBrackets(s: String) = s.replace(Regex("\\([^)]*\\)"), " ").replace(Regex("\\[[^\\]]*\\]"), " ")
 
     private fun parts(expected: String): List<String> =
         expected.split('\n').map { it.trim().trimStart('•', '-', '–', '*', '·', ' ').trim() }.filter { it.isNotEmpty() }
@@ -178,6 +178,7 @@ object AnswerCheck {
     }
 
     fun check(given: String, expected: String): AnswerResult {
+        @Suppress("NAME_SHADOWING") val expected = QuestionMaker.plain(expected)
         if (!canCheck(expected)) return AnswerResult(Verdict.UNCHECKABLE)
         val required = parts(stripBrackets(expected))
         if (given.isBlank()) return AnswerResult(Verdict.WRONG, 0, required.size)

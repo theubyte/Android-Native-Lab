@@ -63,12 +63,12 @@ object QuestionMaker {
      * choice between two is hardly a question.
      */
     fun choice(card: QuizCard, pool: List<QuizCard>, random: Random = Random.Default): Question.Choice? {
-        val right = card.back.trim()
+        val right = plain(card.back).trim()
         if (card.hasImage || right.isEmpty() || right.length > MAX_CHOICE_LENGTH) return null
         val seen = hashSetOf(AnswerCheck.normalize(right))
         val candidates = pool.asSequence()
             .filter { it.id != card.id && !it.hasImage }
-            .map { it.back.trim() }
+            .map { plain(it.back).trim() }
             .filter { it.isNotEmpty() && it.length <= MAX_CHOICE_LENGTH }
             .filter { val k = AnswerCheck.normalize(it); k.isNotEmpty() && seen.add(k) }
             // Near-spellings of the right answer would be correct under the tolerant check.
@@ -93,8 +93,11 @@ object QuestionMaker {
 
     private fun tail(s: String) = s.trim().substringAfterLast(' ').lowercase()
 
-    private val clozeMark = Regex("""\{\{c\d+::(.+?)(?:::[^}]*)?}}""")
+    private val clozeMark = Regex("""\{\{c\d+::(.+?)(?:::[^}]*)?\}\}""")
     private val valueRe = Regex("""(?<![\p{L}\d.,])\d(?:[\d.,]*\d)?(?:\s?(?:°\s?C|°|%|[\p{L}]{1,4}(?:/[\p{L}²³\d]+)?[²³]?\b))?""")
+
+    /** [text] as it is read: a gap marked {{c1::word}} shows as the word. */
+    fun plain(text: String): String = clozeMark.replace(text) { it.groupValues[1] }
 
     /** A gap in [text]: marked with {{c1::…}} if the card has one, otherwise the best term. */
     fun cloze(text: String, avoid: String = ""): ClozeText? {
