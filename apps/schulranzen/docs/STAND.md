@@ -14,7 +14,8 @@ Letzte Aktualisierung: 29.10.2026, Version **0.4.2**
 ## In Arbeit: Runde 3 (Ziel 0.5.0, verkaufsfertig), gestartet 05.11.2026
 
 Auftrag: Alles prüfen und ausbauen, Lernen als Prüfungsvorbereitung, Handy-Modus (nur lesen, scannen, lernen).
-Sieben Agenten, jeder in `A:anzen-agents\<name>` auf `agent/<name>`, Prüfbericht in `docs/audit/<name>.md`:
+Sieben Agenten, jeder in `A:
+anzen-agents\<name>` auf `agent/<name>`, Prüfbericht in `docs/audit/<name>.md`:
 - [ ] `lernen`: Heute-Plan, Prüfungsreife, neue Fragearten, Probeprüfung, Fehlerheft, Erinnerungen, Import/Export
 - [ ] `handy`: Handy-Oberfläche, Heft nur lesen, Dokumentenscan ins Heft
 - [ ] `heft`: Heft und Bibliothek prüfen, Seiten verwalten
@@ -22,6 +23,9 @@ Sieben Agenten, jeder in `A:anzen-agents\<name>` auf `agent/<name>`, Prüfberic
 - [ ] `buecher`: Lesemodus Handy, Bücher und Handschrift prüfen, Stellen direkt ans Lernen
 - [ ] `rechnen`: Jede Formel und Tabelle fachlich prüfen, Übungsaufgaben
 - [ ] `release`: R8, Größe, Einführung, Über-Bildschirm, Store-Unterlagen
+- [ ] `pwa`: Lern-App als Web-PWA ohne Android (`apps/schulranzen-web`), Inhaltspakete auch für Android
+- [ ] Lerninhalte aus SHK-Fachbuch und Tabellenbuch: **wartet auf dich**, die Bücher wurden nicht gefunden (Speicherort nennen).
+      Buchinhalte nie ins öffentliche Repo. Vor einem Verkauf Rechte beim Verlag klären.
 
 Entscheidung Update-Weg: Play Store vorbereiten. Kein eigener Updater, weil Play Selbst-Updates verbietet.
 Die Veröffentlichung selbst macht nur der Nutzer.
