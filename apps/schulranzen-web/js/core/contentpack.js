@@ -171,7 +171,9 @@ export function planImport(pack, existing, options) {
           frontImage: imageFor(k.vorneBild), backImage: imageFor(k.hintenBild),
           topic: k.thema, source: k.quelle, verified: k['geprüft'],
           packId: pack.id, packCardKey: key, packFront: k.vorne, packBack: k.hinten,
-          reps: 0, intervalDays: 0, ease: 2.5, lapses: 0, dueEpochDay: today, lastReviewEpochDay: null, createdAt: now,
+          reps: 0, intervalDays: 0, ease: 2.5, lapses: 0, dueEpochDay: today, lastReviewEpochDay: null,
+          // One apart, so the cards keep the order of the file.
+          createdAt: now + summary.totalCards,
         });
         continue;
       }

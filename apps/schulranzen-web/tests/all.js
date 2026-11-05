@@ -3,5 +3,6 @@ import './repetition.test.js';
 import './plan.test.js';
 import './answers.test.js';
 import './data.test.js';
+import './app.test.js';
 
 run(document.getElementById('out'));

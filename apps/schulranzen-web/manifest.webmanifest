@@ -1,0 +1,25 @@
+{
+  "name": "Schulranzen",
+  "short_name": "Schulranzen",
+  "description": "Lernen ohne Konto und ohne Server: Karteikarten, Prüfungsplan und Probeprüfungen.",
+  "lang": "de",
+  "dir": "ltr",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#EDE8DE",
+  "theme_color": "#EDE8DE",
+  "categories": ["education", "productivity"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Jetzt lernen", "url": "./#/lernen/heute", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Fokus-Timer", "url": "./#/fokus", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
