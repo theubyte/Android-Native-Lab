@@ -15,6 +15,10 @@ interface BackupHooks {
     suspend fun beforeBackup() {}
     /** Close every database and stop writers; the data folders are replaced next. */
     suspend fun beforeRestore() {}
+    /** The checked backup lies in [stage], the swap comes next; the databases are closed. */
+    suspend fun beforeSwap(stage: File) {}
+    /** Only when the swap succeeded. */
+    suspend fun afterSwap() {}
     /** Called after the swap (or its rollback). */
     suspend fun afterRestore() {}
 

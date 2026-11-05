@@ -5,7 +5,9 @@ import de.millione.schulranzen.core.backup.DiagnoseStep
 import de.millione.schulranzen.core.backup.RemoteVersion
 import de.millione.schulranzen.core.backup.SyncClient
 import de.millione.schulranzen.core.backup.SyncError
+import de.millione.schulranzen.core.backup.RemoteHead
 import de.millione.schulranzen.core.backup.SyncException
+import de.millione.schulranzen.core.backup.SyncRemote
 import de.millione.schulranzen.core.backup.SyncSession
 import de.millione.schulranzen.core.backup.UploadResult
 import kotlinx.coroutines.Dispatchers
@@ -91,15 +93,28 @@ class SyncAccount(context: Context) {
      * logging in again with the stored PIN; only if that fails too the
      * account is logged out, so the UI asks for the PIN.
      */
-    private suspend fun <T> authed(block: (SyncClient) -> T): T = io {
+    private suspend fun <T> authed(block: (SyncClient) -> T): T = io { blocking(client(), block) }
+
+    /** The server for one sync; blocking, like all [SyncRemote]s. */
+    fun remote(): SyncRemote {
         val c = client()
+        return object : SyncRemote {
+            override fun head(): RemoteHead? = blocking(c) { it.head() }
+            override fun missing(ids: List<String>) = blocking(c) { it.missing(ids) }
+            override fun putBlob(id: String, file: File, sha256: String, progress: (Long, Long) -> Unit) = blocking(c) { it.putBlob(id, file, sha256, progress) }
+            override fun getBlob(id: String, target: File, progress: (Long, Long) -> Unit) = blocking(c) { it.getBlob(id, target, progress) }
+            override fun commit(expected: String?, manifest: ByteArray, blobs: List<String>, device: String) = blocking(c) { it.commit(expected, manifest, blobs, device) }
+        }
+    }
+
+    private fun <T> blocking(c: SyncClient, block: (SyncClient) -> T): T {
         val email = prefs.getString("email", null)
         val pin = secret("pin")
         if (c.token == null && pin == null) {
             if (prefs.contains("token")) logout()
             throw SyncException(SyncError.SESSION_EXPIRED, "Bitte zuerst am Server anmelden.")
         }
-        try {
+        return try {
             c.withRelogin(email, pin, onLogin = { store(it, null) }, block = block)
         } catch (e: SyncException) {
             if (e.error == SyncError.SESSION_EXPIRED || e.error == SyncError.WRONG_LOGIN) logout()

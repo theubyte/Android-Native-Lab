@@ -7,6 +7,9 @@ import java.io.IOException
 object BackupErrors {
     private val technical = Regex("""\s*\[[^\]]*]$""")
 
+    /** The sentence without the system's own words in brackets. */
+    fun plain(e: SyncException): String = (e.message ?: "Serverfehler.").replace(technical, "")
+
     fun isDiskFull(e: Throwable): Boolean {
         val m = e.message.orEmpty()
         return m.contains("ENOSPC") || m.contains("No space", ignoreCase = true)
@@ -16,7 +19,7 @@ object BackupErrors {
         e is WrongPasswordException -> "Falsches Passwort. Bitte noch einmal versuchen."
         e is BackupException -> e.message ?: "Fehler beim Backup."
         // The system's own words in brackets help the connection test, not here.
-        e is SyncException -> (e.message ?: "Serverfehler.").replace(technical, "")
+        e is SyncException -> plain(e)
         e is SyncConflictException -> "Ein anderes Gerät gleicht gerade ab. Bitte gleich noch einmal versuchen."
         e is SecurityException -> "Kein Zugriff auf die Datei oder den Ordner. Bitte neu auswählen."
         isDiskFull(e) -> "Kein Speicherplatz mehr frei. Bitte Platz schaffen und erneut versuchen. An den vorhandenen Daten hat sich nichts geändert."

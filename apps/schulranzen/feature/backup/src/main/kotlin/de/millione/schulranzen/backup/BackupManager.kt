@@ -9,6 +9,7 @@ import android.os.Build
 import android.provider.DocumentsContract
 import de.millione.schulranzen.core.backup.ArchiveKind
 import de.millione.schulranzen.core.backup.BackupCrypto
+import de.millione.schulranzen.core.backup.BackupErrors
 import de.millione.schulranzen.core.backup.BackupException
 import de.millione.schulranzen.core.backup.BackupHooks
 import de.millione.schulranzen.core.backup.BackupManifest
@@ -17,9 +18,15 @@ import de.millione.schulranzen.core.backup.BackupNaming
 import de.millione.schulranzen.core.backup.BackupRoot
 import de.millione.schulranzen.core.backup.FullBackup
 import de.millione.schulranzen.core.backup.MergeParticipant
+import de.millione.schulranzen.core.backup.HashCache
 import de.millione.schulranzen.core.backup.MergeReport
+import de.millione.schulranzen.core.backup.Space
+import de.millione.schulranzen.core.backup.SyncEngine
+import de.millione.schulranzen.core.backup.SyncError
+import de.millione.schulranzen.core.backup.SyncPasswordException
+import de.millione.schulranzen.core.backup.SyncResult
+import de.millione.schulranzen.core.backup.SyncText
 import de.millione.schulranzen.core.backup.SyncException
-import de.millione.schulranzen.core.backup.TamperedBackupException
 import de.millione.schulranzen.core.backup.WrongPasswordException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -33,7 +40,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.IOException
 import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -90,14 +96,10 @@ class BackupManager(context: Context, var hooks: BackupHooks = BackupHooks.None)
     /** Job of the running operation; progress callbacks stop when it is cancelled. */
     @Volatile private var activeJob: Job? = null
 
-    private val dataDir: File get() = if (Build.VERSION.SDK_INT >= 24) app.dataDir else app.filesDir.parentFile!!
+    private val dataDir: File get() = dataDirOf(app)
     internal val workDir: File get() = File(app.cacheDir, "backup").also { it.mkdirs() }
 
-    private fun targets(): Map<String, File> = linkedMapOf(
-        "files" to app.filesDir,
-        "databases" to (app.getDatabasePath("x").parentFile ?: File(dataDir, "databases")),
-        "shared_prefs" to File(dataDir, "shared_prefs"),
-    )
+    private fun targets(): Map<String, File> = targetsOf(app)
 
     private fun roots(): List<BackupRoot> {
         val t = targets()
@@ -109,6 +111,80 @@ class BackupManager(context: Context, var hooks: BackupHooks = BackupHooks.None)
     }
 
     fun resetProgress() { if (_progress.value !is BackupProgress.Working) _progress.value = BackupProgress.Idle }
+
+    /**
+     * What a sync carries: only what a participant can merge. The handwriting
+     * index for instance is rebuilt on each device and full backups keep it anyway.
+     */
+    private fun syncRoots(): List<BackupRoot> {
+        val t = targets()
+        return listOf(
+            BackupRoot("files", t.getValue("files")) { rel -> rel.substringBefore('/') !in SYNC_FOLDERS || rel.endsWith(".tmp") },
+            BackupRoot("databases", t.getValue("databases")) { it !in SYNC_DATABASES },
+        )
+    }
+
+    private val syncState: File get() = File(app.noBackupFilesDir, "sync").also { it.mkdirs() }
+
+    /**
+     * "Jetzt abgleichen": fetches the server's state, merges it and sends the
+     * result. What the steps guarantee is written at [SyncEngine]. [password] opens
+     * and writes an encrypted state; without the right one the run stops with
+     * [SyncPasswordException] before anything happened.
+     */
+    suspend fun syncNow(account: SyncAccount, participants: List<MergeParticipant>, password: CharArray?): SyncResult {
+        val settings = BackupSettings.get(app)
+        try {
+            val result = run("Abgleichen") {
+                withContext(Dispatchers.IO) {
+                    SyncEngine(
+                        account.remote(), syncRoots(), File(workDir, "sync"), File(syncState, "engine.json"), HashCache(File(syncState, "file-hashes.json")),
+                        participants, password, settings.state.value.encrypt, "${Build.MANUFACTURER} ${Build.MODEL}",
+                        prepare = {
+                            hooks.beforeBackup()
+                            checkpointDatabases()
+                        },
+                        exclusive = { block -> EditGate.exclusive { block() } },
+                        progress = { step, d, t -> working(step, if (t > 0) frac(d, t) else null, d, t, cancellable = true) },
+                    ).run()
+                }.also { r -> done(r.headline()) }
+            }
+            settings.recordSync(result.headline(), null)
+            return result
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: SyncException) {
+            if (e.error != SyncError.UNREACHABLE) {
+                settings.recordSync(null, messageOf(e))
+                throw e
+            }
+            // The worst that can happen in a sync must not sound like it.
+            val text = BackupErrors.plain(e) + " Es ist nichts verloren, der nächste Abgleich macht dort weiter."
+            settings.recordSync(null, text)
+            _progress.value = BackupProgress.Failed(text)
+            throw SyncException(e.error, text, e)
+        } catch (e: Exception) {
+            settings.recordSync(null, messageOf(e))
+            throw e
+        }
+    }
+
+    /**
+     * A backup of this device as a file another device can merge, handed to the
+     * share sheet. Returns the file; it is replaced by the next one.
+     */
+    suspend fun createShareFile(password: CharArray?): File {
+        val made = createBackup(password)
+        return withContext(Dispatchers.IO) {
+            val dir = File(workDir, SHARE_DIR).also { it.deleteRecursively(); it.mkdirs() }
+            val target = File(dir, BackupNaming.name(System.currentTimeMillis(), password != null, auto = false).replace(BackupNaming.MANUAL_PREFIX, "Schulranzen-Abgleich-"))
+            if (!made.renameTo(target)) {
+                made.copyTo(target, overwrite = true)
+                made.delete()
+            }
+            target
+        }
+    }
 
     /** File name for a backup made now, e.g. "Schulranzen-Backup-2026-10-29-1405.zip" (".srbk" encrypted). */
     fun suggestedName(encrypted: Boolean = false): String = BackupNaming.name(System.currentTimeMillis(), encrypted, auto = false)
@@ -231,6 +307,7 @@ class BackupManager(context: Context, var hooks: BackupHooks = BackupHooks.None)
         withContext(Dispatchers.IO) {
             working("Passwort prüfen", null)
             val total = info.file.length()
+            Space.require(workDir, total, "Das Entschlüsseln")
             BackupCrypto.decryptFile(info.file, plain, password) { d, _ -> working("Entschlüsseln", frac(d, total), d, total, cancellable = true) }
             info.file.delete()
         }
@@ -267,15 +344,23 @@ class BackupManager(context: Context, var hooks: BackupHooks = BackupHooks.None)
                 withContext(NonCancellable) {
                     hooks.beforeRestore()
                     try {
+                        hooks.beforeSwap(stage)
                         withContext(Dispatchers.IO) {
-                            FullBackup.swap(stage, targets(), File(dataDir, "restore-old"), preserve = devicePrefs.map { "shared_prefs/$it" })
+                            // What the last sync knew describes data that is about to go.
+                            File(syncState, "engine.json").delete()
+                            FullBackup.swap(stage, targets(), trashOf(app), preserve = devicePrefs.map { "shared_prefs/$it" })
                         }
+                        hooks.afterSwap()
+                    } catch (e: Exception) {
+                        // The databases are closed: only a restart brings the app back cleanly.
+                        _restartRequired.value = true
+                        throw e
                     } finally {
                         hooks.afterRestore()
                     }
                 }
-                _restartRequired.value = true
                 done("Wiederhergestellt: Stand vom ${formatDate(manifest.created)}.")
+                _restartRequired.value = true
             } finally {
                 withContext(NonCancellable + Dispatchers.IO) {
                     zip.delete()
@@ -294,14 +379,16 @@ class BackupManager(context: Context, var hooks: BackupHooks = BackupHooks.None)
         val stage = File(workDir, "merge-stage")
         try {
             val reports = withContext(Dispatchers.IO) {
-                BackupMerge.run(
-                    zip, stage, participants, targets().keys,
-                    progress = { d, t -> working("Backup prüfen", frac(d, t), d, t, cancellable = true) },
-                    onParticipant = { i, name -> working("Zusammenführen: $name", i.toFloat() / participants.size) },
-                )
+                EditGate.exclusive {
+                    BackupMerge.run(
+                        zip, stage, participants, targets().keys,
+                        progress = { d, t -> working("Backup prüfen", frac(d, t), d, t, cancellable = true) },
+                        onParticipant = { i, name -> working("Zusammenführen: $name", i.toFloat() / participants.size) },
+                    )
+                }
             }
             val failed = reports.count { !it.ok }
-            done(if (failed == 0) "Zusammengeführt." else "Zusammengeführt, aber $failed Bereich(e) mit Fehler.")
+            done(if (failed == 0) "Zusammengeführt: " + SyncText.headline(reports) else "Zusammengeführt, aber $failed Bereich(e) mit Fehler.")
             reports
         } finally {
             withContext(NonCancellable + Dispatchers.IO) { zip.delete(); stage.deleteRecursively() }
@@ -344,6 +431,7 @@ class BackupManager(context: Context, var hooks: BackupHooks = BackupHooks.None)
         if (!lock.tryLock()) throw BackupException("Es läuft schon eine Sicherung oder Wiederherstellung.")
         activeJob = currentCoroutineContext()[Job]
         try {
+            withContext(Dispatchers.IO) { sweepOld() }
             working(label, null)
             return block()
         } catch (e: CancellationException) {
@@ -356,6 +444,16 @@ class BackupManager(context: Context, var hooks: BackupHooks = BackupHooks.None)
             activeJob = null
             lock.unlock()
         }
+    }
+
+    /**
+     * Copies a killed run left in the cache, among them decrypted backups. Not
+     * the newest: a file can wait in an open dialog, and a broken sync resumes.
+     */
+    private fun sweepOld() {
+        val limit = System.currentTimeMillis() - 6 * 60 * 60 * 1000L
+        workDir.listFiles()?.filter { f -> f.lastModified() < limit && TEMP_PREFIXES.any { f.name.startsWith(it) } }?.forEach { it.deleteRecursively() }
+        File(workDir, "sync").takeIf { it.lastModified() in 1 until limit - 3 * 24 * 60 * 60 * 1000L }?.deleteRecursively()
     }
 
     /** Also the cancellation point of every long loop: throws once the job is cancelled. */
@@ -378,18 +476,32 @@ class BackupManager(context: Context, var hooks: BackupHooks = BackupHooks.None)
         // study_assistant: the Claude key is Keystore-encrypted and cannot be read on another device.
         private val devicePrefs = listOf(SyncAccount.PREFS + ".xml", BackupSettings.PREFS + ".xml", "study_assistant.xml")
 
-        fun messageOf(e: Throwable): String = when (e) {
-            is WrongPasswordException -> "Falsches Passwort. Bitte noch einmal versuchen."
-            is BackupException -> e.message ?: "Fehler beim Backup."
-            is SyncException -> e.message ?: "Serverfehler."
-            is SecurityException -> "Kein Zugriff auf die Datei oder den Ordner. Bitte neu auswählen."
-            is java.io.FileNotFoundException -> "Datei oder Ordner nicht gefunden. Bitte neu auswählen."
-            is IOException -> when {
-                e.message?.contains("ENOSPC") == true || e.message?.contains("No space", ignoreCase = true) == true -> "Kein Speicherplatz mehr frei."
-                else -> "Dateifehler: ${e.message ?: e.javaClass.simpleName}"
-            }
-            is OutOfMemoryError -> "Zu wenig Arbeitsspeicher."
-            else -> e.message ?: e.javaClass.simpleName
+        fun messageOf(e: Throwable): String = BackupErrors.message(e)
+
+        private const val SHARE_DIR = "share"
+        private val SYNC_FOLDERS = setOf("ink", "images", "books", "rechnen", "study", "sync")
+        private val SYNC_DATABASES = setOf("ranzen.db", "ranzen.db-wal", "study.db", "study.db-wal")
+        private val TEMP_PREFIXES = listOf("in-", "dec-", "out-", "auto-", "dl-", "merge-stage", SHARE_DIR)
+
+        private fun dataDirOf(app: Context): File = if (Build.VERSION.SDK_INT >= 24) app.dataDir else app.filesDir.parentFile!!
+
+        private fun targetsOf(app: Context): Map<String, File> = linkedMapOf(
+            "files" to app.filesDir,
+            "databases" to (app.getDatabasePath("x").parentFile ?: File(dataDirOf(app), "databases")),
+            "shared_prefs" to File(dataDirOf(app), "shared_prefs"),
+        )
+
+        private fun trashOf(app: Context) = File(dataDirOf(app), "restore-old")
+
+        /**
+         * Undoes a restore that was killed half way, so the old data is back
+         * whole. Runs at every app start, before anything opens the data.
+         */
+        fun recoverInterrupted(context: Context): Boolean {
+            val app = context.applicationContext
+            val restored = FullBackup.recover(trashOf(app), targetsOf(app))
+            File(dataDirOf(app), "restore-stage").deleteRecursively()
+            return restored
         }
 
         private fun frac(done: Long, total: Long) = if (total <= 0) 1f else (done.toFloat() / total).coerceIn(0f, 1f)

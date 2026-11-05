@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -42,7 +44,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -74,6 +78,8 @@ import de.millione.schulranzen.core.backup.MergeParticipant
 import de.millione.schulranzen.core.backup.MergeReport
 import de.millione.schulranzen.core.backup.NotebookKind
 import de.millione.schulranzen.core.backup.RemoteVersion
+import de.millione.schulranzen.core.backup.SyncPasswordException
+import de.millione.schulranzen.core.backup.SyncResult
 import de.millione.schulranzen.core.backup.V15Backup
 import de.millione.schulranzen.core.backup.WrongPasswordException
 import de.millione.schulranzen.design.Lamp
@@ -95,6 +101,13 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+
+/** Below this width the screen is laid out for a phone: 360 dp must work without losing anything. */
+private val NARROW = 600.dp
+private val LocalNarrow = compositionLocalOf { false }
+
+/** Source of a file opened for merging: the sheet then starts on "Zusammenführen". */
+private const val SYNC_FILE = "Abgleichdatei"
 
 /** Icons of this screen, in the house line style. */
 object BackupIcons {
@@ -129,6 +142,11 @@ object BackupIcons {
     }
     /** Padlock: encryption. */
     val Lock = RanzenIcons.Lock
+    /** Two arrows in opposite directions: bring devices to the same state. */
+    val Sync = RanzenIcons.line("sync") {
+        moveTo(4.5f, 9f); lineTo(18f, 9f); moveTo(14.5f, 5.5f); lineTo(18f, 9f); lineTo(14.5f, 12.5f)
+        moveTo(19.5f, 15f); lineTo(6f, 15f); moveTo(9.5f, 11.5f); lineTo(6f, 15f); lineTo(9.5f, 18.5f)
+    }
 }
 
 /** Remembers one manager per screen with the given hooks. */
@@ -150,13 +168,13 @@ private sealed interface Sheet {
         val offerRemember: Boolean,
         val onOk: (CharArray, Boolean) -> Unit,
     ) : Sheet
-    data class MergeDone(val reports: List<MergeReport>) : Sheet
+    data class MergeDone(val reports: List<MergeReport>, val warnings: List<String> = emptyList()) : Sheet
     data class Diagnose(val steps: List<DiagnoseStep>) : Sheet
 }
 
 /**
- * Backup, restore, automatic backup, encryption, Unraid sync and the
- * import from the old app.
+ * "Jetzt abgleichen" at the very top, then backup, restore, automatic backup,
+ * encryption, the Unraid server and the import from the old app. From 360 dp up.
  *
  * - [onImportV15] stores the read library (implement with V15Import.run
  *   and an ImportSink); the library is closed afterwards.
@@ -225,6 +243,33 @@ fun BackupScreen(
         }
     }
 
+    /** After a sync: the status line says it all, unless something needs looking at. */
+    fun showSyncResult(r: SyncResult) {
+        val changed = r.added + r.updated + r.removed + r.conflicts > 0
+        if (changed || r.warnings.isNotEmpty()) sheet = Sheet.MergeDone(r.reports, r.warnings)
+    }
+
+    /** "Jetzt abgleichen". An encrypted state asks for its password and then simply runs again. */
+    fun syncNow(password: CharArray? = settings.password()) {
+        launchOp {
+            try {
+                showSyncResult(manager.syncNow(account, mergeParticipants, password))
+            } catch (e: SyncPasswordException) {
+                manager.report(BackupProgress.Idle)
+                sheet = Sheet.Password(
+                    "Passwort für den Abgleich",
+                    if (e.wrong) "Dieses Passwort passt nicht zum Stand auf dem Server. Es ist das Passwort, das auf dem anderen Gerät eingerichtet wurde."
+                    else "Der Abgleich ist verschlüsselt. Bitte das Passwort eingeben, das dafür eingerichtet wurde.",
+                    twice = false, offerRemember = true,
+                ) { pw, remember ->
+                    if (remember) settings.setEncryption(pw, true)
+                    sheet = null
+                    syncNow(pw)
+                }
+            }
+        }
+    }
+
     /**
      * Runs [action] with the password for a new backup: null when
      * encryption is off, the remembered one, or one asked for now.
@@ -253,6 +298,9 @@ fun BackupScreen(
     val openLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) launchOp { handle(manager.open(uri), "Datei") }
     }
+    val openSyncFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) launchOp { handle(manager.open(uri), SYNC_FILE) }
+    }
     val pickTypes = arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
 
     DisposableEffect(Unit) {
@@ -262,22 +310,42 @@ fun BackupScreen(
         }
     }
     BackHandler(enabled = sheet != null && !busy) { sheet = closeSheet(sheet) }
+    // Leaving the screen would cancel what is running; there is "Abbrechen" for that.
+    BackHandler(enabled = busy) {}
 
-    Box(Modifier.fillMaxSize().background(c.desk)) {
-        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 32.dp, vertical = 24.dp)) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(c.desk)) {
+        val narrow = maxWidth < NARROW
+        CompositionLocalProvider(LocalNarrow provides narrow) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = if (narrow) 16.dp else 32.dp, vertical = if (narrow) 12.dp else 24.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TactileKey(onBack, contentDescription = "Zurück") { RanzenIcon(RanzenIcons.Back) }
-                Spacer(Modifier.width(20.dp))
+                TactileKey({ if (!busy) onBack() }, contentDescription = "Zurück") { RanzenIcon(RanzenIcons.Back) }
+                Spacer(Modifier.width(if (narrow) 12.dp else 20.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Sichern & Übernehmen", style = Ranzen.type.title, color = c.ink)
-                    Text("Vollbackup, automatisch, verschlüsselt, Unraid-Server und Daten aus der alten App", style = Ranzen.type.label, color = c.inkMuted)
+                    Text("Sichern & Abgleichen", style = if (narrow) Ranzen.type.heading else Ranzen.type.title, color = c.ink)
+                    if (!narrow) Text("Geräte abgleichen, Vollbackup, automatisch, verschlüsselt, Unraid-Server und Daten aus der alten App", style = Ranzen.type.label, color = c.inkMuted)
                 }
             }
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(if (narrow) 10.dp else 18.dp))
             StatusStrip(progress, onCancel = { job?.cancel() }) { manager.resetProgress() }
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(if (narrow) 10.dp else 18.dp))
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                 val wide = maxWidth >= 980.dp
+                val sync: @Composable () -> Unit = {
+                    SyncSection(
+                        settings, account, busy, canMerge = mergeParticipants.isNotEmpty(),
+                        onSync = { syncNow() },
+                        onShare = {
+                            withBackupPassword { pw ->
+                                launchOp {
+                                    val file = manager.createShareFile(pw)
+                                    manager.report(BackupProgress.Done("Abgleichdatei fertig (${BackupManager.formatSize(file.length())})."))
+                                    ShareFileProvider.share(context, file)
+                                }
+                            }
+                        },
+                        onOpenFile = { openSyncFile.launch(pickTypes) },
+                    )
+                }
                 val device: @Composable () -> Unit = {
                     DeviceSection(
                         busy = busy,
@@ -306,15 +374,15 @@ fun BackupScreen(
                 if (wide) {
                     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(22.dp)) {
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                            device(); crypto(); v15()
+                            sync(); device(); crypto(); v15()
                         }
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(22.dp)) {
                             auto(); server()
                         }
                     }
                 } else {
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                        device(); auto(); crypto(); server(); v15()
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(if (narrow) 14.dp else 22.dp)) {
+                        sync(); device(); auto(); crypto(); server(); v15()
                     }
                 }
             }
@@ -367,7 +435,7 @@ fun BackupScreen(
                     )
                     current is Sheet.Password -> PasswordSheet(current, onCancel = { sheet = null })
                     current is Sheet.Diagnose -> DiagnoseSheet(current.steps) { sheet = null }
-                    current is Sheet.MergeDone -> MergeDoneSheet(current.reports,
+                    current is Sheet.MergeDone -> MergeDoneSheet(current.reports, current.warnings,
                         onClose = { sheet = null; manager.resetProgress() },
                         onRestart = { context.findActivity()?.let { BackupManager.restartApp(it) } },
                     )
@@ -388,6 +456,7 @@ fun BackupScreen(
                     )
                 }
             }
+        }
         }
     }
 }
@@ -414,7 +483,7 @@ private fun Section(icon: androidx.compose.ui.graphics.vector.ImageVector, title
         Row {
             // Accent edge like a register tab.
             Box(Modifier.width(5.dp).heightIn(min = 120.dp).background(accent))
-            Column(Modifier.padding(26.dp)) {
+            Column(Modifier.padding(if (LocalNarrow.current) 16.dp else 26.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     RanzenIcon(icon, tint = c.ink, size = 26.dp)
                     Spacer(Modifier.width(12.dp))
@@ -439,7 +508,7 @@ private fun StatusStrip(p: BackupProgress, onCancel: () -> Unit, onDismiss: () -
         is BackupProgress.Failed -> c.signal to p.message
     }
     PaperPanel(Modifier.fillMaxWidth(), corner = 16.dp, depth = 0.5f) {
-        Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
+        Column(Modifier.padding(horizontal = if (LocalNarrow.current) 14.dp else 20.dp, vertical = if (LocalNarrow.current) 8.dp else 14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 44.dp)) {
                 Lamp(lamp, size = 10.dp, glow = p !is BackupProgress.Idle)
                 Spacer(Modifier.width(12.dp))
@@ -533,27 +602,88 @@ private fun CheckRow(label: String, checked: Boolean, enabled: Boolean = true, h
     }
 }
 
-/** A row of tactile keys, one of them pressed in. */
+/** A row of tactile keys, one of them pressed in. On a phone they share the width. */
 @Composable
 private fun Choice(options: List<String>, selected: Int, enabled: Boolean = true, onSelect: (Int) -> Unit) {
     val c = Ranzen.colors
-    Row(Modifier.alpha(if (enabled) 1f else 0.45f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    val narrow = LocalNarrow.current
+    Row(Modifier.alpha(if (enabled) 1f else 0.45f).then(if (narrow) Modifier.fillMaxWidth() else Modifier), horizontalArrangement = Arrangement.spacedBy(if (narrow) 6.dp else 10.dp)) {
         options.forEachIndexed { i, label ->
-            TactileKey({ if (enabled) onSelect(i) }, Modifier.widthIn(min = 120.dp), selected = i == selected, contentDescription = label) {
-                Text(label, style = Ranzen.type.label, color = if (i == selected) c.ink else c.inkMuted, modifier = Modifier.padding(horizontal = 16.dp))
+            TactileKey({ if (enabled) onSelect(i) }, if (narrow) Modifier.weight(1f) else Modifier.widthIn(min = 120.dp), selected = i == selected, contentDescription = label) {
+                Text(label, style = Ranzen.type.label, color = if (i == selected) c.ink else c.inkMuted, maxLines = 1, modifier = Modifier.padding(horizontal = if (narrow) 2.dp else 16.dp))
             }
         }
     }
 }
 
+/** Buttons side by side that move to the next line when the width runs out. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ButtonRow(end: Boolean = false, content: @Composable () -> Unit) {
+    FlowRow(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = if (end) Arrangement.spacedBy(10.dp, Alignment.End) else Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
+    ) { content() }
+}
+
 // --- sections ----------------------------------------------------------
+
+/** The big button. On a phone this is what the screen is opened for, so it comes first. */
+@Composable
+private fun SyncSection(
+    settings: BackupSettings,
+    account: SyncAccount,
+    busy: Boolean,
+    canMerge: Boolean,
+    onSync: () -> Unit,
+    onShare: () -> Unit,
+    onOpenFile: () -> Unit,
+) {
+    val c = Ranzen.colors
+    val context = LocalContext.current
+    val st by settings.state.collectAsState()
+    val acc by account.state.collectAsState()
+    val ready = acc.loggedIn && canMerge
+    Section(BackupIcons.Sync, "Abgleichen", "Hefte, Scans und Lerndaten aller Geräte auf denselben Stand bringen. Auf dem Server werden nur Änderungen übertragen.", SubjectPalette.of(3)) {
+        SignalButton(
+            "Jetzt abgleichen", { if (!busy && ready) onSync() },
+            modifier = Modifier.fillMaxWidth().alpha(if (ready) 1f else 0.45f), icon = BackupIcons.Sync,
+        )
+        Spacer(Modifier.height(10.dp))
+        when {
+            !acc.loggedIn -> Text("Dazu unten beim Unraid-Server anmelden. Ohne Server geht es über eine Datei.", style = Ranzen.type.label, color = c.inkMuted)
+            st.lastSyncAt > 0 -> Text("Zuletzt ${BackupManager.formatDate(st.lastSyncAt)}: ${st.lastSyncText}", style = Ranzen.type.label, color = c.inkMuted)
+            else -> Text("Noch nie abgeglichen.", style = Ranzen.type.label, color = c.inkMuted)
+        }
+        st.lastSyncError?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(it, style = Ranzen.type.label, color = c.signal)
+        }
+        Spacer(Modifier.height(10.dp))
+        val auto = AutoSync.installed && ready
+        CheckRow("Beim Öffnen der App abgleichen", st.syncOnOpen, enabled = auto) { settings.setSyncOnOpen(it) }
+        CheckRow("Im Hintergrund abgleichen", st.syncBackground, enabled = auto, hint = "Etwa alle 6 Stunden, nie während ein Heft offen ist") {
+            settings.setSyncBackground(it); AutoSync.apply(context.applicationContext)
+        }
+        if (st.syncOnOpen || st.syncBackground) {
+            CheckRow("Automatisch nur im WLAN", st.syncWifiOnly) { settings.setSyncWifiOnly(it); AutoSync.apply(context.applicationContext) }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text("OHNE SERVER", style = Ranzen.type.caption, color = c.inkMuted)
+        ButtonRow {
+            QuietButton("Als Datei teilen …", { if (!busy) onShare() }, color = c.ink)
+            QuietButton("Datei zusammenführen …", { if (!busy && canMerge) onOpenFile() }, color = c.ink)
+        }
+    }
+}
 
 @Composable
 private fun DeviceSection(busy: Boolean, onSave: () -> Unit, onOpen: () -> Unit) {
     Section(BackupIcons.Save, "Auf diesem Gerät", "Alle Hefte, Bücher, Lerndaten und Einstellungen in eine Datei sichern, z. B. auf eine SD-Karte oder in den Download-Ordner.", SubjectPalette.of(0)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        ButtonRow {
             SignalButton("Backup speichern …", { if (!busy) onSave() }, icon = BackupIcons.Save)
-            Spacer(Modifier.width(12.dp))
             QuietButton("Backup wiederherstellen …", { if (!busy) onOpen() }, color = Ranzen.colors.ink)
         }
     }
@@ -573,7 +703,7 @@ private fun EncryptionSection(settings: BackupSettings, busy: Boolean, show: (Sh
                     st.passwordSaved -> "An – das Passwort ist auf diesem Gerät gemerkt."
                     else -> "An – das Passwort wird bei jedem Backup abgefragt."
                 },
-                style = Ranzen.type.label, color = c.ink,
+                style = Ranzen.type.label, color = c.ink, modifier = Modifier.weight(1f),
             )
         }
         Spacer(Modifier.height(16.dp))
@@ -584,7 +714,7 @@ private fun EncryptionSection(settings: BackupSettings, busy: Boolean, show: (Sh
                 twice = true, offerRemember = true,
             ) { pw, remember -> settings.setEncryption(pw, remember); show(null) },
         )
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        ButtonRow {
             if (!st.encrypt) {
                 SignalButton("Verschlüsselung einrichten …", { if (!busy) setup("Verschlüsselung einrichten") }, icon = BackupIcons.Lock)
             } else {
@@ -638,12 +768,15 @@ private fun AutoSection(settings: BackupSettings, account: SyncAccount, busy: Bo
         CheckRow("Nur beim Laden", st.chargingOnly) { settings.setChargingOnly(it); changed() }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Aufbewahren", style = Ranzen.type.label, color = c.ink, modifier = Modifier.weight(1f))
+            val narrow = LocalNarrow.current
+            Text(if (narrow) "Versionen aufbewahren" else "Aufbewahren", style = Ranzen.type.label, color = c.ink, modifier = Modifier.weight(1f))
             TactileKey({ settings.setKeep(st.keep - 1) }, contentDescription = "Weniger") { Text("−", style = Ranzen.type.heading, color = c.ink) }
-            Text("${st.keep}", style = Ranzen.type.mono, color = c.ink, modifier = Modifier.width(56.dp).padding(horizontal = 18.dp))
+            Text("${st.keep}", style = Ranzen.type.mono, color = c.ink, modifier = Modifier.width(if (narrow) 40.dp else 56.dp).padding(horizontal = if (narrow) 10.dp else 18.dp))
             TactileKey({ settings.setKeep(st.keep + 1) }, contentDescription = "Mehr") { RanzenIcon(RanzenIcons.Plus) }
-            Spacer(Modifier.width(12.dp))
-            Text("Versionen", style = Ranzen.type.label, color = c.inkMuted)
+            if (!narrow) {
+                Spacer(Modifier.width(12.dp))
+                Text("Versionen", style = Ranzen.type.label, color = c.inkMuted)
+            }
         }
         Spacer(Modifier.height(16.dp))
 
@@ -675,8 +808,9 @@ private fun AutoSection(settings: BackupSettings, account: SyncAccount, busy: Bo
                 Lamp(c.signal, size = 8.dp, modifier = Modifier.padding(top = 6.dp))
                 Spacer(Modifier.width(10.dp))
                 Text("Fehler am ${BackupManager.formatDate(st.lastErrorAt)}:\n$err", style = Ranzen.type.label, color = c.signal, modifier = Modifier.weight(1f))
-                QuietButton("Ausblenden", { settings.clearError() })
+                if (!LocalNarrow.current) QuietButton("Ausblenden", { settings.clearError() })
             }
+            if (LocalNarrow.current) QuietButton("Ausblenden", { settings.clearError() })
         }
         Spacer(Modifier.height(14.dp))
         SignalButton("Jetzt automatisch sichern", {
@@ -765,13 +899,17 @@ private fun ServerSection(
         }, color = c.ink)
         Spacer(Modifier.height(12.dp))
         if (!st.loggedIn) {
-            Row {
+            if (LocalNarrow.current) {
+                LineField("E-Mail", email, { email = it.trim() }, "name@beispiel.de", KeyboardType.Email)
+                Spacer(Modifier.height(16.dp))
+                LineField("PIN (6 Ziffern)", pin, { v -> pin = v.filter { it.isDigit() }.take(6) }, "••••••", KeyboardType.NumberPassword, secret = true)
+            } else Row {
                 LineField("E-Mail", email, { email = it.trim() }, "name@beispiel.de", KeyboardType.Email, modifier = Modifier.weight(1.4f))
                 Spacer(Modifier.width(18.dp))
                 LineField("PIN (6 Ziffern)", pin, { v -> pin = v.filter { it.isDigit() }.take(6) }, "••••••", KeyboardType.NumberPassword, secret = true, modifier = Modifier.weight(1f))
             }
             Spacer(Modifier.height(20.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            ButtonRow {
                 SignalButton("Anmelden", {
                     op("Anmelden") {
                         account.setServer(server)
@@ -780,7 +918,6 @@ private fun ServerSection(
                         manager.report(BackupProgress.Done("Angemeldet."))
                     }
                 })
-                Spacer(Modifier.width(10.dp))
                 QuietButton("Neu registrieren", {
                     op("Registrieren") {
                         account.setServer(server)
@@ -798,8 +935,8 @@ private fun ServerSection(
                 QuietButton("Abmelden", { account.logout(); versions = null })
             }
             Spacer(Modifier.height(16.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SignalButton("Jetzt hochladen", {
+            ButtonRow {
+                SignalButton("Backup hochladen", {
                     if (!busy) withPassword { pw ->
                         op("Sichern") {
                             val zip = manager.createBackup(pw)
@@ -813,7 +950,6 @@ private fun ServerSection(
                         }
                     }
                 }, icon = BackupIcons.Restore)
-                Spacer(Modifier.width(10.dp))
                 QuietButton("Liste aktualisieren", { refresh() }, color = c.ink)
             }
             Spacer(Modifier.height(18.dp))
@@ -850,12 +986,19 @@ private fun ServerSection(
 @Composable
 private fun VersionRow(v: RemoteVersion, onRestore: () -> Unit) {
     val c = Ranzen.colors
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp)
-            .drawBehind { drawLine(c.line, Offset(0f, size.height), Offset(size.width, size.height), 1.dp.toPx()) },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(if (v.mtime > 0) BackupManager.formatDate(v.mtime * 1000) else v.name, style = Ranzen.type.mono, color = c.ink, modifier = Modifier.width(190.dp))
+    val date = if (v.mtime > 0) BackupManager.formatDate(v.mtime * 1000) else v.name
+    val line = Modifier.fillMaxWidth().heightIn(min = 52.dp)
+        .drawBehind { drawLine(c.line, Offset(0f, size.height), Offset(size.width, size.height), 1.dp.toPx()) }
+    if (LocalNarrow.current) {
+        Column(line.padding(vertical = 6.dp)) {
+            Text(date, style = Ranzen.type.mono, color = c.ink)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(BackupManager.formatSize(v.size), style = Ranzen.type.mono, color = c.inkMuted, modifier = Modifier.weight(1f))
+                QuietButton("Wiederherstellen …", onRestore, color = c.ink)
+            }
+        }
+    } else Row(line, verticalAlignment = Alignment.CenterVertically) {
+        Text(date, style = Ranzen.type.mono, color = c.ink, modifier = Modifier.width(190.dp))
         Text(BackupManager.formatSize(v.size), style = Ranzen.type.mono, color = c.inkMuted, modifier = Modifier.weight(1f))
         QuietButton("Wiederherstellen …", onRestore, color = c.ink)
     }
@@ -865,9 +1008,10 @@ private fun VersionRow(v: RemoteVersion, onRestore: () -> Unit) {
 
 @Composable
 private fun SheetPanel(title: String, content: @Composable ColumnScope.() -> Unit) {
-    PaperPanel(Modifier.padding(24.dp).widthIn(max = 600.dp), corner = 26.dp) {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(30.dp)) {
-            Text(title, style = Ranzen.type.title, color = Ranzen.colors.ink)
+    val narrow = LocalNarrow.current
+    PaperPanel(Modifier.safeDrawingPadding().padding(if (narrow) 12.dp else 24.dp).widthIn(max = 600.dp), corner = if (narrow) 20.dp else 26.dp) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(if (narrow) 18.dp else 30.dp)) {
+            Text(title, style = if (narrow) Ranzen.type.heading else Ranzen.type.title, color = Ranzen.colors.ink)
             Spacer(Modifier.height(16.dp))
             content()
         }
@@ -876,14 +1020,12 @@ private fun SheetPanel(title: String, content: @Composable ColumnScope.() -> Uni
 
 @Composable
 private fun SheetButtons(busy: Boolean, cancel: String = "Abbrechen", confirm: String, onCancel: () -> Unit, onConfirm: () -> Unit) {
-    Spacer(Modifier.height(26.dp))
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Spacer(Modifier.weight(1f))
+    Spacer(Modifier.height(if (LocalNarrow.current) 16.dp else 26.dp))
+    ButtonRow(end = true) {
         if (busy) {
             Text("Bitte warten …", style = Ranzen.type.label, color = Ranzen.colors.inkMuted)
         } else {
             QuietButton(cancel, onCancel)
-            Spacer(Modifier.width(10.dp))
             SignalButton(confirm, onConfirm)
         }
     }
@@ -893,8 +1035,9 @@ private fun SheetButtons(busy: Boolean, cancel: String = "Abbrechen", confirm: S
 private fun ConfirmRestoreSheet(s: Sheet.ConfirmRestore, busy: Boolean, canMerge: Boolean, onCancel: () -> Unit, onRestore: (merge: Boolean) -> Unit) {
     val c = Ranzen.colors
     val m = s.info.manifest
-    var merge by remember { mutableStateOf(false) }
-    SheetPanel("Backup wiederherstellen?") {
+    val forSync = s.source == SYNC_FILE && canMerge
+    var merge by remember { mutableStateOf(forSync) }
+    SheetPanel(if (forSync) "Datei zusammenführen?" else "Backup wiederherstellen?") {
         if (m != null) {
             Fact("Stand", BackupManager.formatDate(m.created))
             Fact("Quelle", s.source + if (m.device.isNotBlank()) " · ${m.device}" else "")
@@ -905,7 +1048,7 @@ private fun ConfirmRestoreSheet(s: Sheet.ConfirmRestore, busy: Boolean, canMerge
         CheckRow("Ersetzen", !merge, hint = "Alle Daten auf diesem Gerät werden durch das Backup ersetzt. Danach startet die App neu.") { merge = false }
         CheckRow(
             "Zusammenführen", merge, enabled = canMerge,
-            hint = if (canMerge) "Nur Neues und Neueres aus dem Backup übernehmen; auf diesem Gerät geht nichts verloren." else "In dieser Version noch nicht verfügbar.",
+            hint = if (canMerge) "Seite für Seite wie beim Abgleich: Neues kommt dazu, bei einem Konflikt bleiben beide Fassungen; auf diesem Gerät geht nichts verloren." else "In dieser Version noch nicht verfügbar.",
         ) { if (canMerge) merge = true }
         Spacer(Modifier.height(10.dp))
         Text("Vorher wird jede Datei geprüft; ist etwas beschädigt, bleibt alles, wie es ist.", style = Ranzen.type.body, color = c.inkMuted)
@@ -989,14 +1132,15 @@ private fun DiagnoseSheet(steps: List<DiagnoseStep>, onClose: () -> Unit) {
 }
 
 @Composable
-private fun MergeDoneSheet(reports: List<MergeReport>, onClose: () -> Unit, onRestart: () -> Unit) {
+private fun MergeDoneSheet(reports: List<MergeReport>, warnings: List<String>, onClose: () -> Unit, onRestart: () -> Unit) {
     val c = Ranzen.colors
     SheetPanel("Zusammengeführt") {
+        warnings.forEach { Text(it, style = Ranzen.type.label, color = c.signal, modifier = Modifier.padding(bottom = 8.dp)) }
         reports.forEach { r ->
             Row(Modifier.padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                 Lamp(if (r.ok) SubjectPalette.of(3) else c.signal, size = 8.dp)
                 Spacer(Modifier.width(10.dp))
-                Text(r.summary(), style = Ranzen.type.label, color = if (r.ok) c.ink else c.signal)
+                Text(r.summary(), style = Ranzen.type.label, color = if (r.ok) c.ink else c.signal, modifier = Modifier.weight(1f))
             }
             r.warnings.take(3).forEach { Text("· $it", style = Ranzen.type.caption, color = c.inkMuted) }
             if (r.warnings.size > 3) Text("· … und ${r.warnings.size - 3} weitere", style = Ranzen.type.caption, color = c.inkMuted)
@@ -1047,8 +1191,12 @@ private fun RestartSheet(p: BackupProgress, onRestart: () -> Unit) {
         while (left > 0) { delay(1000); left-- }
         onRestart()
     }
-    SheetPanel("Wiederherstellung fertig") {
-        Text((p as? BackupProgress.Done)?.message ?: "Die Daten wurden ersetzt.", style = Ranzen.type.body, color = Ranzen.colors.ink)
+    val failed = p as? BackupProgress.Failed
+    SheetPanel(if (failed != null) "Wiederherstellung fehlgeschlagen" else "Wiederherstellung fertig") {
+        Text(
+            if (failed != null) failed.message + " Deine Daten sind unverändert." else (p as? BackupProgress.Done)?.message ?: "Die Daten wurden ersetzt.",
+            style = Ranzen.type.body, color = Ranzen.colors.ink,
+        )
         Spacer(Modifier.height(8.dp))
         Text("Die App startet neu, damit alles frisch geladen wird … ($left)", style = Ranzen.type.body, color = Ranzen.colors.inkMuted)
         Spacer(Modifier.height(26.dp))
@@ -1060,7 +1208,7 @@ private fun RestartSheet(p: BackupProgress, onRestart: () -> Unit) {
 private fun Fact(label: String, value: String) {
     val c = Ranzen.colors
     Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, style = Ranzen.type.label, color = c.inkMuted, modifier = Modifier.width(190.dp))
-        Text(value, style = Ranzen.type.mono, color = c.ink)
+        Text(label, style = Ranzen.type.label, color = c.inkMuted, modifier = Modifier.width(if (LocalNarrow.current) 110.dp else 190.dp))
+        Text(value, style = Ranzen.type.mono, color = c.ink, modifier = Modifier.weight(1f))
     }
 }

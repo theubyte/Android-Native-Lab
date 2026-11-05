@@ -164,6 +164,8 @@ class SyncEngine(
     private val device: String,
     /** Flushes pending writes so the files on disk are complete (database journals). */
     private val prepare: suspend () -> Unit = {},
+    /** Runs the merge; the place to keep editors away from the data meanwhile. */
+    private val exclusive: suspend (suspend () -> Unit) -> Unit = { it() },
     /** Step and bytes (total -1 = unknown). Throwing here cancels. */
     private val progress: (String, Long, Long) -> Unit = { _, _, _ -> },
 ) {
@@ -211,7 +213,7 @@ class SyncEngine(
             manifest = decode(head.manifest, read)
             work.mkdirs()
             fetch(manifest, before, read)
-            merge()
+            exclusive { merge() }
         }
 
         for (p in participants) warnings += p.prepareExport()
