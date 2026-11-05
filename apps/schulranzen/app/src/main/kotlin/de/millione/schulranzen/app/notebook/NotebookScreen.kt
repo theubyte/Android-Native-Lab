@@ -135,6 +135,8 @@ fun NotebookScreen(
     onBookBeside: (() -> Unit)? = null,
     /** Narrow pane next to a book: keep the rail vertical even when the pane is taller than wide. */
     compact: Boolean = false,
+    /** Opens the document scanner for this notebook; null hides the entry. */
+    onScan: (() -> Unit)? = null,
 ) {
     val c = Ranzen.colors
     var panel by remember { mutableStateOf(Panel.NONE) }
@@ -167,7 +169,8 @@ fun NotebookScreen(
     val pickWorksheetPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) session.addWorksheetPdf(uri)
     }
-    var cameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    // Saved: the system may end the process while the camera app is open.
+    var cameraUri by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<android.net.Uri?>(null) }
     val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         val u = cameraUri
         if (ok && u != null) session.addWorksheetImages(listOf(u))
@@ -252,6 +255,7 @@ fun NotebookScreen(
             enter = fadeIn() + scaleIn(spring(dampingRatio = 0.7f), initialScale = 0.92f),
             exit = fadeOut() + scaleOut(targetScale = 0.95f)) {
             MorePanel(session, settings, pdfRuling, { pdfRuling = it },
+                onScan = onScan?.let { open -> { panel = Panel.NONE; open() } },
                 onImage = { panel = Panel.NONE; pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                 onWorksheetPhotos = { panel = Panel.NONE; pickWorksheets.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                 onWorksheetPdf = { panel = Panel.NONE; pickWorksheetPdf.launch(arrayOf("application/pdf")) },
@@ -672,6 +676,7 @@ private fun MorePanel(
     onWorksheetCamera: () -> Unit,
     onPdf: () -> Unit,
     onBookBeside: (() -> Unit)?,
+    onScan: (() -> Unit)? = null,
 ) {
     val c = Ranzen.colors
     PaperPanel(corner = 22.dp) {
@@ -697,6 +702,7 @@ private fun MorePanel(
             Spacer(Modifier.height(16.dp))
             Text("Arbeitsblatt als neue Seite", style = Ranzen.type.heading, color = c.ink)
             Spacer(Modifier.height(4.dp))
+            if (onScan != null) ActionRow(RanzenIcons.Paper, "Scannen (Kanten, mehrere Seiten)", onScan)
             ActionRow(RanzenIcons.Camera, "Fotografieren", onWorksheetCamera)
             ActionRow(RanzenIcons.Image, "Aus Fotos (auch mehrere)", onWorksheetPhotos)
             ActionRow(RanzenIcons.Paper, "Aus PDF – jede Seite wird ein Blatt", onWorksheetPdf)

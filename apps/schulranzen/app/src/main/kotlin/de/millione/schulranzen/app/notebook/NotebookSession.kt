@@ -143,10 +143,11 @@ class NotebookSession(
                 // Only a big notebook takes long enough to need a word.
                 val hint = launch { delay(300); busy = "Heft wird geöffnet …" }
                 val result = try { library.loadPagesChecked(notebookId) } finally { hint.cancel(); busy = null }
-                val pages = result.pages.ifEmpty { listOf(library.addPage(notebookId, 0, defaultPaper)) }
+                // A notebook needs a page to write on; a reader (phone) changes nothing.
+                val pages = if (result.pages.isEmpty() && !canvas.readOnly) listOf(library.addPage(notebookId, 0, defaultPaper)) else result.pages
                 canvas.setPages(pages)
                 pageCount = pages.size
-                val target = (startPage ?: nb.lastPage).coerceIn(0, pages.size - 1)
+                val target = (startPage ?: nb.lastPage).coerceIn(0, (pages.size - 1).coerceAtLeast(0))
                 if (target > 0) canvas.scrollToPage(target)
                 if (startFlash != null) canvas.flash(target, startFlash)
                 loaded = true
@@ -487,6 +488,8 @@ class NotebookSession(
 
     private suspend fun insertWorksheets(files: List<String>) {
         if (files.isEmpty()) { busy = null; say("Nichts eingefügt"); return }
+        // A photo can arrive right after the process came back, before the pages are there.
+        loadJob?.join()
         flushAll()
         val at = page + 1
         val pages = library.addWorksheetPages(notebookId, at, files)

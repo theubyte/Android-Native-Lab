@@ -32,7 +32,7 @@ Ohne Befund: Koordinaten von Lasso und Lineal bei Zoom (`localOf`, `toView`), Un
 | 6 | `MainActivity`-Pfad: keine Sicherung bei `ON_PAUSE` | Home oder Wischen aus den Letzten innerhalb von 700 ms: Striche nur im Speicher. | `NotebookSession.onPause()` über `LifecycleEventEffect` in `NotebookScreen` | – |
 | 7 | `NotebookCanvasView.kt:882`, `NotebookSession.kt:128-133` | Strich gerade abgesetzt, sofort raus: Übergabe kam nach `listener = null`, nie gespeichert. | `canvas.settleStrokes()` vor dem Schließen und bei Pause | – |
 | 8 | `NotebookSession.kt:472-473` | Save fand die Seite über `canvas.pageById`; war schon ein anderes Heft geladen, verschwand er still. | Save hält die Seite selbst | – |
-| 9 | `NotebookSession.kt:132` | Altes Heft blendet aus und schließt nach dem Öffnen des neuen: `listener = null` nahm dem neuen Heft das Speichern. | Nur der eigene Listener wird entfernt. **Rest in `MainActivity`, siehe unten.** | – |
+| 9 | `NotebookSession.kt:132` | Altes Heft blendet aus und schließt nach dem Öffnen des neuen: `listener = null` nahm dem neuen Heft das Speichern. | Nur der eigene Listener wird entfernt; die Sichtbarkeit regelt `BindCanvas` aus `agent/handy`. | – |
 | 10 | `NotebookSession.kt:114-124` | Laden nicht abbrechbar: Heft A verlassen, B geöffnet, dann zeigte die Leinwand A in der Sitzung von B. | `loadJob`, Abbruch in `close()` | – |
 | 11 | `NotebookSession.kt:130` | Verlassen vor Ladeende setzte `lastPage` auf 0. | Nur wenn geladen | – |
 | 12 | `Library.kt:113` | Schnell wieder öffnen las die alte Datei, solange das Speichern lief; nächstes Speichern überschrieb die letzten Striche. | Lesen wartet auf laufende Saves | – |
@@ -99,6 +99,14 @@ Ohne Befund: Koordinaten von Lasso und Lineal bei Zoom (`localOf`, `toView`), Un
 
 - `NotebookCanvasView.kt:135`: Strich-IDs aus der Laufzeit seit Neustart (Treffer auf gespeicherte IDs sehr unwahrscheinlich), jetzt Uhrzeit.
 - `Library.kt:124-125`: Objektdatei wird vor der Tintendatei geschrieben, damit „Handschrift → Text“ beim Absturz dazwischen beides behält.
+
+### Nach Zusammenführung mit `agent/handy`
+
+- `session.open()` legt im Lesemodus keine Seite an, auch ein Heft ohne Seiten öffnet dort ohne Absturz.
+- `PhoneNotebookScreen` wertet `session.missing` aus: kein endloser Ladekreis bei Ladefehlern.
+- `NotebookScreen.cameraUri` ist `rememberSaveable`, und ein so zurückgekommenes Foto wartet auf das Laden des Hefts.
+- Textsetzen per Finger ist im Lesemodus aus; `setPages` beendet ein laufendes Gleiten.
+- Display-List-Begrenzung gilt für Tablet und Handy (ersetzt die reine `readOnly`-Fassung); Sprung vor dem Layout läuft über `pendingPage`.
 
 ## Ausbau
 

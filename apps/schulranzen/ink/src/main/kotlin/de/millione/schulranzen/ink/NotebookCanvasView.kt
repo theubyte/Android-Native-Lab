@@ -16,8 +16,10 @@ import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.VelocityTracker
 import android.view.ViewConfiguration
 import android.widget.FrameLayout
+import android.widget.OverScroller
 import androidx.ink.authoring.InProgressStrokeId
 import androidx.ink.authoring.InProgressStrokesFinishedListener
 import androidx.ink.authoring.InProgressStrokesView
@@ -148,6 +150,27 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     private val density = resources.displayMetrics.density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
+    /**
+     * Reading only (phones): nothing can change the ink. Finger and pen alike
+     * scroll and zoom; hover, side button, lasso and ruler are dead. The page
+     * fills the width and a swipe keeps gliding, as a reader is expected to.
+     */
+    var readOnly: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (value) { clearSelection(); overlay.hide() } else stopFling()
+        }
+
+    /** Free space above the first page, e.g. for a bar lying over the canvas. */
+    var topGapPx: Float = 24f * density
+        set(value) {
+            if (field == value) return
+            if (ty == field) ty = value
+            field = value
+            clampAndApply()
+        }
+
     // ---- children ----
     private val layer = PageLayer()
     private val inProgress = InProgressStrokesView(context)
@@ -183,6 +206,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         // A gesture cut off by leaving the last notebook must not swallow the next one.
         if (mode == Mode.DRAW) { inProgress.cancelUnfinishedStrokes(); pending.clear() }
         endPen(); endPan()
+        stopFling()
         eraseStep.clear()
         layer.dropCaches()
         clampAndApply()
@@ -228,11 +252,13 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     fun refreshPage(index: Int) { layer.dirty(index); layer.invalidate() }
 
     fun scrollToPage(index: Int) {
-        // Not laid out yet: onSizeChanged would throw this scroll away (scale is not known).
-        if (!laidOut) { scrollAfterLayout = index; return }
-        ty = -(pageTop(index.coerceIn(0, max(0, pages.size - 1))) * scale) + 24f * density
+        // Not laid out yet (just made visible): the first layout would undo the jump.
+        if (width == 0 || !laidOut) { pendingPage = index; return }
+        stopFling()
+        ty = -(pageTop(index.coerceIn(0, max(0, pages.size - 1))) * scale) + topGapPx
         clampAndApply()
     }
+    private var pendingPage: Int? = null
 
     fun undo() {
         if (anyLocked(history.undoPages())) { listener?.onLockedPageTouched(); return }
@@ -261,6 +287,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
 
     /** Applies an edit made outside a gesture (text, paste, page actions) as one undo step. */
     fun commit(edits: List<PageEdit>) {
+        if (readOnly) return
         val real = edits.filterNot { it.isEmpty }
         if (real.isEmpty()) return
         if (anyLocked(real.mapTo(HashSet()) { it.page })) { listener?.onLockedPageTouched(); return }
@@ -285,23 +312,27 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w == 0 || h == 0) return
-        val margin = 28f * density
-        // Landscape: the sheet as tall as fits nicely; portrait: full width.
-        fitScale = min((w - 2 * margin) / WIDTH, (h * 1.18f) / HEIGHT)
+        val margin = (if (readOnly) 6f else 28f) * density
+        val wasFit = abs(scale - fitScale) < 0.001f
+        val keepPage = lastReported
+        // Landscape: the sheet as tall as fits nicely; portrait: full width. A reader always fills the width.
+        fitScale = if (readOnly) (w - 2 * margin) / WIDTH else min((w - 2 * margin) / WIDTH, (h * 1.18f) / HEIGHT)
         if (!laidOut) {
             scale = fitScale
-            ty = 24f * density
+            ty = topGapPx
             laidOut = true
+        } else if (readOnly && wasFit) {
+            scale = fitScale
         } else {
             scale = scale.coerceIn(fitScale * 0.5f, fitScale * 6f)
         }
         // After a turn or a narrower pane the ruler must stay within reach.
         if (rulerCx >= 0f) { rulerCx = rulerCx.coerceIn(0f, w.toFloat()); rulerCy = rulerCy.coerceIn(0f, h.toFloat()) }
         clampAndApply()
-        scrollAfterLayout?.let { scrollAfterLayout = null; scrollToPage(it) }
+        pendingPage?.let { pendingPage = null; scrollToPage(it) }
+            // Turning the phone keeps the reader on the same page.
+            ?: run { if (readOnly && oldw != 0 && oldw != w && keepPage >= 0) scrollToPage(keepPage) }
     }
-
-    private var scrollAfterLayout: Int? = null
 
     private fun clampAndApply() {
         val w = width.toFloat(); val h = height.toFloat()
@@ -309,7 +340,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         val contentW = WIDTH * scale
         tx = if (contentW <= w) (w - contentW) / 2 else tx.coerceIn(w - contentW - 24f * density, 24f * density)
         val contentH = (pages.size * (HEIGHT + GAP) - GAP) * scale
-        val top = 24f * density
+        val top = topGapPx
         val minTy = min(top, h - contentH - 96f * density)
         ty = ty.coerceIn(minTy, top)
         view.setScale(scale, scale)
@@ -364,6 +395,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     }
 
     private fun select(page: Int, strokes: Set<Long>, items: Set<Long>) {
+        if (readOnly) return
         val b = pages[page].ink.boundsOf(strokes, items)
         if (b == null) { clearSelection(); return }
         selection = Selection(page, strokes, items, b)
@@ -595,6 +627,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (readOnly) { readerTouch(e); return true }
         val action = e.actionMasked
         val index = e.actionIndex
         val down = action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN
@@ -1021,7 +1054,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                 // gesture that began as a tap: a hand lifted after the pen wrote is none.
                 if (e.actionMasked == MotionEvent.ACTION_UP && mode == Mode.PAN && !panning) {
                     if (selection != null) clearSelection()
-                    else if (tool == ToolKind.TEXT) fingerText(e.x, e.y)
+                    else if (tool == ToolKind.TEXT && !readOnly) fingerText(e.x, e.y)
                 }
                 endPan()
             }
@@ -1045,6 +1078,71 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
 
     private fun endPan() { mode = Mode.NONE; panId = -1; panning = false; pinchDist = 0f }
 
+    // ---- reading only: glide after a swipe, double tap zooms ----
+
+    private val scroller = OverScroller(context)
+    private var velocity: VelocityTracker? = null
+    private var pinched = false
+    private var lastTapAt = 0L
+    private var lastTapX = 0f
+    private var lastTapY = 0f
+    private val glide = object : Runnable {
+        override fun run() {
+            if (!scroller.computeScrollOffset()) return
+            tx = scroller.currX.toFloat(); ty = scroller.currY.toFloat()
+            clampAndApply()
+            postOnAnimation(this)
+        }
+    }
+
+    private fun stopFling() { scroller.forceFinished(true); removeCallbacks(glide) }
+
+    private fun readerTouch(e: MotionEvent) {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                stopFling(); pinched = false
+                velocity?.recycle(); velocity = VelocityTracker.obtain()
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> pinched = true
+        }
+        velocity?.addMovement(e)
+        val swiped = panning
+        fingerEvent(e)
+        when (e.actionMasked) {
+            MotionEvent.ACTION_UP -> {
+                if (swiped) { if (!pinched) startGlide() } else readerTap(e.x, e.y)
+                velocity?.recycle(); velocity = null
+            }
+            MotionEvent.ACTION_CANCEL -> { velocity?.recycle(); velocity = null }
+        }
+    }
+
+    private fun startGlide() {
+        val v = velocity ?: return
+        v.computeCurrentVelocity(1000, ViewConfiguration.get(context).scaledMaximumFlingVelocity.toFloat())
+        val contentW = WIDTH * scale
+        val contentH = (pages.size * (HEIGHT + GAP) - GAP) * scale
+        val minX = if (contentW <= width) tx else width - contentW - 24f * density
+        val maxX = if (contentW <= width) tx else 24f * density
+        val minY = min(topGapPx, height - contentH - 96f * density)
+        scroller.fling(tx.toInt(), ty.toInt(), v.xVelocity.toInt(), v.yVelocity.toInt(), minX.toInt(), maxX.toInt(), minY.toInt(), topGapPx.toInt())
+        postOnAnimation(glide)
+    }
+
+    private fun readerTap(x: Float, y: Float) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastTapAt < ViewConfiguration.getDoubleTapTimeout() && hypot(x - lastTapX, y - lastTapY) < touchSlop * 4) {
+            lastTapAt = 0L
+            val target = if (scale > fitScale * 1.05f) fitScale else fitScale * 2.5f
+            val f = target / scale
+            tx = x - (x - tx) * f; ty = y - (y - ty) * f
+            scale = target
+            clampAndApply()
+        } else {
+            lastTapAt = now; lastTapX = x; lastTapY = y
+        }
+    }
+
     // ------------------------------------------------- hover and side button
 
     private var buttonDown = false
@@ -1060,7 +1158,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     }
 
     override fun dispatchGenericMotionEvent(e: MotionEvent): Boolean {
-        if (e.pointerCount > 0 && isPen(e, 0)) {
+        if (!readOnly && e.pointerCount > 0 && isPen(e, 0)) {
             if (handleHover(e)) return true
         }
         return super.dispatchGenericMotionEvent(e)
@@ -1072,6 +1170,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
      * forward them here (view coordinates).
      */
     fun handleHover(e: MotionEvent): Boolean {
+        if (readOnly) return false
         lastPenNear = SystemClock.uptimeMillis()
         hoverX = e.x; hoverY = e.y
         val pressed = (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
@@ -1301,7 +1400,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                 canvas.drawRoundRect(r, 10f * density, 10f * density, flashPaint)
                 canvas.drawRoundRect(r, 10f * density, 10f * density, flashEdge)
             }
-            if (tool == ToolKind.RULER) drawPhysicalRuler(canvas)
+            if (tool == ToolKind.RULER && !readOnly) drawPhysicalRuler(canvas)
             drawSelection(canvas)
             when (mode) {
                 Mode.LASSO -> drawLasso(canvas)

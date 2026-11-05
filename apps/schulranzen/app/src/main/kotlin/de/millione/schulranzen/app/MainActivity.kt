@@ -1,6 +1,7 @@
 package de.millione.schulranzen.app
 
 import android.app.Application
+import android.content.res.Configuration
 import android.content.Intent
 import android.os.Bundle
 import android.view.MotionEvent
@@ -16,6 +17,21 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.mutableIntStateOf
+import de.millione.schulranzen.app.phone.PhoneBooksTab
+import de.millione.schulranzen.app.phone.PhoneNotebookScreen
+import de.millione.schulranzen.app.phone.PhoneNotebooksTab
+import de.millione.schulranzen.app.phone.PhoneShell
+import de.millione.schulranzen.app.phone.PhoneSyncTab
+import de.millione.schulranzen.app.phone.PhoneTab
+import de.millione.schulranzen.app.scan.ScanController
+import de.millione.schulranzen.app.scan.ScanFlow
+import de.millione.schulranzen.app.scan.ScanRoute
+import de.millione.schulranzen.app.scan.ScanStore
+import de.millione.schulranzen.app.scan.rememberScanController
+import de.millione.schulranzen.app.scan.sharedUris
+import de.millione.schulranzen.design.isPhone
+import de.millione.schulranzen.design.rememberIsPhone
 import de.millione.schulranzen.design.RanzenIcon
 import de.millione.schulranzen.design.TactileKey
 import de.millione.schulranzen.study.StudyHome
@@ -57,6 +73,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -92,6 +109,7 @@ class RanzenApp : Application() {
     val books by lazy { BookShelf(this) }
     val recognizer by lazy { de.millione.schulranzen.handwriting.HandwritingRecognizer(this) }
     val handwriting by lazy { de.millione.schulranzen.handwriting.HandwritingIndex(this, recognizer) }
+    val scan by lazy { ScanStore(this, library, scope) }
 }
 
 /**
@@ -141,6 +159,8 @@ class MainActivity : ComponentActivity() {
     /** The open notebook, for the debug hooks below. */
     private var session: NotebookSession? = null
     private val app get() = application as RanzenApp
+    /** Goes up when another app shared sheets with us: the UI then shows the scan flow. */
+    private val shares = mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -158,6 +178,8 @@ class MainActivity : ComponentActivity() {
         root.addView(ui, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         setContentView(root)
         hideTaskBar()
+        // After a restore the intent is the old one; its sheets are already in the draft.
+        if (savedInstanceState == null) receiveShare(intent)
 
         ui.setContent {
             val mode by app.settings.theme.collectAsState()
@@ -193,10 +215,13 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                // Where we are, as a saveable string: "lib", "nb:<id>", "study", "timetable".
-                var route by rememberSaveable { mutableStateOf("lib") }
                 val subjects by app.library.subjects.collectAsState(initial = emptyList())
                 val studySubjects = remember(subjects) { subjects.map { StudySubject(it.id, it.name, it.colorIndex) } }
+                val scanner = rememberScanController(app.scan)
+                if (rememberIsPhone()) PhoneApp(scanner, studySubjects) else {
+                // Where we are, as a saveable string: "lib", "nb:<id>", "study", "timetable", "scan".
+                var route by rememberSaveable { mutableStateOf("lib") }
+                LaunchedEffect(shares.intValue) { if (shares.intValue > 0) route = ScanRoute().encode() }
                 AnimatedContent(
                     route,
                     transitionSpec = { (fadeIn() + scaleIn(spring(dampingRatio = 0.8f), initialScale = 0.97f)) togetherWith fadeOut() },
@@ -220,6 +245,8 @@ class MainActivity : ComponentActivity() {
                                 TactileKey({ route = "shk" }, contentDescription = "SHK-Werkzeuge") { RanzenIcon(AppIcons.Shk) }
                                 Spacer(Modifier.width(10.dp))
                                 TactileKey({ route = "backup" }, contentDescription = "Sichern und übernehmen") { RanzenIcon(AppIcons.Backup) }
+                                Spacer(Modifier.width(10.dp))
+                                TactileKey({ route = ScanRoute().encode() }, contentDescription = "Blätter scannen") { RanzenIcon(AppIcons.Scan) }
                                 Spacer(Modifier.width(16.dp))
                             },
                             today = { TodayStrip(Modifier.fillMaxWidth(), onClick = { route = "timetable" }) },
@@ -244,15 +271,7 @@ class MainActivity : ComponentActivity() {
                         r == "study" -> {
                             BackHandler { route = "lib" }
                             StudyHome(onBack = { route = "lib" }, onOpenTimetable = { route = "timetable" }, subjects = studySubjects,
-                                onOpenLink = { link ->
-                                    val r = link.rect
-                                    route = when (link.linkKind) {
-                                        StudyLinkKind.BOOK_PAGE -> BookRoute(link.targetId, link.page,
-                                            r?.let { android.graphics.RectF(it.x * 1000f, it.y * 1000f, (it.x + it.w) * 1000f, (it.y + it.h) * 1000f) }).encode()
-                                        StudyLinkKind.NOTEBOOK_PAGE -> NotebookRoute(link.targetId, link.page,
-                                            r?.let { android.graphics.RectF(it.x * PageGeometry.WIDTH, it.y * PageGeometry.HEIGHT, (it.x + it.w) * PageGeometry.WIDTH, (it.y + it.h) * PageGeometry.HEIGHT) }).encode()
-                                    }
-                                })
+                                onOpenLink = { link -> route = routeOf(link) })
                         }
                         r == "timetable" -> {
                             BackHandler { route = "lib" }
@@ -261,26 +280,14 @@ class MainActivity : ComponentActivity() {
                         r == "shk" -> ShkScreen(onBack = { route = "lib" })
                         r == "backup" -> {
                             BackHandler { route = "lib" }
-                            BackupScreen(
-                                onBack = { route = "lib" },
-                                // The notebook saves itself when it closes, so nothing is pending here.
-                                hooks = remember { appBackupHooks(this@MainActivity) {} },
-                                mergeParticipants = remember { appMergeParticipants(this@MainActivity) },
-                                onImportV15 = { lib ->
-                                    V15Import.run(lib, V15Sink(this@MainActivity, app.library, canvas::newId) { book, subjectId, pdf ->
-                                        if (pdf == null) null else {
-                                            // The shelf imports from a Uri: hand the PDF over through a cache file.
-                                            val tmp = java.io.File(cacheDir, "v15-book.pdf")
-                                            tmp.outputStream().use { pdf.copyTo(it) }
-                                            val info = app.books.import(android.net.Uri.fromFile(tmp))
-                                            tmp.delete()
-                                            if (book.title.isNotBlank()) app.books.rename(info.id, book.title)
-                                            app.books.setSubject(info.id, subjectId)
-                                            info.id
-                                        }
-                                    })
-                                },
-                            )
+                            BackupRoute(onBack = { route = "lib" })
+                        }
+                        r.startsWith("scan") -> {
+                            val sr = ScanRoute.parse(r)
+                            val origin = sr.notebookId?.let { NotebookRoute(it).encode() } ?: "lib"
+                            BackHandler { route = origin }
+                            ScanFlow(app.scan, scanner, app.library, sr, onBack = { route = origin },
+                                onOpen = { nb, page -> route = NotebookRoute(nb, page).encode() })
                         }
                         r.startsWith("book:") -> {
                             BackHandler { route = "lib" }
@@ -310,23 +317,15 @@ class MainActivity : ComponentActivity() {
                             val session = remember(id) {
                                 NotebookSession(id, canvas, app.library, app.settings, app.scope, app.handwriting, app.recognizer, nr.page, nr.flash)
                             }
-                            DisposableEffect(session) {
-                                session.open()
-                                this@MainActivity.session = session
-                                canvas.visibility = View.VISIBLE
-                                onDispose {
-                                    this@MainActivity.session = null
-                                    session.close()
-                                    canvas.visibility = View.GONE
-                                }
-                            }
+                            BindCanvas(session, readOnly = false)
                             var pickBook by remember { mutableStateOf(false) }
                             SplitWithBook(
                                 canvas = canvas,
                                 bookId = sideBook,
                                 notebook = { compact ->
                                     NotebookScreen(session, app.settings, onBack = { route = "lib" },
-                                        onBookBeside = { pickBook = true }, compact = compact)
+                                        onBookBeside = { pickBook = true }, compact = compact,
+                                        onScan = { route = ScanRoute(id, session.page + 1).encode() })
                                 },
                                 book = { bookId ->
                                     Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.End + WindowInsetsSides.Bottom))) {
@@ -341,16 +340,177 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                }
+            }
+        }
+    }
+
+    /** Backup, restore, sync and the V15 import, on both kinds of device. */
+    @Composable
+    private fun BackupRoute(onBack: () -> Unit) {
+        BackupScreen(
+            onBack = onBack,
+            // The notebook saves itself when it closes, so nothing is pending here.
+            hooks = remember { appBackupHooks(this@MainActivity) {} },
+            mergeParticipants = remember { appMergeParticipants(this@MainActivity) },
+            onImportV15 = { lib ->
+                V15Import.run(lib, V15Sink(this@MainActivity, app.library, canvas::newId) { book, subjectId, pdf ->
+                    if (pdf == null) null else {
+                        // The shelf imports from a Uri: hand the PDF over through a cache file.
+                        val tmp = java.io.File(cacheDir, "v15-book.pdf")
+                        tmp.outputStream().use { pdf.copyTo(it) }
+                        val info = app.books.import(android.net.Uri.fromFile(tmp))
+                        tmp.delete()
+                        if (book.title.isNotBlank()) app.books.rename(info.id, book.title)
+                        app.books.setSubject(info.id, subjectId)
+                        info.id
+                    }
+                })
+            },
+        )
+    }
+
+    /**
+     * Puts the canvas in the hands of [session] while it is on screen. A
+     * screen fading out is disposed after the next one came up, so the old
+     * session must not take the canvas away from the new one.
+     */
+    @Composable
+    private fun BindCanvas(session: NotebookSession, readOnly: Boolean) {
+        DisposableEffect(session) {
+            canvas.readOnly = readOnly
+            if (!readOnly) canvas.topGapPx = 24f * resources.displayMetrics.density
+            // Its pending pages must be written while the canvas still holds them.
+            this@MainActivity.session?.close()
+            session.open()
+            this@MainActivity.session = session
+            canvas.visibility = View.VISIBLE
+            onDispose {
+                val stillOurs = this@MainActivity.session === session
+                val next = canvas.listener
+                session.close()
+                if (stillOurs) {
+                    this@MainActivity.session = null
+                    canvas.visibility = View.GONE
+                } else canvas.listener = next
             }
         }
     }
 
     /**
+     * The phone: reading, scanning and learning. No writing, no calculator:
+     * the tablet's notebook screen with its tools is never composed here.
+     */
+    @Composable
+    private fun PhoneApp(scanner: ScanController, studySubjects: List<StudySubject>) {
+        var tab by rememberSaveable { mutableStateOf(PhoneTab.LEARN) }
+        var detail by rememberSaveable { mutableStateOf<String?>(null) }
+        LaunchedEffect(shares.intValue) { if (shares.intValue > 0) { tab = PhoneTab.SCAN; detail = null } }
+        val syncRoute = "backup"
+        PhoneShell(
+            tab, { tab = it }, detail,
+            learn = {
+                StudyHome(onBack = { tab = PhoneTab.NOTEBOOKS }, onOpenTimetable = { detail = "timetable" }, subjects = studySubjects,
+                    onOpenLink = { link -> detail = routeOf(link) })
+            },
+            tabContent = { t ->
+                when (t) {
+                    PhoneTab.NOTEBOOKS -> PhoneNotebooksTab(app.library, onOpen = { detail = "nb:$it" }, onScan = { tab = PhoneTab.SCAN }, onSync = { detail = syncRoute },
+                        searchExtra = { q ->
+                            val notebooks by app.library.notebooks.collectAsState(initial = emptyList())
+                            var hits by remember { mutableStateOf(emptyList<de.millione.schulranzen.handwriting.Hit>()) }
+                            LaunchedEffect(q) { kotlinx.coroutines.delay(250); hits = runCatching { app.handwriting.search(q) }.getOrDefault(emptyList()) }
+                            de.millione.schulranzen.handwriting.HandwritingSearchResults(
+                                hits,
+                                onOpen = { hit ->
+                                    app.scope.launch {
+                                        val index = app.library.pageIndex(hit.notebookId, hit.pageId)
+                                        detail = NotebookRoute(hit.notebookId, index, hit.rect).encode()
+                                    }
+                                },
+                                titleOf = { id -> notebooks.firstOrNull { it.id == id }?.title ?: "Heft" },
+                            )
+                        })
+                    PhoneTab.BOOKS -> PhoneBooksTab(app.books, app.library, onOpen = { detail = "book:$it" })
+                    PhoneTab.SCAN -> ScanFlow(app.scan, scanner, app.library,
+                        onOpen = { nb, page -> detail = NotebookRoute(nb, page).encode() }, onSync = { detail = syncRoute })
+                    PhoneTab.SYNC -> PhoneSyncTab(app.settings, onSync = { detail = syncRoute })
+                    PhoneTab.LEARN -> Unit
+                }
+            },
+            detailContent = { d ->
+                when {
+                    d == "timetable" -> {
+                        BackHandler { detail = null }
+                        TimetableScreen(onBack = { detail = null }, subjects = studySubjects)
+                    }
+                    d == "backup" -> {
+                        BackHandler { detail = null }
+                        BackupRoute(onBack = { detail = null })
+                    }
+                    d.startsWith("scan") -> {
+                        val sr = ScanRoute.parse(d)
+                        // Started from a notebook: back leads there again.
+                        val origin = sr.notebookId?.let { NotebookRoute(it).encode() }
+                        BackHandler { detail = origin }
+                        ScanFlow(app.scan, scanner, app.library, sr, onBack = { detail = origin },
+                            onOpen = { nb, page -> detail = NotebookRoute(nb, page).encode() }, onSync = { detail = syncRoute })
+                    }
+                    d.startsWith("book:") -> {
+                        BackHandler { detail = null }
+                        var mark by remember { mutableStateOf<StudyLinkDraft?>(null) }
+                        val br = BookRoute.parse(d)
+                        Box(Modifier.fillMaxSize()) {
+                            // Clippings go into a notebook, and notebooks are not written on the phone.
+                            BookScreen(br.id, onBack = { detail = null }, onClip = { }, onMarkForExam = { mark = it.toDraft() }, startPage = br.page, highlight = br.flash)
+                            BackHandler(enabled = mark != null) { mark = null }
+                            mark?.let { m -> MarkForExamSheet(m, onDone = { mark = null }, onCancel = { mark = null }) }
+                        }
+                    }
+                    d.startsWith("nb:") -> {
+                        val nr = NotebookRoute.parse(d)
+                        val session = remember(nr.id) {
+                            NotebookSession(nr.id, canvas, app.library, app.settings, app.scope, app.handwriting, app.recognizer, nr.page, nr.flash)
+                        }
+                        // A book beside the notebook on an unfolded foldable may have left it narrow.
+                        SideEffect {
+                            if (canvas.layoutParams?.width != FrameLayout.LayoutParams.MATCH_PARENT) canvas.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+                        }
+                        BindCanvas(session, readOnly = true)
+                        PhoneNotebookScreen(session, app.library, onBack = { detail = null },
+                            onScanHere = { after -> detail = ScanRoute(nr.id, after).encode() })
+                        NotebookSheets(session)
+                    }
+                }
+            },
+        )
+    }
+
+    /** Sheets shared from another app go into the scan draft right away, while the grant lasts. */
+    private fun receiveShare(intent: Intent?) {
+        val action = intent?.action
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+        val uris = sharedUris(this, intent)
+        if (uris.isEmpty()) {
+            Toast.makeText(this, "Hier gehen nur Bilder und PDF-Dateien", Toast.LENGTH_LONG).show()
+            return
+        }
+        app.scan.ingest(uris)
+        shares.intValue++
+    }
+
+    /**
      * The tablet's task bar and navigation bar stay hidden (swipe up from the
-     * bottom edge shows them briefly); the status bar with clock stays.
+     * bottom edge shows them briefly); the status bar with clock stays. A
+     * phone keeps its navigation bar, people rely on it there.
      */
     private fun hideTaskBar() {
         WindowCompat.getInsetsController(window, window.decorView).apply {
+            if (isPhone(this@MainActivity)) {
+                systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+                show(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
+                return
+            }
             systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
         }
@@ -361,6 +521,12 @@ class MainActivity : ComponentActivity() {
         if (hasFocus) hideTaskBar()
     }
 
+    /** A foldable opened or closed changes the kind of device. */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        hideTaskBar()
+    }
+
     /**
      * Debug builds only: drive the tool ring from adb, since emulators have
      * no pen side button, e.g.
@@ -368,7 +534,9 @@ class MainActivity : ComponentActivity() {
      */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (!BuildConfig.DEBUG) return
+        setIntent(intent)
+        receiveShare(intent)
+        if (!BuildConfig.DEBUG || canvas.readOnly) return
         val s = session ?: return
         val x = intent.getFloatExtra("x", 0f); val y = intent.getFloatExtra("y", 0f)
         when (intent.getStringExtra("ring")) {
@@ -384,7 +552,7 @@ class MainActivity : ComponentActivity() {
      * the Compose layer lies on top (it would otherwise take them).
      */
     override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
-        if (::canvas.isInitialized && canvas.visibility == View.VISIBLE && ev.pointerCount > 0) {
+        if (::canvas.isInitialized && !canvas.readOnly && canvas.visibility == View.VISIBLE && ev.pointerCount > 0) {
             val t = ev.getToolType(0)
             val loc = IntArray(2).also { canvas.getLocationInWindow(it) }
             // With a book beside the notebook, only hover over the notebook half is ours;
@@ -397,6 +565,17 @@ class MainActivity : ComponentActivity() {
             }
         }
         return super.dispatchGenericMotionEvent(ev)
+    }
+}
+
+/** Where a marked passage of exam material leads. */
+private fun routeOf(link: de.millione.schulranzen.study.data.StudyLink): String {
+    val r = link.rect
+    return when (link.linkKind) {
+        StudyLinkKind.BOOK_PAGE -> BookRoute(link.targetId, link.page,
+            r?.let { android.graphics.RectF(it.x * 1000f, it.y * 1000f, (it.x + it.w) * 1000f, (it.y + it.h) * 1000f) }).encode()
+        StudyLinkKind.NOTEBOOK_PAGE -> NotebookRoute(link.targetId, link.page,
+            r?.let { android.graphics.RectF(it.x * PageGeometry.WIDTH, it.y * PageGeometry.HEIGHT, (it.x + it.w) * PageGeometry.WIDTH, (it.y + it.h) * PageGeometry.HEIGHT) }).encode()
     }
 }
 
