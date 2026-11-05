@@ -6,29 +6,38 @@ Plan und Design im Detail: [PLAN.md](PLAN.md). Regeln für parallele Agenten: [A
 
 Legende: `[x]` erledigt · `[ ]` offen · `[~]` teilweise · **(T)** nur auf dem echten Tablet prüfbar
 
-Letzte Aktualisierung: 29.10.2026, Version **0.4.2**
+Letzte Aktualisierung: 05.11.2026, Version **0.5.0**
 
 
 ---
 
-## In Arbeit: Runde 3 (Ziel 0.5.0, verkaufsfertig), gestartet 05.11.2026
+## Offen: Runde 4 (nach 0.5.0)
 
-Auftrag: Alles prüfen und ausbauen, Lernen als Prüfungsvorbereitung, Handy-Modus (nur lesen, scannen, lernen).
-Sieben Agenten, jeder in `A:
-anzen-agents\<name>` auf `agent/<name>`, Prüfbericht in `docs/audit/<name>.md`:
-- [ ] `lernen`: Heute-Plan, Prüfungsreife, neue Fragearten, Probeprüfung, Fehlerheft, Erinnerungen, Import/Export
-- [ ] `handy`: Handy-Oberfläche, Heft nur lesen, Dokumentenscan ins Heft
-- [ ] `heft`: Heft und Bibliothek prüfen, Seiten verwalten
-- [ ] `sichern`: Zusammenführen auf Seitenebene, Ein-Knopf-Abgleich, Sicherheit
-- [ ] `buecher`: Lesemodus Handy, Bücher und Handschrift prüfen, Stellen direkt ans Lernen
-- [ ] `rechnen`: Jede Formel und Tabelle fachlich prüfen, Übungsaufgaben
-- [ ] `release`: R8, Größe, Einführung, Über-Bildschirm, Update-Funktion (Store-Unterlagen zurückgestellt)
-- [ ] `pwa`: Lern-App als Web-PWA ohne Android (`apps/schulranzen-web`), Inhaltspakete auch für Android
-- [ ] Lerninhalte aus SHK-Fachbuch und Tabellenbuch: **wartet auf dich**, die Bücher wurden nicht gefunden (Speicherort nennen).
-      Buchinhalte nie ins öffentliche Repo. Vor einem Verkauf Rechte beim Verlag klären.
+### Wartet auf dich
+- [ ] **Lerninhalte:** Speicherort von SHK-Fachbuch und Tabellenbuch nennen (auf `A:`, Benutzerordner und NAS nicht gefunden).
+      Daraus entstehen Inhaltspakete für Android und PWA. Buchinhalte nie ins öffentliche Repo; vor Verkauf oder öffentlichem Angebot Rechte beim Verlag klären.
+- [ ] **Unraid-Server aktualisieren** (Befehl unten), sonst meldet „Jetzt abgleichen“: Server zu alt. Empfehlung: danach `REGISTRATION=closed`.
+- [ ] **Erstes Update veröffentlichen:** Freigabe für `tools/release.sh` und GitHub-Release, siehe [UPDATE.md](UPDATE.md). Bis dahin meldet der Update-Knopf HTTP 404. Das Repo ist öffentlich, die APK wäre für alle ladbar.
+- [ ] **PWA hosten:** Wohin? HTTPS ist Pflicht ([README](../../schulranzen-web/README.md)).
+- [ ] **Ausbilder liest gegen:** Liste in [audit/rechnen.md](audit/rechnen.md) (Trinkwasser, Abwasser, Stahl-Schellenabstände, MAG).
+- [ ] **Vor Weitergabe an andere:** rechtliche Prüfung (Minderjährige, Datenschutztext ohne Anbieterangaben, Anthropic-Bedingungen). Entwürfe in `docs/store/`.
 
-Entscheidung des Nutzers (05.11.2026): Erstmal **nicht** in den Play Store. Verteilung als selbst signierte APK,
-mit Update-Funktion in der App (GitHub-Releases, geprüfte Prüfsumme und Signatur; `release` baut sie).
+### Nur auf echter Hardware prüfbar
+- [ ] **Handy:** Dokumentenscanner von ML Kit (im Emulator: „Something went wrong“, weil dort Play-Modul/Kamera fehlen), Teilen an die App aus der Galerie.
+- [ ] **Tablet:** S Pen, Hand-Ablage, Zwei-Finger-Zoom, Handschrift-Modell (Als Text, Kreis-Ausrechnen, Handschriftsuche), neue Stift-Favoriten.
+- [ ] **Abgleich mit zwei echten Geräten und Unraid:** Handy scannt, Tablet schreibt. Mit echtem Docker-Server ungeprüft (nur Flask-Testserver).
+- [ ] **Update von einer Version zur nächsten:** echte Installation, Abweisung fremder Signatur, Rückkehr aus „Unbekannte Apps“.
+- [ ] **Erinnerungen:** Benachrichtigung und Berechtigungsabfrage.
+- [ ] **Claude mit echtem Schlüssel:** Streaming, Antwort bewerten, Fragen aus Text (nur Ablehnung mit ungültigem Schlüssel geprüft).
+- [ ] **PWA auf iPhone/iPad/Safari:** gar nicht geprüft, nur Chrome.
+
+### Bekannte Grenzen
+- Prüfungsreife und Tagesplan beruhen auf plausiblen Schätzwerten, nicht auf echten Prüfungsergebnissen.
+- Lernpfad und Prüfungsseite zeigen nur den ersten Stapel eines Fachs; Plan und Prognose zählen alle.
+- Gelöschte Bücher und Lerndaten kommen beim Abgleich zurück. Buch-Anmerkungen ohne Konfliktkopie.
+- Große Hefte laden beim Öffnen alle Striche. Seite löschen ist endgültig.
+- Buchsuche: „Waerme“ findet nicht „Wärme“. Weitere Grenzen in den Prüfberichten.
+- Texte vereinheitlichen (Anrede, Sicherung/Backup): Liste in [audit/release.md](audit/release.md).
 
 ---
 
@@ -109,6 +118,22 @@ mit Update-Funktion in der App (GitHub-Releases, geprüfte Prüfsumme und Signat
 ---
 
 ## Erledigt
+
+### 0.5.0 – Runde 3: geprüft, ausgebaut, Handy (05.11.2026)
+Acht Agenten, Prüfberichte in [docs/audit/](audit/). Entscheidung: erstmal kein Play Store, Verteilung als APK mit Update-Funktion.
+- **Lernen:** Heute-Plan über alle Prüfungen, Prüfungsreife mit Note und „was fehlt“, Fragearten (Umdrehen, Eintippen, Auswahl, Lücke, Zuordnen, Gemischt), Probeprüfung mit Timer, Nachlernrunde und Verlauf, Fragen aus Text, Fehlerheft, Fokus-Timer, Statistik, Erinnerungen, TSV/CSV, Inhaltspakete, Erklärhilfe mit Streaming (Standard: sparsames Modell). SM-2 und Merge korrigiert.
+- **Handy (kürzeste Seite < 600 dp):** untere Leiste Lernen, Hefte, Bücher, Scannen, Sichern. Hefte und Bücher nur lesen. Scannen mit Prüfen, Umsortieren, Zielheft. Kein SHK.
+- **Heft:** 50 Funde, vor allem Datenverlust und Speicher behoben. Seiten umsortieren/kopieren/verschieben, Hefte duplizieren/zusammenführen/als PDF teilen, Stift-Favoriten, neue Papiere.
+- **Bücher:** 36 Funde. Lesemodus Handy, Bild- und Textkarten aus Buchstellen, Nachtmodus, Weiterlesen.
+- **Sichern:** Zusammenführen pro Seite (Dreiwege, Konfliktkopie, Grabsteine), „Jetzt abgleichen“ mit Teilübertragung, Server API 2, Abgleich per Datei, Wiederherstellung übersteht Prozessende. http nur noch im Heimnetz.
+- **Rechnen:** 108 Einträge fachlich geprüft: 45 richtig, 22 korrigiert, 31 vereinfacht und 10 nicht belegbar (beide als „Richtwert“ markiert). Rechenkern-Fehler behoben, Übungsaufgaben zu allen 36 Formeln, Rohrknicke, T-Stücke.
+- **Release:** APK von rund 100 MB auf 22,3 MB (arm64) dank R8 und ABI-Trennung. Absturzbericht nur lokal, Einführung, Über-Bildschirm mit Lizenzen und Datenschutz, Update-Funktion, CI mit Lint.
+- **PWA** `apps/schulranzen-web`: Lernen im Browser, offline, ohne Konto. In Chrome getestet (174 Tests), nicht auf iOS.
+- **Im Release-Build auf Emulatoren geprüft** (x86_64, R8):
+  - Handy 360 dp: alle Reiter, Bild aus Galerie → Prüfen → neues Heft → Lesen (Strich zeichnet nichts), Paket-Import, Lernsitzung mit allen Fragearten, Prüfung anlegen, Probeprüfung mit Auswertung, Über, Lizenzen, Update-Fehlermeldung, Absturz-Angebot, Erklärhilfe mit ungültigem Schlüssel (saubere Meldung, also läuft das SDK trotz R8).
+  - Tablet: Update von 0.4.2-Daten (Hefte, Bücher blieben), Schreiben und erneut öffnen, SHK, Buch öffnen.
+  - Dabei gefunden und behoben: Absturz bei „Eintippen“ (Regex, die nur auf der JVM gilt), R8-Fehler durch das SDK, rohe `{{c1::…}}` in Antworten, Zurück-Taste im Update-Hinweis.
+  - Nicht durchgespielt: Sichern/Abgleich und Einführung auf dem Tablet, Zuordnen, Fokus-Timer, Statistik, Stundenplan, dunkles Thema.
 
 ### 0.4.2 – Tablet-Rückmeldung
 - Taskleiste/Navigationsleiste des Tablets ausgeblendet (vom unteren Rand wischen zeigt sie kurz) ([Bild](screens/heft-vollbild.png)).

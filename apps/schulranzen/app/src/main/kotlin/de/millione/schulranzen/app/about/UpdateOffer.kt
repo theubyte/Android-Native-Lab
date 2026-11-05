@@ -76,6 +76,10 @@ internal fun UpdateOffer(modifier: Modifier = Modifier) {
         UpdateState.Idle, UpdateState.Checking, UpdateState.UpToDate -> return
         else -> {}
     }
+    // Back answers the notice on top, not the screen under it.
+    androidx.activity.compose.BackHandler {
+        if (s is UpdateState.Downloading) manager.cancelDownload() else manager.dismiss()
+    }
     Box(modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(16.dp), contentAlignment = Alignment.BottomCenter) {
         PaperPanel(Modifier.widthIn(max = 560.dp).fillMaxWidth().heightIn(max = 460.dp)) {
             Column(Modifier.padding(20.dp)) {
