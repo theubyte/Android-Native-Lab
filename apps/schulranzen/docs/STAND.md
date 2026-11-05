@@ -22,13 +22,13 @@ anzen-agents\<name>` auf `agent/<name>`, Prüfbericht in `docs/audit/<name>.md`:
 - [ ] `sichern`: Zusammenführen auf Seitenebene, Ein-Knopf-Abgleich, Sicherheit
 - [ ] `buecher`: Lesemodus Handy, Bücher und Handschrift prüfen, Stellen direkt ans Lernen
 - [ ] `rechnen`: Jede Formel und Tabelle fachlich prüfen, Übungsaufgaben
-- [ ] `release`: R8, Größe, Einführung, Über-Bildschirm, Store-Unterlagen
+- [ ] `release`: R8, Größe, Einführung, Über-Bildschirm (Store-Unterlagen zurückgestellt)
 - [ ] `pwa`: Lern-App als Web-PWA ohne Android (`apps/schulranzen-web`), Inhaltspakete auch für Android
 - [ ] Lerninhalte aus SHK-Fachbuch und Tabellenbuch: **wartet auf dich**, die Bücher wurden nicht gefunden (Speicherort nennen).
       Buchinhalte nie ins öffentliche Repo. Vor einem Verkauf Rechte beim Verlag klären.
 
-Entscheidung Update-Weg: Play Store vorbereiten. Kein eigener Updater, weil Play Selbst-Updates verbietet.
-Die Veröffentlichung selbst macht nur der Nutzer.
+Entscheidung des Nutzers (05.11.2026): Erstmal **nicht** in den Play Store. Verteilung als selbst signierte APK;
+der Update-Weg ist noch offen.
 
 ---
 
