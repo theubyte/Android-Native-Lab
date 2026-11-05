@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -146,15 +147,30 @@ fun TimetableScreen(onBack: () -> Unit, subjects: List<StudySubject> = emptyList
         }
     }) {
         PaperPanel(Modifier.fillMaxSize().padding(bottom = 24.dp), corner = 24.dp) {
-            WeekGrid(
-                periods = periods,
-                lessons = visible,
-                days = settings.days,
-                today = if (showingThisWeek) dow else -1,
-                currentPeriod = currentPeriod,
-                empty = lessons.isEmpty(),
-                onCell = { day, p, l -> sheet = TtSheet.Edit(day, p, l) },
-            )
+            val phone = de.millione.schulranzen.design.rememberIsPhone()
+            var phoneDay by remember { mutableStateOf(dow.coerceAtMost(settings.days)) }
+            Column(Modifier.fillMaxSize()) {
+                if (phone) {
+                    // Five columns of 50 dp hold no subject name: a phone shows one day at a time.
+                    Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 10.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        for (d in 1..settings.days) {
+                            OptionPlate(Fmt.dayShort(d), phoneDay == d, { phoneDay = d }, modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+                Box(Modifier.weight(1f)) {
+                    WeekGrid(
+                        periods = periods,
+                        lessons = visible,
+                        days = settings.days,
+                        today = if (showingThisWeek) dow else -1,
+                        currentPeriod = currentPeriod,
+                        empty = lessons.isEmpty(),
+                        onCell = { day, p, l -> sheet = TtSheet.Edit(day, p, l) },
+                        onlyDay = if (phone) phoneDay.coerceAtMost(settings.days) else null,
+                    )
+                }
+            }
         }
     }
 
@@ -201,12 +217,14 @@ private fun WeekGrid(
     currentPeriod: Int?,
     empty: Boolean,
     onCell: (day: Int, period: PeriodTime, lesson: Lesson?) -> Unit,
+    onlyDay: Int? = null,
 ) {
     val c = Ranzen.colors
     val sorted = periods.sortedBy { it.startMinute }
     val slot = lessons.groupBy { it.day to it.period }.mapValues { it.value.first() }
-    val labelWidth = 92.dp
-    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp)) {
+    val labelWidth = if (onlyDay != null) 74.dp else 92.dp
+    val shownDays: List<Int> = onlyDay?.let { listOf(it) } ?: (1..days).toList()
+    Column(Modifier.fillMaxSize().padding(horizontal = if (onlyDay != null) 10.dp else 20.dp, vertical = if (onlyDay != null) 6.dp else 16.dp)) {
         // Day header with a double rule beneath, like a printed form.
         Row(
             Modifier.fillMaxWidth().height(44.dp).drawBehind {
@@ -217,7 +235,7 @@ private fun WeekGrid(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("STD.", style = Ranzen.type.caption, color = c.inkMuted, modifier = Modifier.width(labelWidth).padding(start = 4.dp))
-            for (d in 1..days) {
+            for (d in shownDays) {
                 Row(Modifier.weight(1f).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (d == today) { Lamp(c.signal, size = 7.dp); Spacer(Modifier.width(8.dp)) }
                     Text(
@@ -234,7 +252,7 @@ private fun WeekGrid(
                 val isNow = p.index == currentPeriod
                 Row(Modifier.fillMaxWidth().height(78.dp)) {
                     PeriodLabel(p, isNow, Modifier.width(labelWidth).fillMaxHeight())
-                    for (d in 1..days) {
+                    for (d in shownDays) {
                         val l = slot[d to p.index]
                         val above = prev?.let { slot[d to it.index] }
                         val next = sorted.getOrNull(i + 1)
@@ -344,6 +362,7 @@ private fun LessonCell(lesson: Lesson?, continues: Boolean, continuesBelow: Bool
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun LessonSheet(
     day: Int,
@@ -392,7 +411,7 @@ private fun LessonSheet(
     if (abWeeks) {
         Spacer(Modifier.height(18.dp))
         FieldLabel("Wochen")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OptionPlate("Jede Woche", cycle == WeekCycle.EVERY, { cycle = WeekCycle.EVERY })
             OptionPlate("Nur A-Woche", cycle == WeekCycle.A, { cycle = WeekCycle.A })
             OptionPlate("Nur B-Woche", cycle == WeekCycle.B, { cycle = WeekCycle.B })
@@ -478,10 +497,10 @@ private fun TimesSheet(periods: List<PeriodTime>, onCancel: () -> Unit, onSave: 
             (i > 0 && parsed[i - 1].second != null && parsed[i].first != null && parsed[i - 1].second!! > parsed[i].first!!)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("${i + 1}.", style = Ranzen.type.mono, color = if (bad) c.signal else c.inkMuted, modifier = Modifier.width(36.dp))
-            Box(Modifier.width(110.dp)) { LineField(a, { rows[i] = it to rows[i].second }, "07:45", style = Ranzen.type.mono) }
-            Text("–", style = Ranzen.type.mono, color = c.inkMuted, modifier = Modifier.padding(horizontal = 14.dp))
-            Box(Modifier.width(110.dp)) { LineField(b, { rows[i] = rows[i].first to it }, "08:30", style = Ranzen.type.mono) }
-            Spacer(Modifier.weight(1f))
+            Box(Modifier.weight(1f).widthIn(max = 110.dp)) { LineField(a, { rows[i] = it to rows[i].second }, "07:45", style = Ranzen.type.mono) }
+            Text("–", style = Ranzen.type.mono, color = c.inkMuted, modifier = Modifier.padding(horizontal = 8.dp))
+            Box(Modifier.weight(1f).widthIn(max = 110.dp)) { LineField(b, { rows[i] = rows[i].first to it }, "08:30", style = Ranzen.type.mono) }
+            Spacer(Modifier.weight(0.3f))
             if (i == rows.lastIndex && rows.size > 1) {
                 Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).clickable { rows.removeAt(i) }, contentAlignment = Alignment.Center) {
                     RanzenIcon(RanzenIcons.Close, tint = c.inkMuted, size = 18.dp)

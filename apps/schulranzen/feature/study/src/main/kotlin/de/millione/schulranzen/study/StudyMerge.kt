@@ -20,9 +20,12 @@ import java.io.File
  * - deck: name; exam: subject + date + kind; lesson: day + period + cycle
  * - card: deck + front text + front picture. The card that was reviewed
  *   later (then: more often) keeps its schedule.
- * - review, mock run: their parent + time stamp; marked place: target + page + label
+ * - review, mock run: their parent + time stamp; marked place: page id + label, else target + page + label
+ * - mock answer: comes along with a mock run that is new here; focus log: time stamp
+ * - setting: taken only where this device has none (A/B weeks, daily plan)
  *
- * Nothing is deleted: what exists only here stays.
+ * Nothing is deleted: what exists only here stays. Backups from older versions lack
+ * newer tables and columns; both are simply skipped.
  */
 class StudyMergeParticipant(private val context: Context) : MergeParticipant {
     override val name = "Lernen"
@@ -32,10 +35,14 @@ class StudyMergeParticipant(private val context: Context) : MergeParticipant {
         if (!file.exists()) return@withContext MergeReport(name, warnings = listOf("Keine Lerndaten im Backup"))
         val remote = SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READWRITE)
         val local = StudyDatabase.get(context).openHelper.writableDatabase
+        columns.clear()
         var added = 0; var updated = 0; var kept = 0
         try {
             local.beginTransaction()
             try {
+                if (remote.hasTable("setting")) remote.rows("SELECT * FROM setting").forEach { r ->
+                    if (local.count("SELECT COUNT(*) FROM setting WHERE key = ?", r["key"]) == 0) { local.insertRow("setting", r); added++ }
+                }
                 // Decks and exams first: cards, links and mock runs point at them.
                 val deckIds = mapRows(remote, local, "deck", key = { it.str("name").lowercase() }) { added++ }
                 val examIds = mapRows(remote, local, "exam", key = { "${it.str("subject").lowercase()}|${it["dateEpochDay"]}|${it["kind"]}" }) { added++ }
@@ -68,15 +75,30 @@ class StudyMergeParticipant(private val context: Context) : MergeParticipant {
                     val card = cardIds[r["cardId"] as Long] ?: continue
                     if (local.count("SELECT COUNT(*) FROM review WHERE cardId = ? AND at = ?", card, r["at"]) == 0) local.insertRow("review", r.without("id") + ("cardId" to card))
                 }
-                for (r in remote.rows("SELECT * FROM study_link")) {
+                if (remote.hasTable("study_link")) for (r in remote.rows("SELECT * FROM study_link")) {
                     val exam = (r["examId"] as? Long)?.let { examIds[it] }
-                    val same = local.rows("SELECT * FROM study_link WHERE kind = ? AND targetId = ? AND page = ? AND label = ?", r["kind"], r["targetId"], r["page"], r["label"]).firstOrNull()
+                    // A page that moved keeps its pageId, so that matches before the place does.
+                    val samePage = (r["pageId"] as? String)?.let { local.rows("SELECT * FROM study_link WHERE pageId = ? AND label = ?", it, r["label"]).firstOrNull() }
+                    val same = samePage ?: local.rows("SELECT * FROM study_link WHERE kind = ? AND targetId = ? AND page = ? AND label = ?", r["kind"], r["targetId"], r["page"], r["label"]).firstOrNull()
+                    if (same != null && same["pageId"] == null && r["pageId"] != null) {
+                        local.update("study_link", SQLiteDatabase.CONFLICT_NONE, values(r.pick("pageId")), "id = ?", arrayOf(same["id"]))
+                    }
                     if (same == null) { local.insertRow("study_link", r.without("id") + ("examId" to exam)); added++ }
                     else if (same["doneAt"] == null && r["doneAt"] != null) { local.update("study_link", SQLiteDatabase.CONFLICT_NONE, values(r.pick("doneAt")), "id = ?", arrayOf(same["id"])); updated++ }
                 }
-                for (r in remote.rows("SELECT * FROM mock_run")) {
+                if (remote.hasTable("mock_run")) for (r in remote.rows("SELECT * FROM mock_run")) {
                     val exam = examIds[r["examId"] as Long] ?: continue
-                    if (local.count("SELECT COUNT(*) FROM mock_run WHERE examId = ? AND at = ?", exam, r["at"]) == 0) local.insertRow("mock_run", r.without("id") + ("examId" to exam))
+                    if (local.count("SELECT COUNT(*) FROM mock_run WHERE examId = ? AND at = ?", exam, r["at"]) > 0) continue
+                    val run = local.insertRow("mock_run", r.without("id") + ("examId" to exam))
+                    if (remote.hasTable("mock_answer")) {
+                        for (a in remote.rows("SELECT * FROM mock_answer WHERE runId = ?", r["id"])) {
+                            local.insertRow("mock_answer", a.without("id") + ("runId" to run) + ("cardId" to (a["cardId"] as? Long)?.let { cardIds[it] }))
+                        }
+                    }
+                    added++
+                }
+                if (remote.hasTable("focus_session")) for (r in remote.rows("SELECT * FROM focus_session")) {
+                    if (local.count("SELECT COUNT(*) FROM focus_session WHERE at = ?", r["at"]) == 0) { local.insertRow("focus_session", r.without("id")); added++ }
                 }
                 local.setTransactionSuccessful()
             } finally {
@@ -85,6 +107,8 @@ class StudyMergeParticipant(private val context: Context) : MergeParticipant {
         } finally {
             remote.close()
         }
+        // These writes bypassed Room; open screens should see them.
+        StudyDatabase.get(context).invalidationTracker.refreshAsync()
         MergeReport(name, added = added, updated = updated, kept = kept)
     }
 
@@ -109,7 +133,7 @@ class StudyMergeParticipant(private val context: Context) : MergeParticipant {
     }
 
     private fun copyIn(src: File, dst: File, dir: File) {
-        if (!src.exists() || dst.exists() || !dst.canonicalPath.startsWith(dir.parentFile!!.canonicalPath)) return
+        if (!src.exists() || dst.exists() || !dst.canonicalPath.startsWith(dir.parentFile!!.canonicalPath + File.separator)) return
         dst.parentFile?.mkdirs()
         val tmp = File(dst.parentFile, dst.name + ".tmp")
         src.copyTo(tmp, overwrite = true)
@@ -136,8 +160,16 @@ private fun SupportSQLiteDatabase.rows(sql: String, vararg args: Any?): List<Map
 private fun SupportSQLiteDatabase.count(sql: String, vararg args: Any?): Int =
     query(sql, args).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
 
-private fun SupportSQLiteDatabase.insertRow(table: String, row: Map<String, Any?>): Long =
-    insert(table, SQLiteDatabase.CONFLICT_IGNORE, values(row))
+private val columns = HashMap<String, Set<String>>()
+
+/** A backup from a newer version may carry columns this one does not have. */
+private fun SupportSQLiteDatabase.insertRow(table: String, row: Map<String, Any?>): Long {
+    val known = columns.getOrPut(table) { query("PRAGMA table_info($table)").use { c -> buildSet { while (c.moveToNext()) add(c.getString(1)) } } }
+    return insert(table, SQLiteDatabase.CONFLICT_IGNORE, values(row.filterKeys { it in known }))
+}
+
+private fun SQLiteDatabase.hasTable(name: String): Boolean =
+    rawQuery("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", arrayOf(name)).use { it.moveToFirst() }
 
 private fun values(row: Map<String, Any?>) = ContentValues().apply {
     row.forEach { (k, v) ->

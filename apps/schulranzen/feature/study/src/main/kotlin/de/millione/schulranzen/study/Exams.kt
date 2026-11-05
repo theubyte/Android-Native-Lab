@@ -57,6 +57,7 @@ import de.millione.schulranzen.study.ui.OptionPlate
 import de.millione.schulranzen.study.ui.SectionHead
 import de.millione.schulranzen.study.ui.SheetActions
 import de.millione.schulranzen.study.ui.SubjectPicker
+import de.millione.schulranzen.study.ui.panelPad
 import java.time.LocalDate
 import java.util.Locale
 
@@ -132,6 +133,8 @@ internal fun ExamDetail(
     onOpenLink: (StudyLink) -> Unit = {},
     onPathAction: (StageKind) -> Unit = {},
     onSuggest: () -> Unit = {},
+    readiness: de.millione.schulranzen.core.study.Readiness? = null,
+    onMock: () -> Unit = {},
 ) {
     val c = Ranzen.colors
     val date = LocalDate.ofEpochDay(exam.dateEpochDay)
@@ -140,7 +143,7 @@ internal fun ExamDetail(
 
     val left: @Composable () -> Unit = {
         PaperPanel(Modifier.fillMaxWidth(), corner = 22.dp) {
-            Column(Modifier.padding(26.dp)) {
+            Column(Modifier.padding(panelPad)) {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Counter(if (days >= 0) "%02d".format(days) else "--", if (days == 1L) "Tag bis zur Prüfung" else "Tage bis zur Prüfung", accent = if (days in 0..3) c.signal else null)
                     Spacer(Modifier.width(24.dp))
@@ -168,7 +171,11 @@ internal fun ExamDetail(
     }
     val right: @Composable () -> Unit = {
         PaperPanel(Modifier.fillMaxWidth(), corner = 22.dp) {
-            Column(Modifier.padding(26.dp)) {
+            Column(Modifier.padding(panelPad)) {
+                if (readiness != null && days >= 0) {
+                    ReadinessSection(readiness, onMock)
+                    Spacer(Modifier.height(24.dp))
+                }
                 if (path != null && days >= 0) {
                     PathSection(path, onPathAction)
                     Spacer(Modifier.height(24.dp))

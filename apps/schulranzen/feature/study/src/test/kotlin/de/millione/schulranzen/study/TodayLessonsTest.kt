@@ -28,6 +28,13 @@ class TodayLessonsTest {
         assertEquals(2, StudyRepository.lessonsOn(thursday, all, periods, TimetableSettings()).size)
     }
 
+    @Test fun `saturday lessons stay hidden when saturday is switched off`() {
+        val saturday = LocalDate.of(2026, 10, 31)
+        val all = listOf(lesson(6, 1, "Werkstatt"))
+        assertEquals(emptyList(), StudyRepository.lessonsOn(saturday, all, periods, TimetableSettings()).map { it.lesson.subject })
+        assertEquals(listOf("Werkstatt"), StudyRepository.lessonsOn(saturday, all, periods, TimetableSettings(saturday = true)).map { it.lesson.subject })
+    }
+
     @Test fun `double lessons merge into one block`() {
         val all = listOf(lesson(4, 1, "LF 3", room = "W1"), lesson(4, 2, "LF 3", room = "W1"), lesson(4, 3, "LF 3", room = "B2"), lesson(4, 5, "Mathe"))
         val blocks = blocksOf(StudyRepository.lessonsOn(thursday, all, periods, TimetableSettings()))

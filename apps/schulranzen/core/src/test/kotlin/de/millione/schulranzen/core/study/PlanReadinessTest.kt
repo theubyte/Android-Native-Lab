@@ -325,6 +325,13 @@ class FocusTimerTest {
         assertEquals(5, FocusTimer.at(plan, end + 15 * 60).block)
     }
 
+    @Test fun `sitting ends after the last block without the last break`() {
+        assertFalse(FocusTimer.finished(plan, 2, 25 * 60L))
+        assertFalse(FocusTimer.finished(plan, 2, 54 * 60L))
+        assertTrue(FocusTimer.finished(plan, 2, 55 * 60L))
+        assertTrue(FocusTimer.finished(plan, 1, 25 * 60L))
+    }
+
     @Test fun `negative time is the start and no break plans work`() {
         assertEquals(1, FocusTimer.at(plan, -5).block)
         assertEquals(2, FocusTimer.at(FocusPlan(25, 0, 0, 4), 25 * 60L).block)

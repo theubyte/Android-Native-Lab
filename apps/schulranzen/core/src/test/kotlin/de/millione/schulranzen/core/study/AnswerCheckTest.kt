@@ -317,3 +317,21 @@ class TextQuestionsTest {
 
     @Test fun `nothing from nothing`() = assertTrue(TextQuestions.fromText(" \n ").isEmpty())
 }
+
+class PlainCardTest {
+    @Test fun `first line in front the rest behind`() {
+        val c = assertNotNull(CardSuggester.plainCard("Bild 3\nGaspolster\nMembran"))
+        assertEquals("Bild 3", c.front)
+        assertEquals("Gaspolster\nMembran", c.back)
+    }
+
+    @Test fun `sentences split and one sentence stays whole behind`() {
+        assertEquals("Erster Satz hier.", CardSuggester.plainCard("Erster Satz hier. Zweiter Satz da.")?.front)
+        val one = assertNotNull(CardSuggester.plainCard("eins zwei drei vier fünf sechs sieben acht"))
+        assertEquals("eins zwei drei vier fünf sechs …", one.front)
+        assertEquals("eins zwei drei vier fünf sechs sieben acht", one.back)
+        assertEquals("kurz", CardSuggester.plainCard("kurz")?.front)
+    }
+
+    @Test fun `nothing from nothing`() = assertNull(CardSuggester.plainCard("  \n "))
+}

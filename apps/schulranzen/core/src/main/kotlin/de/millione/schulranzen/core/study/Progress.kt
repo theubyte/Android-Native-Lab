@@ -78,6 +78,12 @@ object FocusTimer {
         }
     }
 
+    /** The sitting is over once the last of [blocks] focus blocks has run. */
+    fun finished(plan: FocusPlan, blocks: Int, elapsedSeconds: Long): Boolean {
+        val s = at(plan, elapsedSeconds)
+        return s.block > blocks || (s.block == blocks && s.inBreak)
+    }
+
     /** Seconds from now until the current phase ends, for a notification. */
     fun secondsToPhaseEnd(plan: FocusPlan, elapsedSeconds: Long): Int = at(plan, elapsedSeconds).secondsLeft
 }

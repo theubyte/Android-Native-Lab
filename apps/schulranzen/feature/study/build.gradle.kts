@@ -8,7 +8,10 @@ plugins {
 android {
     namespace = "de.millione.schulranzen.study"
     compileSdk = 36
-    defaultConfig { minSdk = 26 }
+    defaultConfig {
+        minSdk = 26
+        consumerProguardFiles("consumer-rules.pro")
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -28,6 +31,14 @@ dependencies {
     implementation(libs.serialization.json)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
+    // Reminders survive restarts of the app and the device.
+    implementation("androidx.work:work-runtime-ktx:2.11.0")
+    // The explanation helper; only touched once the learner has entered a key.
+    // Apache HttpComponents only serves the SDK's file uploads, unused here; it also clashes in packaging.
+    implementation("com.anthropic:anthropic-java:2.34.0") {
+        exclude(group = "org.apache.httpcomponents.client5")
+        exclude(group = "org.apache.httpcomponents.core5")
+    }
     ksp(libs.room.compiler)
     testImplementation(libs.junit)
     testImplementation(kotlin("test"))

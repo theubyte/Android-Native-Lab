@@ -76,6 +76,30 @@ fun TodayStrip(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
     val minute = rememberMinuteOfDay()
     val c = Ranzen.colors
 
+    if (de.millione.schulranzen.design.rememberIsPhone()) {
+        // Too narrow for lessons and exam side by side.
+        PaperPanel(modifier, corner = 20.dp) {
+            Column(
+                Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).padding(horizontal = 14.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    "HEUTE · " + Fmt.dayShort(today.dayOfWeek.value).uppercase(Locale.GERMANY) + " " + today.format(Fmt.shortDate),
+                    style = Ranzen.type.caption, color = c.inkMuted,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val blocks = blocksOf(slots)
+                    if (blocks.isEmpty()) Text("Kein Unterricht eingetragen", style = Ranzen.type.body, color = c.inkMuted)
+                    blocks.forEach { b -> LessonTicket(b, minute) }
+                }
+                exams.firstOrNull()?.let { e ->
+                    Spacer(Modifier.height(8.dp))
+                    ExamTicket(e, today, next?.takeIf { it.first.id == e.id }?.second)
+                }
+            }
+        }
+        return
+    }
     PaperPanel(modifier, corner = 20.dp) {
         Row(
             Modifier.fillMaxWidth().heightIn(min = 76.dp)

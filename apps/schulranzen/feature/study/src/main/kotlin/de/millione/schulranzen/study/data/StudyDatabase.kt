@@ -2,6 +2,7 @@ package de.millione.schulranzen.study.data
 
 import android.content.Context
 import androidx.room.AutoMigration
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Delete
@@ -149,6 +150,12 @@ data class StudyLink(
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val doneAt: Long? = null,
+    /**
+     * Stable id of a notebook page. Pages can be reordered and moved to other notebooks,
+     * so [page] alone can point at the wrong one. Null for books and for links made
+     * before this existed; those fall back to [page].
+     */
+    val pageId: String? = null,
 ) {
     val linkKind: de.millione.schulranzen.study.StudyLinkKind get() = de.millione.schulranzen.study.StudyLinkKind.of(kind)
 
@@ -173,7 +180,56 @@ data class MockRun(
     val grade: Int,
     /** Weak topics, one per line, weakest first. */
     val weakTopics: String = "",
+    /** Time really used; 0 in runs from before this was recorded. */
+    @ColumnInfo(defaultValue = "0") val seconds: Int = 0,
+    /** Time allowed; null means without a limit. */
+    val limitSeconds: Int? = null,
 )
+
+/**
+ * One question of a finished mock exam, kept as it was asked: the card may change
+ * or go later, the history of the run should not. [cardId] finds the card again
+ * for a relearning round and for the error list.
+ */
+@Entity(
+    tableName = "mock_answer",
+    foreignKeys = [
+        ForeignKey(MockRun::class, ["id"], ["runId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(Card::class, ["id"], ["cardId"], onDelete = ForeignKey.SET_NULL),
+    ],
+    indices = [Index("runId"), Index("cardId")],
+)
+data class MockAnswerRow(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val runId: Long,
+    val cardId: Long?,
+    val position: Int,
+    val topic: String,
+    /** Name of a [de.millione.schulranzen.core.study.QuestionType]. */
+    val type: String,
+    val question: String,
+    val solution: String,
+    val given: String,
+    /** Name of a [de.millione.schulranzen.core.study.SelfGrade]. */
+    val grade: String,
+)
+
+/** Focus time of one sitting, for the statistics. */
+@Entity(tableName = "focus_session", indices = [Index("epochDay")])
+data class FocusSession(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val at: Long = System.currentTimeMillis(),
+    val epochDay: Long,
+    val minutes: Int,
+)
+
+/** One line of the answer log. */
+data class ReviewLogRow(val cardId: Long, val deckId: Long, val epochDay: Long, val at: Long, val rating: Int)
+
+/** A mock answer in the log; [at] is the time of its run. */
+data class MockLogRow(val cardId: Long, val epochDay: Long, val at: Long, val grade: String)
+
+data class DayMinutes(val epochDay: Long, val minutes: Int)
 
 /** Card counts of one deck for the learning path. */
 data class DeckProgress(val total: Int, val seen: Int, val solid: Int, val due: Int)
@@ -341,12 +397,78 @@ internal interface StudyDao {
     @Update
     suspend fun updateLink(l: StudyLink)
 
+    @Query("UPDATE study_link SET targetId = :targetId, page = :page WHERE id = :id")
+    suspend fun relocateLink(id: Long, targetId: String, page: Int)
+
     @Query("DELETE FROM study_link WHERE id = :id")
     suspend fun deleteLink(id: Long)
 
     // Mock exams
     @Insert
     suspend fun insertMockRun(r: MockRun): Long
+
+    @Insert
+    suspend fun insertMockAnswers(a: List<MockAnswerRow>)
+
+    @Query("SELECT * FROM mock_answer WHERE runId = :runId ORDER BY position")
+    suspend fun mockAnswers(runId: Long): List<MockAnswerRow>
+
+    @Query("SELECT * FROM mock_run ORDER BY at DESC")
+    fun allMockRuns(): Flow<List<MockRun>>
+
+    // Logs for plan, error list and statistics
+    @Query("SELECT r.cardId AS cardId, c.deckId AS deckId, r.epochDay AS epochDay, r.at AS at, r.rating AS rating FROM review r JOIN card c ON c.id = r.cardId")
+    fun reviewLog(): Flow<List<ReviewLogRow>>
+
+    @Query("SELECT a.cardId AS cardId, 0 AS epochDay, m.at AS at, a.grade AS grade FROM mock_answer a JOIN mock_run m ON m.id = a.runId WHERE a.cardId IS NOT NULL")
+    fun mockLog(): Flow<List<MockLogRow>>
+
+    @Query("SELECT * FROM card")
+    fun allCards(): Flow<List<Card>>
+
+    @Query("SELECT * FROM card WHERE id IN (:ids)")
+    suspend fun cardsById(ids: List<Long>): List<Card>
+
+    @Query("SELECT front FROM card WHERE deckId = :deckId")
+    suspend fun frontsOf(deckId: Long): List<String>
+
+    @Query("SELECT * FROM card WHERE deckId = :deckId ORDER BY createdAt")
+    suspend fun cardsOfDeck(deckId: Long): List<Card>
+
+    @Query(
+        """SELECT d.id, d.name, d.colorIndex, d.subjectId,
+           COUNT(c.id) AS total,
+           COALESCE(SUM(CASE WHEN c.dueEpochDay <= :today THEN 1 ELSE 0 END), 0) AS due,
+           COALESCE(SUM(CASE WHEN c.lastReviewEpochDay IS NULL THEN 1 ELSE 0 END), 0) AS fresh
+           FROM deck d LEFT JOIN card c ON c.deckId = d.id
+           GROUP BY d.id ORDER BY d.name COLLATE NOCASE"""
+    )
+    suspend fun deckCountsNow(today: Long): List<DeckCounts>
+
+    @Query("SELECT COUNT(*) FROM card WHERE dueEpochDay <= :today AND lastReviewEpochDay IS NOT NULL")
+    suspend fun dueReviewsNow(today: Long): Int
+
+    @Query("SELECT COUNT(*) FROM card WHERE lastReviewEpochDay IS NULL")
+    suspend fun freshNow(): Int
+
+    @Query("SELECT COUNT(*) FROM review WHERE epochDay = :day")
+    suspend fun reviewsOnNow(day: Long): Int
+
+    @Query("SELECT * FROM exam WHERE dateEpochDay >= :today ORDER BY dateEpochDay, id")
+    suspend fun examsFromNow(today: Long): List<Exam>
+
+    @Query("SELECT * FROM study_link WHERE examId = :examId ORDER BY createdAt")
+    suspend fun linksNow(examId: Long): List<StudyLink>
+
+    @Query("SELECT * FROM mock_run WHERE examId = :examId ORDER BY at DESC")
+    suspend fun mockRunsNow(examId: Long): List<MockRun>
+
+    // Focus
+    @Insert
+    suspend fun insertFocus(f: FocusSession): Long
+
+    @Query("SELECT epochDay, SUM(minutes) AS minutes FROM focus_session GROUP BY epochDay")
+    fun focusByDay(): Flow<List<DayMinutes>>
 
     @Query("SELECT * FROM mock_run WHERE examId = :examId ORDER BY at DESC")
     fun mockRuns(examId: Long): Flow<List<MockRun>>
@@ -355,12 +477,13 @@ internal interface StudyDao {
 @Database(
     entities = [
         PeriodRow::class, Lesson::class, SettingRow::class, Exam::class, Deck::class, Card::class, Review::class,
-        StudyLink::class, MockRun::class,
+        StudyLink::class, MockRun::class, MockAnswerRow::class, FocusSession::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
     // 1 → 2 only adds the tables for exam links and mock exams.
-    autoMigrations = [AutoMigration(from = 1, to = 2)],
+    // 2 → 3 only adds the mock answers, the focus log, two columns on mock_run and pageId on study_link.
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
 )
 internal abstract class StudyDatabase : RoomDatabase() {
     abstract fun dao(): StudyDao

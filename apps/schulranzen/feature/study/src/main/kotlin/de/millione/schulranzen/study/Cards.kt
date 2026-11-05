@@ -127,7 +127,7 @@ internal fun DeckRow(deck: DeckCounts, onOpen: () -> Unit, onStudy: () -> Unit) 
                     Text("%d fällig".format(deck.due), style = Ranzen.type.mono, color = c.ink)
                 }
             }
-        } else {
+        } else if (deck.total > 0) {
             Text("erledigt", style = Ranzen.type.mono, color = c.inkFaint, modifier = Modifier.padding(horizontal = 12.dp))
         }
     }
@@ -139,7 +139,7 @@ internal fun DeckCards(cards: List<Card>, accent: Color, today: LocalDate, onEdi
     val c = Ranzen.colors
     PaperPanel(Modifier.fillMaxSize().padding(bottom = 24.dp), corner = 24.dp) {
         if (cards.isEmpty()) {
-            Column(Modifier.fillMaxSize().padding(40.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Column(Modifier.fillMaxSize().padding(if (de.millione.schulranzen.design.rememberIsPhone()) 18.dp else 40.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Text("Noch keine Karten", style = Ranzen.type.title, color = c.ink)
                 Spacer(Modifier.height(8.dp))
                 EmptyNote("Vorne die Frage, hinten die Antwort. Kurz und eindeutig lernt es sich am besten.")
@@ -148,8 +148,8 @@ internal fun DeckCards(cards: List<Card>, accent: Color, today: LocalDate, onEdi
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(280.dp),
-                contentPadding = PaddingValues(24.dp),
+                columns = GridCells.Adaptive(260.dp),
+                contentPadding = PaddingValues(if (de.millione.schulranzen.design.rememberIsPhone()) 12.dp else 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(20.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 modifier = Modifier.fillMaxSize(),
@@ -315,98 +315,6 @@ internal fun DeckSheet(deck: DeckCounts?, known: List<StudySubject>, onCancel: (
     )
 }
 
-/**
- * Learning mode: one card at a time, tap to turn it over, then rate.
- * "Nochmal" puts the card at the end of today's round. The queue is read
- * once at the start so the order stays calm while answers are saved.
- */
-@Composable
-internal fun ReviewSession(
-    repo: StudyRepository,
-    deckId: Long?,
-    onDone: () -> Unit,
-    onProgress: (done: Int, left: Int, canUndo: Boolean) -> Unit,
-    undoSignal: Int,
-    onExplain: ((Card) -> Unit)? = null,
-) {
-    val c = Ranzen.colors
-    val scope = rememberCoroutineScope()
-    val queue = remember { mutableStateListOf<Card>() }
-    var loaded by remember { mutableStateOf(false) }
-    var flipped by remember { mutableStateOf(false) }
-    var done by remember { mutableIntStateOf(0) }
-    var again by remember { mutableIntStateOf(0) }
-    val history = remember { mutableStateListOf<Pair<StudyRepository.Undo, Boolean>>() }
-    var preview by remember { mutableStateOf<Map<Rating, Int>>(emptyMap()) }
-    var zoom by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(deckId) {
-        queue.clear(); queue.addAll(repo.studyQueue(deckId)); loaded = true
-    }
-    val card = queue.firstOrNull()
-    LaunchedEffect(card?.id, card?.reps, card?.dueEpochDay) { preview = card?.let { repo.preview(it) } ?: emptyMap() }
-    LaunchedEffect(done, queue.size, history.size) { onProgress(done, queue.size, history.isNotEmpty()) }
-    // Undo is triggered from the header key.
-    LaunchedEffect(undoSignal) {
-        if (undoSignal == 0) return@LaunchedEffect
-        val (token, wasAgain) = history.removeLastOrNull() ?: return@LaunchedEffect
-        repo.undo(token)
-        if (wasAgain) { queue.removeAll { it.id == token.before.id }; again-- }
-        queue.add(0, token.before)
-        done--
-        flipped = false
-    }
-
-    var busy by remember { mutableStateOf(false) }
-    fun rate(r: Rating) {
-        val current = card ?: return
-        // One answer per card, even if a key is tapped twice quickly.
-        if (busy) return
-        busy = true
-        scope.launch {
-            try {
-                val token = repo.rate(current, r)
-                queue.removeAt(0)
-                if (r == Rating.AGAIN) { queue.add(token.after); again++ }
-                history.add(token to (r == Rating.AGAIN))
-                done++
-                flipped = false
-            } finally {
-                busy = false
-            }
-        }
-    }
-
-    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-        if (!loaded) return@Column
-        if (card == null) {
-            Finished(done, again, onDone)
-            return@Column
-        }
-        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            key(card.id, done) { FlipCard(card, flipped, onFlip = { flipped = !flipped }, onZoom = { zoom = it }) }
-        }
-        if (flipped && onExplain != null) {
-            QuietButton("Erklären lassen", { onExplain(card) }, color = c.ink)
-        }
-        Spacer(Modifier.height(20.dp))
-        Box(Modifier.widthIn(max = 820.dp).fillMaxWidth().height(84.dp), contentAlignment = Alignment.Center) {
-            if (!flipped) {
-                SignalButton("Antwort zeigen", { flipped = true }, icon = StudyIcons.Flip)
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    RatingKey("Nochmal", preview[Rating.AGAIN], SubjectPalette.of(1), Modifier.weight(1f)) { rate(Rating.AGAIN) }
-                    RatingKey("Schwer", preview[Rating.HARD], SubjectPalette.of(2), Modifier.weight(1f)) { rate(Rating.HARD) }
-                    RatingKey("Gut", preview[Rating.GOOD], SubjectPalette.of(3), Modifier.weight(1f)) { rate(Rating.GOOD) }
-                    RatingKey("Leicht", preview[Rating.EASY], SubjectPalette.of(0), Modifier.weight(1f)) { rate(Rating.EASY) }
-                }
-            }
-        }
-        Spacer(Modifier.height(24.dp))
-    }
-    zoom?.let { ImageZoom(it) { zoom = null } }
-}
-
 /** A card picture over the whole screen; tap or back closes it. */
 @Composable
 internal fun ImageZoom(image: String, onClose: () -> Unit) {
@@ -419,15 +327,17 @@ internal fun ImageZoom(image: String, onClose: () -> Unit) {
 }
 
 @Composable
-private fun FlipCard(card: Card, flipped: Boolean, onFlip: () -> Unit, onZoom: (String) -> Unit) {
+internal fun FlipCard(card: Card, flipped: Boolean, onFlip: () -> Unit, onZoom: (String) -> Unit) {
     val c = Ranzen.colors
     val rotation by animateFloatAsState(if (flipped) 180f else 0f, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow), label = "flip")
     val showBack = rotation > 90f
     val shape = RoundedCornerShape(14.dp)
     val hasPicture = card.frontImage != null || card.backImage != null
+    val phone = de.millione.schulranzen.design.rememberIsPhone()
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         // Cards with pictures use the whole space: a picture is only worth it when it is big.
-        val cardModifier = if (hasPicture) Modifier.widthIn(max = 1100.dp).fillMaxWidth().fillMaxHeight()
+        // A phone in portrait is taller than wide; a landscape card would leave half of it empty.
+        val cardModifier = if (hasPicture || phone) Modifier.widthIn(max = 1100.dp).fillMaxWidth().fillMaxHeight()
         else Modifier.widthIn(max = 820.dp).fillMaxWidth().aspectRatio(1.65f)
         Box(
             cardModifier
@@ -439,8 +349,8 @@ private fun FlipCard(card: Card, flipped: Boolean, onFlip: () -> Unit, onZoom: (
             Box(
                 Modifier.fillMaxSize()
                     .graphicsLayer { if (showBack) rotationY = 180f }
-                    .indexCard(if (showBack) SubjectPalette.of(3) else c.signal, c.line.copy(alpha = 0.55f), headline = 64f)
-                    .padding(horizontal = 36.dp, vertical = 20.dp),
+                    .indexCard(if (showBack) SubjectPalette.of(3) else c.signal, c.line.copy(alpha = 0.55f), headline = if (phone) 48f else 64f)
+                    .padding(horizontal = if (phone) 16.dp else 36.dp, vertical = if (phone) 10.dp else 20.dp),
             ) {
                 Column(Modifier.fillMaxSize()) {
                     Row(Modifier.height(32.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -453,7 +363,7 @@ private fun FlipCard(card: Card, flipped: Boolean, onFlip: () -> Unit, onZoom: (
                             )
                         }
                     }
-                    Spacer(Modifier.height(18.dp))
+                    Spacer(Modifier.height(if (phone) 10.dp else 18.dp))
                     val pic = if (showBack) card.backImage else card.frontImage
                     if (pic != null) {
                         // Text above, the picture takes the rest at full sharpness.
@@ -485,8 +395,20 @@ private fun FlipCard(card: Card, flipped: Boolean, onFlip: () -> Unit, onZoom: (
     }
 }
 
+/** The four answers. On a phone they sit in one row at thumb height; [suggested] gets a ring. */
 @Composable
-private fun RatingKey(label: String, days: Int?, accent: Color, modifier: Modifier, onClick: () -> Unit) {
+internal fun RatingRow(preview: Map<Rating, Int>, suggested: Rating?, onRate: (Rating) -> Unit) {
+    val phone = de.millione.schulranzen.design.rememberIsPhone()
+    Row(Modifier.widthIn(max = 820.dp).fillMaxWidth().height(if (phone) 76.dp else 84.dp), horizontalArrangement = Arrangement.spacedBy(if (phone) 6.dp else 14.dp)) {
+        RatingKey("Nochmal", preview[Rating.AGAIN], SubjectPalette.of(1), Modifier.weight(1f), suggested == Rating.AGAIN) { onRate(Rating.AGAIN) }
+        RatingKey("Schwer", preview[Rating.HARD], SubjectPalette.of(2), Modifier.weight(1f), suggested == Rating.HARD) { onRate(Rating.HARD) }
+        RatingKey("Gut", preview[Rating.GOOD], SubjectPalette.of(3), Modifier.weight(1f), suggested == Rating.GOOD) { onRate(Rating.GOOD) }
+        RatingKey("Leicht", preview[Rating.EASY], SubjectPalette.of(0), Modifier.weight(1f), suggested == Rating.EASY) { onRate(Rating.EASY) }
+    }
+}
+
+@Composable
+private fun RatingKey(label: String, days: Int?, accent: Color, modifier: Modifier, suggested: Boolean, onClick: () -> Unit) {
     val c = Ranzen.colors
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
@@ -496,30 +418,29 @@ private fun RatingKey(label: String, days: Int?, accent: Color, modifier: Modifi
     Column(
         modifier.fillMaxHeight().scale(s)
             .softRaise(16.dp, depth, c.bevelLight, c.bevelShadow)
-            .clip(shape).background(c.raised).border(1.dp, c.line, shape)
+            .clip(shape).background(c.raised).border(if (suggested) 2.5.dp else 1.dp, if (suggested) accent else c.line, shape)
             .clickable(source, indication = null, role = Role.Button, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Lamp(accent, size = 8.dp)
-            Spacer(Modifier.width(8.dp))
-            Text(label, style = Ranzen.type.label, color = c.ink)
-        }
+        // At 360 dp "Nochmal" and a lamp do not fit side by side.
+        Lamp(accent, size = 8.dp)
+        Spacer(Modifier.height(4.dp))
+        Text(label, style = Ranzen.type.label, color = c.ink, maxLines = 1)
         Spacer(Modifier.height(4.dp))
         Text(days?.let(Fmt::interval)?.uppercase(Locale.GERMANY) ?: " ", style = Ranzen.type.mono, color = c.inkMuted)
     }
 }
 
 @Composable
-private fun Finished(done: Int, again: Int, onDone: () -> Unit) {
+internal fun Finished(done: Int, again: Int, onDone: () -> Unit) {
     val c = Ranzen.colors
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text(if (done == 0) "Nichts fällig" else "Geschafft", style = Ranzen.type.hero, color = c.ink)
+        Text(if (done == 0) "Nichts fällig" else "Geschafft", style = Ranzen.type.hero, color = c.ink, textAlign = TextAlign.Center)
         Spacer(Modifier.height(10.dp))
         Text(
-            if (done == 0) "Für heute ist alles wiederholt." else "Für heute ist dieser Stapel durch. Morgen geht es weiter.",
-            style = Ranzen.type.body, color = c.inkMuted,
+            if (done == 0) "Für heute ist alles wiederholt." else "Diese Runde ist durch. Morgen geht es weiter.",
+            style = Ranzen.type.body, color = c.inkMuted, textAlign = TextAlign.Center,
         )
         if (done > 0) {
             Spacer(Modifier.height(28.dp))

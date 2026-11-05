@@ -64,6 +64,7 @@ import de.millione.schulranzen.study.ui.ScreenHeader
 import de.millione.schulranzen.study.ui.SectionHead
 import de.millione.schulranzen.study.ui.SheetHost
 import de.millione.schulranzen.study.ui.StudyIcons
+import de.millione.schulranzen.study.ui.panelPad
 import de.millione.schulranzen.study.ui.StudyPage
 import de.millione.schulranzen.study.ui.latestNonNull
 import kotlinx.coroutines.launch
@@ -72,10 +73,14 @@ import java.time.LocalDate
 private sealed interface Pg {
     data object Home : Pg
     data class DeckView(val id: Long) : Pg
-    data class Review(val deckId: Long?) : Pg
+    data class Review(val deckId: Long?, val cardIds: List<Long>? = null, val title: String? = null) : Pg
     data class ExamView(val id: Long) : Pg
     data class Mock(val examId: Long) : Pg
     data class Assistant(val question: String) : Pg
+    data object Today : Pg
+    data object Errors : Pg
+    data object Stats : Pg
+    data object Focus : Pg
 }
 
 private sealed interface HomeSheet {
@@ -84,7 +89,9 @@ private sealed interface HomeSheet {
     data class EditDeck(val deck: DeckCounts?) : HomeSheet
     data class EditCard(val deckId: Long, val card: Card?) : HomeSheet
     data class QuickCard(val front: String, val back: String) : HomeSheet
-    data class Suggest(val text: String, val deckId: Long?, val examId: Long? = null) : HomeSheet
+    data class Suggest(val text: String, val deckId: Long?, val examId: Long? = null, val questions: Boolean = false) : HomeSheet
+    data class Transfer(val deckId: Long) : HomeSheet
+    data class LinkGone(val link: StudyLink) : HomeSheet
     data object Settings : HomeSheet
 }
 
@@ -106,6 +113,9 @@ fun StudyHome(
     val context = LocalContext.current
     val repo = remember { StudyRepository(context.applicationContext) }
     val stack = remember { mutableStateListOf<Pg>(Pg.Home) }
+    // Running sessions survive a detour to the explanation helper.
+    val sessions = remember { HashMap<Pg, ReviewMemory>() }
+    LaunchedEffect(Unit) { StudyReminders.ensureScheduled(context.applicationContext) }
     var sheet by remember { mutableStateOf<HomeSheet>(HomeSheet.None) }
     val scope = rememberCoroutineScope()
 
@@ -118,8 +128,26 @@ fun StudyHome(
     val bookmarks by repo.bookmarks.collectAsState(initial = emptyList())
     val nextStep by repo.nextStep.collectAsState(initial = null)
 
+    // A jump must never land silently on the wrong page.
+    val openLink: (StudyLink) -> Unit = { link ->
+        val resolver = StudyLinkTargets.resolver
+        if (resolver == null) onOpenLink(link) else scope.launch {
+            when (val t = resolver(link)) {
+                LinkTarget.Missing -> sheet = HomeSheet.LinkGone(link)
+                is LinkTarget.Found -> {
+                    if (t.targetId != link.targetId || t.page != link.page) repo.relocateLink(link, t.targetId, t.page)
+                    onOpenLink(link.copy(targetId = t.targetId, page = t.page))
+                }
+            }
+        }
+    }
+
     fun push(p: Pg) { stack.add(p) }
-    fun pop() { if (stack.size > 1) stack.removeAt(stack.lastIndex) else onBack() }
+    fun pop() {
+        if (stack.size > 1) {
+            sessions.remove(stack.removeAt(stack.lastIndex))
+        } else onBack()
+    }
     BackHandler(enabled = stack.size > 1 && sheet == HomeSheet.None) { pop() }
 
     val page = stack.last()
@@ -132,7 +160,10 @@ fun StudyHome(
             Pg.Home -> HomePage(
                 today, overview, decks, exams,
                 onBack = ::pop, onOpenTimetable = onOpenTimetable,
-                onStudyAll = { push(Pg.Review(null)) },
+                onStudyAll = { push(Pg.Today) },
+                onErrors = { push(Pg.Errors) },
+                onStats = { push(Pg.Stats) },
+                onFocus = { push(Pg.Focus) },
                 onDeck = { push(Pg.DeckView(it)) },
                 onStudyDeck = { push(Pg.Review(it)) },
                 onExam = { push(Pg.ExamView(it)) },
@@ -141,7 +172,7 @@ fun StudyHome(
                 repo = repo,
                 bookmarks = bookmarks,
                 nextStep = nextStep,
-                onOpenLink = onOpenLink,
+                onOpenLink = openLink,
                 onAssistant = { push(Pg.Assistant("")) },
                 onSettings = { sheet = HomeSheet.Settings },
                 onSuggest = { sheet = HomeSheet.Suggest("", null) },
@@ -156,6 +187,7 @@ fun StudyHome(
                         ::pop, accent = deck?.let { SubjectPalette.of(it.colorIndex) },
                     ) {
                         if (deck != null) EditKey { sheet = HomeSheet.EditDeck(deck) }
+                        IconKey(StudyIcons.Transfer, "Importieren und exportieren", { sheet = HomeSheet.Transfer(p.id) })
                         IconKey(StudyIcons.Wand, "Karten aus Text", { sheet = HomeSheet.Suggest("", p.id) })
                         PlusKey("Neue Karte") { sheet = HomeSheet.EditCard(p.id, null) }
                         if ((deck?.due ?: 0) > 0) SignalButton("Lernen", { push(Pg.Review(p.id)) }, icon = StudyIcons.Play)
@@ -167,12 +199,13 @@ fun StudyHome(
             }
             is Pg.Review -> {
                 val deck = p.deckId?.let { id -> decks.firstOrNull { it.id == id } }
+                val memory = remember(p) { sessions.getOrPut(p) { ReviewMemory() } }
                 var progress by remember { mutableStateOf(Triple(0, 0, false)) }
                 var undo by remember { mutableIntStateOf(0) }
                 val (done, left, canUndo) = progress
                 StudyPage(header = {
                     ScreenHeader(
-                        deck?.name ?: "Alle Stapel",
+                        p.title ?: deck?.name ?: "Alle Stapel",
                         if (left > 0) "Beantwortet $done · offen $left" else "Runde beendet",
                         ::pop, accent = deck?.let { SubjectPalette.of(it.colorIndex) },
                     ) {
@@ -182,6 +215,7 @@ fun StudyHome(
                     ReviewSession(
                         repo, p.deckId, onDone = ::pop, onProgress = { d, l, u -> progress = Triple(d, l, u) }, undoSignal = undo,
                         onExplain = { push(Pg.Assistant(StudyAssistant.cardQuestion(it.front, it.back))) },
+                        cardIds = p.cardIds, memory = memory,
                     )
                 }
             }
@@ -203,6 +237,7 @@ fun StudyHome(
                     }) {
                         val links by remember(exam.id) { repo.links(exam.id) }.collectAsState(initial = emptyList())
                         val path by remember(exam) { repo.path(exam) }.collectAsState(initial = null)
+                        val readiness by remember(exam) { repo.readiness(exam) }.collectAsState(initial = null)
                         BoxWithConstraints(Modifier.fillMaxSize()) {
                             val wide = maxWidth >= 840.dp
                             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
@@ -215,7 +250,7 @@ fun StudyHome(
                                             push(Pg.DeckView(id))
                                         }
                                     },
-                                    links = links, path = path, repo = repo, onOpenLink = onOpenLink,
+                                    links = links, path = path, repo = repo, onOpenLink = openLink,
                                     onPathAction = { kind ->
                                         when (kind) {
                                             StageKind.CARDS -> scope.launch { push(Pg.DeckView(repo.deckForExam(exam.id))) }
@@ -225,6 +260,8 @@ fun StudyHome(
                                         }
                                     },
                                     onSuggest = { sheet = HomeSheet.Suggest("", null, exam.id) },
+                                    readiness = readiness,
+                                    onMock = { push(Pg.Mock(exam.id)) },
                                 )
                             }
                         }
@@ -234,8 +271,22 @@ fun StudyHome(
             is Pg.Mock -> {
                 val exam = exams.firstOrNull { it.id == p.examId }
                 if (exam == null) LaunchedEffect(Unit) { if (stack.lastOrNull() == p) pop() }
-                else MockExamPage(repo, exam, decks, onBack = ::pop, onStudy = { id -> stack.removeAt(stack.lastIndex); push(Pg.Review(id)) })
+                else MockExamPage(
+                    repo, exam, decks, onBack = ::pop,
+                    onRelearn = { ids -> push(Pg.Review(null, ids, "Nachlernen · ${exam.subject}")) },
+                    onFromText = { sheet = HomeSheet.Suggest("", null, exam.id, questions = true) },
+                )
             }
+            Pg.Today -> TodayPage(
+                repo, today, onBack = ::pop,
+                onStart = { ids -> push(Pg.Review(null, ids, "Heute")) },
+                onOpenLink = openLink,
+                onMock = { push(Pg.Mock(it)) },
+                onExam = { push(Pg.ExamView(it)) },
+            )
+            Pg.Errors -> ErrorBookPage(repo, onBack = ::pop, onLearn = { ids -> push(Pg.Review(null, ids, "Fehlerheft")) }, today = today)
+            Pg.Stats -> StatsPage(repo, decks, onBack = ::pop)
+            Pg.Focus -> FocusPage(repo, onBack = ::pop, onLearn = { push(Pg.Today) })
             is Pg.Assistant -> StudyPage(header = {
                 ScreenHeader("Erklärhilfe", "Claude · für Schule und Ausbildung", ::pop) {
                     IconKey(RanzenIcons.Settings, "Einstellungen", { sheet = HomeSheet.Settings })
@@ -314,10 +365,43 @@ fun StudyHome(
     val suggestSheet = latestNonNull(sheet as? HomeSheet.Suggest)
     SheetHost(sheet is HomeSheet.Suggest, close, width = 760.dp) {
         val s = suggestSheet
-        if (s != null) key(s) { SuggestCardsContent(s.text, preferDeck = s.deckId, preferExam = s.examId, onDone = close, onCancel = close) }
+        if (s != null) key(s) {
+            val reader = StudyLinkText.provider
+            val source: (suspend () -> String?)? = if (reader != null && s.examId != null) {
+                {
+                    repo.links(s.examId).now().mapNotNull { reader(it) }.joinToString("\n\n")
+                }
+            } else null
+            SuggestCardsContent(s.text, preferDeck = s.deckId, preferExam = s.examId, onDone = close, onCancel = close, examQuestions = s.questions, sourceText = source)
+        }
+    }
+    val goneSheet = latestNonNull(sheet as? HomeSheet.LinkGone)
+    SheetHost(sheet is HomeSheet.LinkGone, close) {
+        val g = goneSheet
+        if (g != null) {
+            Text("Diese Stelle gibt es nicht mehr", style = Ranzen.type.title, color = Ranzen.colors.ink)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "„${g.link.label}“ wurde nicht gefunden. Die Seite oder das ganze ${g.link.linkKind.label} wurde wohl gelöscht.",
+                style = Ranzen.type.body, color = Ranzen.colors.inkMuted,
+            )
+            de.millione.schulranzen.study.ui.SheetActions(
+                primary = "Verstanden", onPrimary = close, onCancel = close,
+                onDelete = { scope.launch { repo.deleteLink(g.link.id) }; close() }, deleteLabel = "Stelle entfernen", cancelLabel = "Zurück",
+            )
+        }
+    }
+    val transferSheet = latestNonNull(sheet as? HomeSheet.Transfer)
+    SheetHost(sheet is HomeSheet.Transfer, close, width = 640.dp) {
+        val deck = transferSheet?.let { t -> decks.firstOrNull { it.id == t.deckId } }
+        if (deck != null) ImportExportContent(repo, deck, onClose = close)
     }
     SheetHost(sheet is HomeSheet.Settings, close, width = 640.dp) {
-        if (sheet is HomeSheet.Settings) AssistantSettingsContent(onClose = close)
+        if (sheet is HomeSheet.Settings) {
+            ReminderSettings()
+            Spacer(Modifier.height(26.dp))
+            AssistantSettingsContent(onClose = close)
+        }
     }
 }
 
@@ -330,6 +414,9 @@ private fun HomePage(
     onBack: () -> Unit,
     onOpenTimetable: () -> Unit,
     onStudyAll: () -> Unit,
+    onErrors: () -> Unit,
+    onStats: () -> Unit,
+    onFocus: () -> Unit,
     onDeck: (Long) -> Unit,
     onStudyDeck: (Long) -> Unit,
     onExam: (Long) -> Unit,
@@ -345,7 +432,7 @@ private fun HomePage(
 ) {
     val c = Ranzen.colors
     StudyPage(header = {
-        ScreenHeader("Lernen", today.format(Fmt.longDate), onBack) {
+        ScreenHeader("Lernen", today.format(Fmt.longDate), onBack, showBack = !de.millione.schulranzen.design.rememberIsPhone()) {
             IconKey(StudyIcons.Assistant, "Erklärhilfe", onAssistant)
             IconKey(StudyIcons.Wand, "Karten aus Text", onSuggest)
             IconKey(StudyIcons.Grid, "Stundenplan", onOpenTimetable)
@@ -356,17 +443,17 @@ private fun HomePage(
             val wide = maxWidth >= 840.dp
             val todayPanel: @Composable () -> Unit = {
                 PaperPanel(Modifier.fillMaxWidth(), corner = 22.dp) {
-                    Column(Modifier.padding(26.dp)) {
+                    Column(Modifier.padding(panelPad)) {
                         Text("Heute", style = Ranzen.type.heading, color = c.ink)
                         Spacer(Modifier.height(16.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(26.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(if (de.millione.schulranzen.design.rememberIsPhone()) 12.dp else 26.dp)) {
                             Counter("%03d".format(overview.dueToday), "Fällig", accent = if (overview.dueToday > 0) c.signal else null)
                             Counter("%03d".format(overview.reviewedToday), "Gelernt")
                             Counter("%02d".format(overview.streak), if (overview.streak == 1) "Tag Serie" else "Tage Serie")
                         }
                         Spacer(Modifier.height(22.dp))
                         when {
-                            overview.dueToday > 0 -> SignalButton("Jetzt lernen", onStudyAll, icon = StudyIcons.Play)
+                            overview.dueToday > 0 || exams.any { it.dateEpochDay >= today.toEpochDay() } -> SignalButton("Jetzt lernen", onStudyAll, icon = StudyIcons.Play)
                             overview.totalCards == 0 -> EmptyNote("Leg einen Stapel an und schreib die ersten Karten.")
                             else -> EmptyNote("Alles wiederholt. Morgen geht es weiter.")
                         }
@@ -388,9 +475,19 @@ private fun HomePage(
                     }
                 }
             }
+            val toolPanel: @Composable () -> Unit = {
+                val errors by repo.errorBook.collectAsState(initial = emptyList())
+                PaperPanel(Modifier.fillMaxWidth(), corner = 22.dp) {
+                    Column(Modifier.padding(horizontal = panelPad, vertical = 12.dp)) {
+                        ToolRow(StudyIcons.Mistakes, "Fehlerheft", if (errors.isEmpty()) "Leer" else "${errors.size} Karten sitzen immer wieder nicht", onErrors)
+                        ToolRow(StudyIcons.Clock, "Fokus-Timer", "Lernblöcke mit Pausen", onFocus)
+                        ToolRow(StudyIcons.Bars, "Statistik", "Tage, Karten, Trefferquote", onStats)
+                    }
+                }
+            }
             val deckPanel: @Composable () -> Unit = {
                 PaperPanel(Modifier.fillMaxWidth(), corner = 22.dp) {
-                    Column(Modifier.padding(horizontal = 26.dp, vertical = 18.dp)) {
+                    Column(Modifier.padding(horizontal = panelPad, vertical = 18.dp)) {
                         SectionHead("Stapel", decks.size) { QuietButton("+ Stapel", onNewDeck, color = c.ink) }
                         if (decks.isEmpty()) EmptyNote("Noch keine Stapel. Am besten einen je Fach oder Lernfeld.")
                         decks.forEach { d -> DeckRow(d, onOpen = { onDeck(d.id) }, onStudy = { onStudyDeck(d.id) }) }
@@ -402,7 +499,7 @@ private fun HomePage(
                 val upcoming = exams.filter { it.dateEpochDay >= today.toEpochDay() }
                 val past = exams.filter { it.dateEpochDay < today.toEpochDay() }.reversed()
                 PaperPanel(Modifier.fillMaxWidth(), corner = 22.dp) {
-                    Column(Modifier.padding(horizontal = 26.dp, vertical = 18.dp)) {
+                    Column(Modifier.padding(horizontal = panelPad, vertical = 18.dp)) {
                         SectionHead("Prüfungen", upcoming.size) { QuietButton("+ Prüfung", onNewExam, color = c.ink) }
                         if (upcoming.isEmpty()) EmptyNote("Keine Prüfung geplant.")
                         upcoming.forEach { e -> ExamRow(e, today) { onExam(e.id) } }
@@ -422,7 +519,7 @@ private fun HomePage(
                 val slots by repo.todaysLessons.collectAsState(initial = emptyList())
                 val minute = rememberMinuteOfDay()
                 PaperPanel(Modifier.fillMaxWidth(), corner = 22.dp) {
-                    Column(Modifier.padding(horizontal = 26.dp, vertical = 18.dp)) {
+                    Column(Modifier.padding(horizontal = panelPad, vertical = 18.dp)) {
                         SectionHead("Stundenplan", null) { QuietButton("Öffnen", onOpenTimetable, color = c.ink) }
                         val blocks = blocksOf(slots)
                         if (blocks.isEmpty()) EmptyNote("Heute kein Unterricht eingetragen.")
@@ -445,7 +542,7 @@ private fun HomePage(
             if (wide) {
                 Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                        todayPanel(); deckPanel()
+                        todayPanel(); toolPanel(); deckPanel()
                     }
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
                         examPanel(); timetablePanel()
@@ -453,9 +550,26 @@ private fun HomePage(
                 }
             } else {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
-                    todayPanel(); examPanel(); deckPanel(); timetablePanel()
+                    todayPanel(); examPanel(); toolPanel(); deckPanel(); timetablePanel()
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ToolRow(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, detail: String, onClick: () -> Unit) {
+    val c = Ranzen.colors
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RanzenIcon(icon, tint = c.inkMuted)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = Ranzen.type.label, color = c.ink)
+            Text(detail, style = Ranzen.type.caption, color = c.inkMuted, maxLines = 1)
+        }
+        ChevronIcon()
     }
 }

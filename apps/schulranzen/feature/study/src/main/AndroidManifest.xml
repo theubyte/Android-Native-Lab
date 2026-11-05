@@ -2,4 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Explanation helper (Claude API). Only used when the learner has entered a key. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Study reminders; asked for when the learner switches them on. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

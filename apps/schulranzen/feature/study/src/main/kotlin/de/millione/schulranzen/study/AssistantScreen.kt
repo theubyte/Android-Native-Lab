@@ -77,6 +77,8 @@ internal fun ExplainContent(
     var input by remember { mutableStateOf(initialQuestion) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var asked by remember { mutableStateOf<String?>(null) }
+    var streaming by remember { mutableStateOf("") }
     val scroll = rememberScrollState()
 
     fun ask() {
@@ -85,16 +87,21 @@ internal fun ExplainContent(
         busy = true; error = null
         scope.launch {
             try {
-                val answer = assistant.explain(q, turns.toList())
+                asked = q
+                input = ""
+                val answer = assistant.explain(q, turns.toList()) { soFar -> streaming = soFar }
                 turns += ChatTurn("user", q)
                 turns += ChatTurn("assistant", answer)
-                input = ""
+                asked = null
             } catch (e: AssistantException) {
                 error = ClaudeApi.describe(e.error)
-            } finally { busy = false }
+                // Nothing lost: the question goes back into the field.
+                asked?.let { input = it }
+                asked = null
+            } finally { busy = false; streaming = "" }
         }
     }
-    LaunchedEffect(turns.size, busy) { scroll.animateScrollTo(scroll.maxValue) }
+    LaunchedEffect(turns.size, busy, streaming.length / 80) { scroll.scrollTo(scroll.maxValue) }
 
     Column(modifier) {
         if (!hasKey) {
@@ -126,7 +133,9 @@ internal fun ExplainContent(
                     }
                 }
             }
-            if (busy) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) {
+            asked?.let { Bubble(it, mine = true) }
+            if (streaming.isNotEmpty()) Bubble(streaming, mine = false)
+            if (busy && streaming.isEmpty()) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) {
                 Lamp(c.signal, size = 8.dp)
                 Spacer(Modifier.width(10.dp))
                 Text("CLAUDE DENKT …", style = Ranzen.type.mono, color = c.inkMuted)
@@ -204,6 +213,7 @@ internal fun QuickCardContent(front: String, back: String, onDone: () -> Unit, o
     var b by remember { mutableStateOf(back) }
     var target by remember { mutableStateOf<CardTarget?>(null) }
     var saving by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(exams, decks) { if (target == null && exams != null) target = defaultTarget(exams.orEmpty(), decks, preferDeck) }
     Text("Als Karte speichern", style = Ranzen.type.title, color = Ranzen.colors.ink)
     Spacer(Modifier.height(18.dp))
@@ -214,12 +224,18 @@ internal fun QuickCardContent(front: String, back: String, onDone: () -> Unit, o
     LineField(b, { b = it }, "Antwort", singleLine = false, minLines = 3)
     Spacer(Modifier.height(18.dp))
     CardTargetPicker(exams.orEmpty(), decks, target) { target = it }
+    saveError?.let { Text(it, style = Ranzen.type.body, color = Ranzen.colors.signal, modifier = Modifier.padding(top = 8.dp)) }
     SheetActions(
         primary = if (saving) "Speichert …" else "Speichern",
         onPrimary = {
             if (saving || f.isBlank()) return@SheetActions
             saving = true
-            scope.launch { repo.addCard(repo.resolveDeck(target), f, b); onDone() }
+            saveError = null
+            scope.launch {
+                runCatching { repo.addCard(repo.resolveDeck(target), f, b) }
+                    .onSuccess { onDone() }
+                    .onFailure { saving = false; saveError = "Die Karte ließ sich nicht speichern. Bitte nochmal versuchen." }
+            }
         },
         onCancel = onCancel,
     )
@@ -242,10 +258,21 @@ internal fun AssistantSettingsContent(onClose: () -> Unit) {
     Text("Einstellungen · Erklärhilfe", style = Ranzen.type.title, color = c.ink)
     Spacer(Modifier.height(8.dp))
     Text(
-        "Die Erklärhilfe nutzt Claude von Anthropic (Modell ${ClaudeApi.MODEL}). Einen API-Schlüssel gibt es unter " +
+        "Die Erklärhilfe nutzt Claude von Anthropic. Einen API-Schlüssel gibt es unter " +
             "console.anthropic.com; die Kosten laufen über dieses Konto. Fragen und Kartentexte werden dafür an Anthropic gesendet. " +
             "Der Schlüssel wird verschlüsselt nur auf diesem Gerät gespeichert.",
         style = Ranzen.type.body, color = c.inkMuted,
+    )
+    Spacer(Modifier.height(16.dp))
+    FieldLabel("Modell")
+    var model by remember { mutableStateOf(key.model) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        de.millione.schulranzen.study.ui.OptionPlate("Beste Antworten", model == ClaudeApi.MODEL, { key.model = ClaudeApi.MODEL; model = ClaudeApi.MODEL })
+        de.millione.schulranzen.study.ui.OptionPlate("Sparsam", model == ClaudeApi.MODEL_THRIFTY, { key.model = ClaudeApi.MODEL_THRIFTY; model = ClaudeApi.MODEL_THRIFTY })
+    }
+    Text(
+        if (model == ClaudeApi.MODEL) "Claude Opus 5.5. Teurer je Frage, die Kosten laufen über dein Konto." else "Claude Haiku 5.5. Sehr günstig, für einfache Erklärungen meist genug.",
+        style = Ranzen.type.caption, color = c.inkMuted, modifier = Modifier.padding(top = 6.dp),
     )
     Spacer(Modifier.height(20.dp))
     FieldLabel("API-Schlüssel")
@@ -272,7 +299,7 @@ internal fun AssistantSettingsContent(onClose: () -> Unit) {
         }
     }
     Spacer(Modifier.height(18.dp))
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    androidx.compose.foundation.layout.Column {
         if (present) QuietButton("Schlüssel löschen", { key.clear(); status = false to "Schlüssel gelöscht." }, color = c.signal)
         if (present) QuietButton(if (busy) "Prüft …" else "Verbindung prüfen", {
             if (busy) return@QuietButton
