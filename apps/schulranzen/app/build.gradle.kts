@@ -65,5 +65,6 @@ dependencies {
     ksp(libs.room.compiler)
     implementation(libs.coroutines.android)
     implementation(libs.serialization.json)
+    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
     testImplementation(libs.junit)
 }
