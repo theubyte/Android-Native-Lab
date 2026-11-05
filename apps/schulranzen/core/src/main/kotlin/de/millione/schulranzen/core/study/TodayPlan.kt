@@ -11,6 +11,8 @@ data class PlanCard(
     val schedule: CardSchedule,
     /** On the error list or wrong in a recent mock exam. */
     val weak: Boolean = false,
+    /** First answered today: it used up part of today's share of new cards. */
+    val introducedToday: Boolean = false,
 )
 
 /** One upcoming exam with what belongs to it. */
@@ -144,7 +146,9 @@ object TodayPlanner {
             val close = ExamPlanner.daysUntil(today, e.date) <= WEAK_EXTRA_DAYS
             val due = cards.filter { !it.schedule.isNew && it.schedule.dueEpochDay <= day }
             val fresh = cards.filter { it.schedule.isNew }
-            val quota = ceil(fresh.size.toDouble() / daysForNew(today, e.date)).toInt()
+            // Counting what was started today keeps a second look at the plan from handing out a fresh share.
+            val introduced = cards.count { it.introducedToday }
+            val quota = (ceil((fresh.size + introduced).toDouble() / daysForNew(today, e.date)).toInt() - introduced).coerceAtLeast(0)
             tiers[e.id] = mutableMapOf(
                 SessionTier.WEAK_DUE to due.filter { it.weak }.sortedBy { it.schedule.dueEpochDay },
                 SessionTier.DUE to due.filter { !it.weak }.sortedBy { it.schedule.dueEpochDay },

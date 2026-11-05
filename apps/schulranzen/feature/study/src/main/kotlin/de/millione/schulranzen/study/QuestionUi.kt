@@ -132,6 +132,7 @@ internal fun SolutionBlock(card: Card, solution: String = card.back, onZoom: (St
     card.backImage?.let { img ->
         StudyImage(img, Modifier.fillMaxWidth().height(220.dp).padding(vertical = 8.dp).clickable(onClickLabel = "Bild groß") { onZoom(img) })
     }
+    CardProvenance(card)
 }
 
 /** Answer options as large keys. Once [revealed], the right one lights up and the wrong pick too. */

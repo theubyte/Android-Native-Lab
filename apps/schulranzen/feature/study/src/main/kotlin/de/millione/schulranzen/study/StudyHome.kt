@@ -81,6 +81,7 @@ private sealed interface Pg {
     data object Errors : Pg
     data object Stats : Pg
     data object Focus : Pg
+    data object Packs : Pg
 }
 
 private sealed interface HomeSheet {
@@ -164,6 +165,7 @@ fun StudyHome(
                 onErrors = { push(Pg.Errors) },
                 onStats = { push(Pg.Stats) },
                 onFocus = { push(Pg.Focus) },
+                onPacks = { push(Pg.Packs) },
                 onDeck = { push(Pg.DeckView(it)) },
                 onStudyDeck = { push(Pg.Review(it)) },
                 onExam = { push(Pg.ExamView(it)) },
@@ -286,6 +288,7 @@ fun StudyHome(
             )
             Pg.Errors -> ErrorBookPage(repo, onBack = ::pop, onLearn = { ids -> push(Pg.Review(null, ids, "Fehlerheft")) }, today = today)
             Pg.Stats -> StatsPage(repo, decks, onBack = ::pop)
+            Pg.Packs -> PacksPage(repo, onBack = ::pop)
             Pg.Focus -> FocusPage(repo, onBack = ::pop, onLearn = { push(Pg.Today) })
             is Pg.Assistant -> StudyPage(header = {
                 ScreenHeader("Erklärhilfe", "Claude · für Schule und Ausbildung", ::pop) {
@@ -335,8 +338,8 @@ fun StudyHome(
             onSave = { name, color, subjectId ->
                 scope.launch {
                     val old = s.deck
-                    val id = repo.saveDeck(Deck(id = old?.id ?: 0, name = name, colorIndex = color, subjectId = subjectId,
-                        createdAt = old?.id?.let { repo.deck(it)?.createdAt } ?: System.currentTimeMillis()))
+                    val stored = old?.id?.let { repo.deck(it) }
+                    val id = repo.saveDeck(stored?.copy(name = name, colorIndex = color, subjectId = subjectId) ?: Deck(name = name, colorIndex = color, subjectId = subjectId))
                     if (old == null) push(Pg.DeckView(id))
                 }
                 close()
@@ -417,6 +420,7 @@ private fun HomePage(
     onErrors: () -> Unit,
     onStats: () -> Unit,
     onFocus: () -> Unit,
+    onPacks: () -> Unit,
     onDeck: (Long) -> Unit,
     onStudyDeck: (Long) -> Unit,
     onExam: (Long) -> Unit,
@@ -482,6 +486,7 @@ private fun HomePage(
                         ToolRow(StudyIcons.Mistakes, "Fehlerheft", if (errors.isEmpty()) "Leer" else "${errors.size} Karten sitzen immer wieder nicht", onErrors)
                         ToolRow(StudyIcons.Clock, "Fokus-Timer", "Lernblöcke mit Pausen", onFocus)
                         ToolRow(StudyIcons.Bars, "Statistik", "Tage, Karten, Trefferquote", onStats)
+                        ToolRow(StudyIcons.Transfer, "Inhaltspakete", "Fertige Stapel aus einer Datei", onPacks)
                     }
                 }
             }

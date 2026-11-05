@@ -23,6 +23,7 @@ import java.io.File
  * - review, mock run: their parent + time stamp; marked place: page id + label, else target + page + label
  * - mock answer: comes along with a mock run that is new here; focus log: time stamp
  * - setting: taken only where this device has none (A/B weeks, daily plan)
+ * - content pack: its id, the later import wins; pack decks and cards match by their keys
  *
  * Nothing is deleted: what exists only here stays. Backups from older versions lack
  * newer tables and columns; both are simply skipped.
@@ -44,7 +45,18 @@ class StudyMergeParticipant(private val context: Context) : MergeParticipant {
                     if (local.count("SELECT COUNT(*) FROM setting WHERE key = ?", r["key"]) == 0) { local.insertRow("setting", r); added++ }
                 }
                 // Decks and exams first: cards, links and mock runs point at them.
-                val deckIds = mapRows(remote, local, "deck", key = { it.str("name").lowercase() }) { added++ }
+                // A pack's deck is matched by its key: it may share its name with an own deck.
+                val deckIds = mapRows(remote, local, "deck", key = { d ->
+                    (d["packId"] as? String)?.let { "pack|$it|${d.str("packDeckKey")}" } ?: d.str("name").lowercase()
+                }) { added++ }
+                if (remote.hasTable("content_pack")) for (r in remote.rows("SELECT * FROM content_pack")) {
+                    val here = local.rows("SELECT * FROM content_pack WHERE id = ?", r["id"]).firstOrNull()
+                    if (here == null) { local.insertRow("content_pack", r); added++ }
+                    else if ((r["importedAt"] as Long) > (here["importedAt"] as Long)) {
+                        local.update("content_pack", SQLiteDatabase.CONFLICT_NONE, values(r.pick("titel", "version", "stand", "autor", "beispiel", "importedAt")), "id = ?", arrayOf(r["id"]))
+                        updated++
+                    }
+                }
                 val examIds = mapRows(remote, local, "exam", key = { "${it.str("subject").lowercase()}|${it["dateEpochDay"]}|${it["kind"]}" }) { added++ }
                 mapRows(remote, local, "lesson", key = { "${it["day"]}|${it["period"]}|${it["cycle"]}" }) { added++ }
                 remote.rows("SELECT * FROM period").forEach { r ->
@@ -56,17 +68,19 @@ class StudyMergeParticipant(private val context: Context) : MergeParticipant {
                 val images = File(context.filesDir, "study/images").also { it.mkdirs() }
                 for (r in remote.rows("SELECT * FROM card")) {
                     val deck = deckIds[(r["deckId"] as Long)] ?: continue
-                    val match = local.rows(
-                        "SELECT * FROM card WHERE deckId = ? AND front = ? AND IFNULL(frontImage, '') = ?",
-                        deck, r.str("front"), r["frontImage"]?.toString() ?: "",
-                    ).firstOrNull()
+                    // A pack's card stays the same card when its text changed.
+                    val match = (r["packCardKey"] as? String)?.let { key -> local.rows("SELECT * FROM card WHERE deckId = ? AND packCardKey = ?", deck, key).firstOrNull() }
+                        ?: local.rows(
+                            "SELECT * FROM card WHERE deckId = ? AND front = ? AND IFNULL(frontImage, '') = ?",
+                            deck, r.str("front"), r["frontImage"]?.toString() ?: "",
+                        ).firstOrNull()
                     listOf("frontImage", "backImage").forEach { col -> (r[col] as? String)?.let { copyIn(File(backupDir, "files/study/$it"), File(context.filesDir, "study/$it"), images) } }
                     if (match == null) {
                         cardIds[r["id"] as Long] = local.insertRow("card", r.without("id") + ("deckId" to deck)); added++
                     } else {
                         cardIds[r["id"] as Long] = match["id"] as Long
                         if (newer(r, match)) {
-                            local.update("card", SQLiteDatabase.CONFLICT_NONE, values(r.pick("reps", "intervalDays", "ease", "lapses", "dueEpochDay", "lastReviewEpochDay", "back", "backImage")), "id = ?", arrayOf(match["id"]))
+                            local.update("card", SQLiteDatabase.CONFLICT_NONE, values(r.pick("reps", "intervalDays", "ease", "lapses", "dueEpochDay", "lastReviewEpochDay", "front", "back", "backImage", "topic", "sourceBook", "sourcePage", "verified", "packId", "packCardKey", "packFront", "packBack")), "id = ?", arrayOf(match["id"]))
                             updated++
                         } else kept++
                     }

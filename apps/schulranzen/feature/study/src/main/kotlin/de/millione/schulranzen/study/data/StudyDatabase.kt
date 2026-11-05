@@ -76,6 +76,23 @@ data class Deck(
     val colorIndex: Int,
     val subjectId: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
+    /** Content pack this deck came from, with its id there. */
+    val packId: String? = null,
+    val packDeckKey: String? = null,
+    /** Subject that ties a pack's deck to exams, whatever the deck is called. */
+    val fach: String? = null,
+)
+
+/** An imported content pack as last taken over; only for the list and the version check. */
+@Entity(tableName = "content_pack")
+data class ContentPackRow(
+    @PrimaryKey val id: String,
+    val titel: String,
+    val version: String,
+    val stand: String = "",
+    val autor: String = "",
+    val beispiel: Boolean = false,
+    val importedAt: Long = System.currentTimeMillis(),
 )
 
 @Entity(
@@ -98,7 +115,22 @@ data class Card(
     val dueEpochDay: Long,
     val lastReviewEpochDay: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
+    /** Topic named by a content pack. */
+    val topic: String? = null,
+    val sourceBook: String? = null,
+    val sourcePage: String? = null,
+    /** Compared with its source. Only shown for cards from a pack. */
+    @ColumnInfo(defaultValue = "0") val verified: Boolean = false,
+    val packId: String? = null,
+    /** "stapel.id/karte.id": the learning state hangs on this. */
+    val packCardKey: String? = null,
+    /** The text as last imported, to tell the learner's own edits from a new version. */
+    val packFront: String? = null,
+    val packBack: String? = null,
 ) {
+    val source: de.millione.schulranzen.core.study.PackSource
+        get() = de.millione.schulranzen.core.study.PackSource(sourceBook.orEmpty(), sourcePage.orEmpty())
+
     val schedule: CardSchedule
         get() = CardSchedule(reps, intervalDays, ease, lapses, dueEpochDay, lastReviewEpochDay)
 
@@ -243,6 +275,7 @@ data class DeckCounts(
     val total: Int,
     val due: Int,
     val fresh: Int,
+    val fach: String? = null,
 )
 
 @Dao
@@ -285,8 +318,8 @@ internal interface StudyDao {
     @Query("SELECT * FROM exam WHERE dateEpochDay >= :today ORDER BY dateEpochDay, id")
     fun examsFrom(today: Long): Flow<List<Exam>>
 
-    @Query("SELECT * FROM exam WHERE dateEpochDay > :today AND (subject = :subject COLLATE NOCASE OR (:subjectId IS NOT NULL AND subjectId = :subjectId)) ORDER BY dateEpochDay LIMIT 1")
-    suspend fun nextExamFor(subject: String, subjectId: Long?, today: Long): Exam?
+    @Query("SELECT * FROM exam WHERE dateEpochDay > :today AND (subject = :subject COLLATE NOCASE OR subject = :fach COLLATE NOCASE OR (:subjectId IS NOT NULL AND subjectId = :subjectId)) ORDER BY dateEpochDay LIMIT 1")
+    suspend fun nextExamFor(subject: String, fach: String?, subjectId: Long?, today: Long): Exam?
 
     @Query("SELECT * FROM exam WHERE id = :id")
     suspend fun exam(id: Long): Exam?
@@ -299,7 +332,7 @@ internal interface StudyDao {
 
     // Decks and cards
     @Query(
-        """SELECT d.id, d.name, d.colorIndex, d.subjectId,
+        """SELECT d.id, d.name, d.colorIndex, d.subjectId, d.fach,
            COUNT(c.id) AS total,
            COALESCE(SUM(CASE WHEN c.dueEpochDay <= :today THEN 1 ELSE 0 END), 0) AS due,
            COALESCE(SUM(CASE WHEN c.lastReviewEpochDay IS NULL THEN 1 ELSE 0 END), 0) AS fresh
@@ -436,7 +469,7 @@ internal interface StudyDao {
     suspend fun cardsOfDeck(deckId: Long): List<Card>
 
     @Query(
-        """SELECT d.id, d.name, d.colorIndex, d.subjectId,
+        """SELECT d.id, d.name, d.colorIndex, d.subjectId, d.fach,
            COUNT(c.id) AS total,
            COALESCE(SUM(CASE WHEN c.dueEpochDay <= :today THEN 1 ELSE 0 END), 0) AS due,
            COALESCE(SUM(CASE WHEN c.lastReviewEpochDay IS NULL THEN 1 ELSE 0 END), 0) AS fresh
@@ -463,6 +496,19 @@ internal interface StudyDao {
     @Query("SELECT * FROM mock_run WHERE examId = :examId ORDER BY at DESC")
     suspend fun mockRunsNow(examId: Long): List<MockRun>
 
+    // Content packs
+    @Query("SELECT p.* FROM content_pack p WHERE EXISTS (SELECT 1 FROM deck d WHERE d.packId = p.id) ORDER BY p.titel COLLATE NOCASE")
+    fun contentPacks(): Flow<List<ContentPackRow>>
+
+    @Upsert
+    suspend fun upsertContentPack(p: ContentPackRow)
+
+    @Query("SELECT * FROM deck WHERE packId = :packId")
+    suspend fun decksOfPack(packId: String): List<Deck>
+
+    @Query("SELECT * FROM card WHERE packId = :packId")
+    suspend fun cardsOfPack(packId: String): List<Card>
+
     // Focus
     @Insert
     suspend fun insertFocus(f: FocusSession): Long
@@ -477,13 +523,14 @@ internal interface StudyDao {
 @Database(
     entities = [
         PeriodRow::class, Lesson::class, SettingRow::class, Exam::class, Deck::class, Card::class, Review::class,
-        StudyLink::class, MockRun::class, MockAnswerRow::class, FocusSession::class,
+        StudyLink::class, MockRun::class, MockAnswerRow::class, FocusSession::class, ContentPackRow::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
     // 1 → 2 only adds the tables for exam links and mock exams.
     // 2 → 3 only adds the mock answers, the focus log, two columns on mock_run and pageId on study_link.
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
+    // 3 → 4 only adds content packs: one table, columns on deck and card with defaults.
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4)],
 )
 internal abstract class StudyDatabase : RoomDatabase() {
     abstract fun dao(): StudyDao

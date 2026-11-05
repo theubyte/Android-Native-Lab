@@ -35,7 +35,16 @@ Für richtig befunden und nicht geändert: IHK-Notenschlüssel, Anker der A/B-Wo
 
 `study.db` Version 3 per AutoMigration von 2: neue Tabellen `mock_answer`, `focus_session`; neue Spalten `mock_run.seconds`, `mock_run.limitSeconds`, `study_link.pageId`. Die AutoMigration prüft Room beim Bauen; ein Lauf gegen eine echte alte Datenbank steht aus. `StudyMerge` führt alle neuen Tabellen und Spalten mit.
 
+## Nachtrag: Inhaltspakete und Quote neuer Karten
+
+- `TodayPlanner`: Beim erneuten Berechnen am selben Tag kamen weitere neue Karten nach, weil die Quote aus den noch neuen Karten entstand. `PlanCard.introducedToday` behebt das, gleiche Zahlen und Tests wie in der Web-App.
+- Inhaltspakete (Format 1, `apps/schulranzen-web/docs/INHALTSPAKET.md`): `ContentPacks` in core mit den Testfällen aus `tests/data.test.js`. Bildschirm unter Lernen → Inhaltspakete. `study.db` Version 4 per AutoMigration von 3; `StudyMerge` führt alles mit.
+- Beim Bearbeiten eines Stapels wäre die Paket-Zuordnung verloren gegangen, weil der Stapel neu gebaut wurde. Er wird jetzt kopiert.
+
 ## Offen
+
+- Inhaltspakete: nur der Import ist gebaut, das Ausgeben eines Stapels als Paket nicht. Der Import lief nicht auf einem Gerät und nicht mit einer echten Datei; die Vergleichbarkeit mit der Web-App ist nur über die übertragenen Testfälle belegt.
+- Mehrere Stapel eines Fachs zählen im Tagesplan, in der Prognose und in der Probeprüfung. Lernpfad und Prüfungsseite zeigen weiter nur den ersten Stapel.
 
 - Nichts davon lief auf einem Gerät: alle Bildschirme, Benachrichtigungen, Berechtigung, Datei-Import/-Export sind nur kompiliert. Sichtprüfung durch den Integrator nötig, besonders bei 360 dp.
 - `StudyMerge` hat keine automatischen Tests (braucht Android). Migration 2 → 3 ebenso.
