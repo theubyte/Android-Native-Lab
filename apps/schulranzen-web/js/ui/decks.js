@@ -194,12 +194,25 @@ async function importText(deck) {
   if (!file) return;
   const parsed = Csv.parse(await readText(file));
   const cards = Csv.dropTitleRow(parsed.cards);
-  const existing = new Set(app.state.cards.filter((c) => c.deckId === deck.id).map((c) => low(c.front)));
-  const fresh = cards.filter((c) => !existing.has(low(c.front)));
+  // A named deck in the file wins over the open one; a front twice in a deck stays once.
+  const targetOf = (c) => (c.deck ? app.state.decks.find((d) => low(d.name) === low(c.deck)) ?? c.deck : deck);
+  const seen = new Set();
+  const keyOf = (c) => {
+    const t = targetOf(c);
+    return `${typeof t === 'string' ? low(t) : t.id}|${low(c.front)}`;
+  };
+  for (const x of app.state.cards) seen.add(`${x.deckId}|${low(x.front)}`);
+  const fresh = cards.filter((c) => {
+    const k = keyOf(c);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
   const twins = cards.length - fresh.length;
+  const newDecks = [...new Set(fresh.map(targetOf).filter((t) => typeof t === 'string').map(low))];
   await openPanel('Karten einlesen', (close) => h('div.stack', {},
     h('p', {}, file.name),
-    h('p', {}, `${plural(fresh.length, 'neue Karte', 'neue Karten')} für „${deck.name}“.`),
+    h('p', {}, `${plural(fresh.length, 'neue Karte', 'neue Karten')} für „${deck.name}“${newDecks.length > 0 ? ` und ${plural(newDecks.length, 'neuen Stapel', 'neue Stapel')} aus der Datei` : ''}.`),
     twins > 0 ? h('p.muted', {}, `${plural(twins, 'Karte gibt', 'Karten gibt')} es hier schon; sie bleiben, wie sie sind.`) : null,
     parsed.skipped > 0 ? h('p.muted', {}, `${plural(parsed.skipped, 'Zeile', 'Zeilen')} ohne Vorder- und Rückseite übersprungen.`) : null,
     parsed.mediaDropped > 0 ? h('p.muted', {}, `${plural(parsed.mediaDropped, 'Karte verwies', 'Karten verwiesen')} auf Bilder oder Ton; die kann eine Textdatei nicht mitbringen.`) : null,
@@ -208,7 +221,17 @@ async function importText(deck) {
       btn('Abbrechen', () => close(), { kind: 'quiet' }),
       fresh.length > 0 ? btn('Einlesen', async () => {
         const t0 = Date.now();
-        await repo.saveCards(fresh.map((c, i) => repo.newCardRow(deck.id, c.front, c.back, { createdAt: t0 + i })));
+        const made = new Map();
+        const rows = [];
+        for (const [i, c] of fresh.entries()) {
+          let t = targetOf(c);
+          if (typeof t === 'string') {
+            if (!made.has(low(t))) made.set(low(t), await repo.saveDeck({ name: t, colorIndex: app.state.decks.length + made.size }));
+            t = made.get(low(t));
+          }
+          rows.push(repo.newCardRow(t.id, c.front, c.back, { createdAt: t0 + i }));
+        }
+        await repo.saveCards(rows);
         toast(`${plural(fresh.length, 'Karte', 'Karten')} eingelesen.`);
         close();
         app.refresh();

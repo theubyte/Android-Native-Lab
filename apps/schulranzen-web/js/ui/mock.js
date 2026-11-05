@@ -349,7 +349,7 @@ function showResult(root, exam, run) {
         bar(t.percent, t.percent < 67 ? 'var(--signal)' : 'var(--subject-0)'))),
       (run.weakTopics ?? []).length === 0 ? h('p.good-text', {}, 'Kein Thema unter 67 %. Stark!') : null),
     h('div.row', {},
-      weak.length > 0 && stillDue > 0 ? linkBtn(`Nachlernrunde · ${stillDue}`, `#/lernen/nach/${run.id}`, { kind: 'signal', icon: 'play' }) : null,
+      weak.length > 0 && stillDue > 0 ? linkBtn(`Nachlernen (${stillDue})`, `#/lernen/nach/${run.id}`, { kind: 'signal', icon: 'play' }) : null,
       linkBtn('Neue Probeprüfung', `#/probe/${exam.id}`, { icon: 'timer' })),
     h('section.stack', {},
       h('h2.heading', {}, 'Alle Fragen'),

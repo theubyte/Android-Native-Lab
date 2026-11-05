@@ -1,12 +1,11 @@
 // Shared wording, so the same thing is called the same everywhere (and as on Android).
-import { plural } from './dom.js';
 import { GRADE_WORDS, SOLID_PERCENT } from '../core/mockexam.js';
 
 export const confidenceText = {
   NONE: 'Noch keine Grundlage',
-  LOW: 'Wenig Belege: nur Karten, noch keine Probeprüfung',
-  MEDIUM: 'Mittel: wenige Fragen unter Prüfungsbedingungen',
-  HIGH: 'Gut belegt durch Probeprüfungen',
+  LOW: 'Grobe Schätzung ohne Probeprüfung',
+  MEDIUM: 'Schätzung mit wenig Prüfungsdaten',
+  HIGH: 'Schätzung mit Probeprüfungen',
 };
 
 export const gradeLine = (grade) => `Note ${grade} · ${GRADE_WORDS[grade]}`;
@@ -14,17 +13,17 @@ export const gradeLine = (grade) => `Note ${grade} · ${GRADE_WORDS[grade]}`;
 /** "Was fehlt noch": one line per gap, with what to do about it. */
 export function gapText(g) {
   switch (g.kind) {
-    case 'NO_CARDS': return 'Noch keine Karten. Lege welche an oder lade ein Paket.';
-    case 'FEW_CARDS': return `${plural(g.count, 'Karte', 'Karten')} mehr, dann ist der Stoff gut abgedeckt.`;
-    case 'NEW_CARDS': return `${plural(g.count, 'neue Karte', 'neue Karten')} noch nie gelernt.`;
-    case 'DUE_CARDS': return `${plural(g.count, 'Karte', 'Karten')} fällig.`;
-    case 'SHAKY_CARDS': return `${plural(g.count, 'Karte sitzt', 'Karten sitzen')} noch nicht sicher.`;
-    case 'TOPICS_MISSING': return `Keine Karten zu: ${g.names.join(', ')}.`;
+    case 'NO_CARDS': return 'Noch keine Karten zu dieser Prüfung.';
+    case 'FEW_CARDS': return `Etwa ${g.count} Karten fehlen noch, um den Stoff abzudecken.`;
+    case 'NEW_CARDS': return g.count === 1 ? '1 Karte noch nie gelernt.' : `${g.count} Karten noch nie gelernt.`;
+    case 'DUE_CARDS': return g.count === 1 ? '1 Karte ist fällig.' : `${g.count} Karten sind fällig.`;
+    case 'SHAKY_CARDS': return g.count === 1 ? '1 Karte sitzt bis zur Prüfung wohl nicht.' : `${g.count} Karten sitzen bis zur Prüfung wohl nicht.`;
+    case 'TOPICS_MISSING': return `Ohne Karten: ${g.names.join(', ')}.`;
     case 'TOPICS_WEAK': return `Noch nicht gelernt: ${g.names.join(', ')}.`;
-    case 'LINKS_OPEN': return `${plural(g.count, 'Stoff-Eintrag', 'Stoff-Einträge')} noch offen.`;
+    case 'LINKS_OPEN': return g.count === 1 ? '1 Stoff-Eintrag ist noch offen.' : `${g.count} Stoff-Einträge sind noch offen.`;
     case 'NO_MOCK': return 'Noch keine Probeprüfung geschrieben.';
-    case 'OLD_MOCK': return `Letzte Probeprüfung vor ${plural(g.count, 'Tag', 'Tagen')}. Zeit für eine neue.`;
-    case 'MOCK_LOW': return `Probeprüfung bei ${g.count} %. Ziel: ${Math.trunc(SOLID_PERCENT)} %.`;
+    case 'OLD_MOCK': return `Die letzte Probeprüfung ist ${g.count} Tage her.`;
+    case 'MOCK_LOW': return `Die letzten Probeprüfungen lagen bei ${g.count} %.`;
     default: return '';
   }
 }
@@ -45,7 +44,7 @@ export function stageDetail(s) {
 }
 
 export const QUESTION_MODES = [
-  ['FLIP', 'Umdrehen'], ['TYPE', 'Eintippen'], ['CHOICE', 'Multiple Choice'], ['CLOZE', 'Lückentext'], ['MATCH', 'Zuordnen'], ['MIX', 'Gemischt'],
+  ['FLIP', 'Umdrehen'], ['TYPE', 'Eintippen'], ['CHOICE', 'Auswahl'], ['CLOZE', 'Lücke'], ['MATCH', 'Zuordnen'], ['MIX', 'Gemischt'],
 ];
 
 export function verdictText(result, expected) {

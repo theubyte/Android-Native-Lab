@@ -80,20 +80,10 @@ export function errorBookOf(state) {
   return buildErrorBook(attemptsOf(state)).filter((e) => known.has(e.cardId));
 }
 
-const RECENT_MOCK_DAYS = 14;
-
-/** Cards on the error list, or wrong in a recent mock exam and not answered right since. */
-export function weakCardIds(state, today) {
+/** As StudyRepository.todayPlan on Android: on the error list, or forgotten twice. */
+export function weakCardIds(state) {
   const weak = new Set(errorBookOf(state).map((e) => e.cardId));
-  for (const run of state.mockRuns) {
-    const day = run.epochDay ?? Math.floor(run.at / 86400000);
-    if (today - day > RECENT_MOCK_DAYS) continue;
-    for (const a of run.answers ?? []) {
-      if (a.cardId === null || a.cardId === undefined || !needsRelearning(a.grade)) continue;
-      const after = state.reviews.some((r) => r.cardId === a.cardId && r.at > run.at && isRight(r.rating));
-      if (!after) weak.add(a.cardId);
-    }
-  }
+  for (const c of state.cards) if (c.lapses >= 2) weak.add(c.id);
   return weak;
 }
 
@@ -120,7 +110,7 @@ function introducedToday(state, today) {
 }
 
 export function planInput(state, today) {
-  const weak = weakCardIds(state, today);
+  const weak = weakCardIds(state);
   const intro = introducedToday(state, today);
   const toPlanCard = (c) => ({ id: c.id, schedule: scheduleOf(c), weak: weak.has(c.id), introducedToday: intro.has(c.id) });
   const coming = state.exams.filter((e) => e.dateEpochDay >= today);

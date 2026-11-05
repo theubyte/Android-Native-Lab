@@ -6,7 +6,7 @@ Kein Safari, kein iOS, kein Firefox, kein echtes Mobilgerät.
 
 ## Geprüft
 
-**Rechnen wie Android.** `js/core/` ist aus dem Stand von `agent/lernen` (b72f936) übertragen. Die
+**Rechnen wie Android.** `js/core/` ist aus dem Stand von `agent/lernen` übertragen (Logik b72f936, abgeglichen mit 73c874c: dort kamen nur `CardSuggester.plainCard` und `FocusTimer.finished` dazu, beide hier nicht übernommen, weil sie nichts an den Zahlen ändern). Die
 Kotlin-Tests sind Eins zu Eins in `tests/` übernommen: `RepetitionTest`, `RepetitionAuditTest`,
 `TodayPlannerTest`, `ReadinessTest`, `ErrorBookTest`, `FocusTimerTest`, `StatisticsTest`,
 `AnswerCheckTest`, `QuestionMakerTest`, `CardCsvTest`, `TextQuestionsTest`, `CardSuggesterTest`,
@@ -79,10 +79,11 @@ auf der Signal-Taste unter AA.
   statt Stellen im Heft (auf Android: `study_link`).
 - Die Erklärhilfe erklärt nur Karten. Karten vorschlagen und freie Antworten bewerten per Claude gibt
   es auf Android, hier nicht. Offline-Vorschläge aus Text sind da.
-- `#deck column:` in Tab-Dateien wird gelesen, die Karten landen aber im geöffneten Stapel.
 - Eine PNG-Grafik im Android-Stil für Ladebildschirme auf iOS (`apple-touch-startup-image`) fehlt.
 
 **Bekannte Grenzen:**
+
+- Eine Prüfung kann hier mehrere Stapel haben (alle des Fachs oder von Hand gewählte), auf Android genau einen. Mit einem Stapel je Fach rechnen beide gleich.
 
 - Android hat ein Paket-Format noch nicht. `docs/INHALTSPAKET.md` beschreibt, was dort nötig ist.
 - Keine fachlichen Inhalte im Repo. Das Beispiel handelt nur von der Bedienung.

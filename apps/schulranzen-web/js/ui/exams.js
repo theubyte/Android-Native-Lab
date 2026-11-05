@@ -169,7 +169,7 @@ function runsBlock(exam, state) {
   const t = trend(runs.map((r) => r.percent));
   return h('section.stack', {},
     sectionHead('Probeprüfungen', runs.length),
-    t !== null ? h('p.caption.muted', {}, t >= 0 ? `Letzte Runde ${Math.round(t)} Punkte besser.` : `Letzte Runde ${Math.round(-t)} Punkte schwächer.`) : null,
+    t !== null ? h('p.caption.muted', {}, t > 0 ? `${Math.round(t)} Prozentpunkte besser als beim letzten Mal.` : t < 0 ? `${Math.round(-t)} Prozentpunkte schwächer als beim letzten Mal.` : 'Genauso wie beim letzten Mal.') : null,
     runs.length === 0 ? h('p.muted', {}, 'Noch keine Probeprüfung. Schwache Karten kommen öfter dran.') : h('div.rows', {}, runs.map((r) => h('a.list-row', { href: `#/probe/${exam.id}/${r.id}` },
       h('span.list-main', {}, h('span.list-title', { css: { display: 'block' } }, `Note ${r.grade} · ${GRADE_WORDS[r.grade]}`), h('span.list-sub', {}, `${dateLong(r.epochDay)} · ${r.asked} Fragen`)),
       h('span.mono', {}, `${Math.trunc(r.percent)} %`)))));

@@ -112,7 +112,7 @@ export async function renderMore(root) {
         section('Tastatur',
           h('table.table-simple', {},
             h('tbody', {},
-              [['Leertaste', 'Karte umdrehen'], ['1 2 3 4', 'Nochmal, Schwer, Gut, Leicht; bei Multiple Choice die Antwort'], ['Enter', 'Prüfen, dann den Vorschlag übernehmen'], ['U', 'Letzte Antwort zurücknehmen'], ['Esc', 'Sitzung beenden, Fenster schließen'], ['← →', 'Probeprüfung: vorige und nächste Frage']]
+              [['Leertaste', 'Karte umdrehen'], ['1 2 3 4', 'Nochmal, Schwer, Gut, Leicht; bei Auswahl die Antwort'], ['Enter', 'Prüfen, dann den Vorschlag übernehmen'], ['U', 'Letzte Antwort zurücknehmen'], ['Esc', 'Sitzung beenden, Fenster schließen'], ['← →', 'Probeprüfung: vorige und nächste Frage']]
                 .map(([k, t]) => h('tr', {}, h('td', {}, h('span.kbd', {}, k)), h('td', {}, t)))))),
         section('Erklärhilfe (Option für Fortgeschrittene)', explainSettings(refresh)),
         section('Über diese App',

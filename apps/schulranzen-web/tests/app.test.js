@@ -218,16 +218,12 @@ test('the plan does not hand out new cards twice a day', () => {
   ok(Study.todayPlan({ ...s, cards: learnt, reviews }, 101, 600).cards.length > 0);
 });
 
-test('a wrong mock answer makes a card weak until it was answered right', () => {
-  const s = state({
-    decks: [{ id: 'a', name: 'X' }], cards: [baseCard('c', 'a')],
-    mockRuns: [{ id: 'm', examId: 'e', at: 1000, epochDay: 100, answers: [{ cardId: 'c', grade: 'WRONG', topic: 'T' }] }],
-  });
-  ok(Study.weakCardIds(s, 101).has('c'));
-  s.reviews = [{ id: 'r', cardId: 'c', deckId: 'a', epochDay: 101, at: 2000, rating: Rating.GOOD }];
-  no(Study.weakCardIds(s, 101).has('c'));
-  s.reviews = [];
-  no(Study.weakCardIds(s, 200).has('c'), 'a mock long ago no longer counts');
+test('weak means on the error list or forgotten twice, as on Android', () => {
+  const s = state({ decks: [{ id: 'a', name: 'X' }], cards: [baseCard('c', 'a'), baseCard('d', 'a', { lapses: 2 })] });
+  eq([...Study.weakCardIds(s)], ['d']);
+  s.mockRuns = [{ id: 'm', examId: 'e', at: 1, epochDay: 100, answers: [{ cardId: 'c', grade: 'WRONG', topic: 'T' }] }];
+  s.reviews = [{ id: 'r', cardId: 'c', deckId: 'a', epochDay: 101, at: 2, rating: Rating.AGAIN }];
+  ok(Study.weakCardIds(s).has('c'), 'wrong on two days, one of them in a mock exam');
 });
 
 test('readiness counts the material and names missing topics', () => {
