@@ -14,6 +14,25 @@ gelten diese Regeln. Produktziel, Design und Phasen: [PLAN.md](PLAN.md).
 | `feature/backup/` + `core/.../core/backup/` | Agent „Backup“ | Vollbackup/Restore, Unraid-Sync, Import aus V15 |
 | `feature/handwriting/` + `core/.../core/shapes/` | Agent „Schrift“ | Handschrift → Text, Suchindex über Handschrift, Formerkennung |
 
+### Runde 3 (0.5, verkaufsfertig)
+
+| Agent | Besitz | Ausnahmen |
+|---|---|---|
+| `lernen` | `feature/study/`, `core/.../core/study/` | |
+| `handy` | `app/.../MainActivity.kt`, neues `app/.../phone/`, Scan-Code, `design/` | kleiner `readOnly`-Eingriff in `ink/NotebookCanvasView.kt` und `app/notebook/NotebookScreen.kt` |
+| `heft` | `ink/`, `app/.../notebook/`, `app/.../library/`, `app/.../data/` (außer `BackupWiring.kt`) | |
+| `sichern` | `feature/backup/`, `core/.../core/backup/`, `app/.../data/BackupWiring.kt`, `apps/digitaler-schulranzen/server/` | |
+| `buecher` | `feature/books/`, `core/.../core/books/`, `feature/handwriting/`, `core/.../core/shapes/` | |
+| `rechnen` | `feature/rechnen/`, `core/.../core/math/`, `core/.../core/shk/` | |
+| `release` | `app/build.gradle.kts`, `gradle/`, ProGuard, Manifest, `docs/store/`, neues `app/.../about/`, `.github/` | |
+
+**Handy-Regel für alle:** `rememberIsPhone()` / `isPhone(context)` aus `design/Device.kt` entscheidet.
+Auf dem Handy gibt es kein Schreiben, keinen Radierer, keinen Lasso und kein Rechnen; Lesen, Scannen und Lernen
+müssen dort ab 360 dp Breite einwandfrei gehen. Das Tablet bleibt unverändert. Keine Parameter quer durch die Module.
+
+**Prüfbericht:** Jeder Agent schreibt `docs/audit/<name>.md`: geprüft, gefunden, behoben, offen.
+`docs/STAND.md` ändert nur der Integrator.
+
 Andere Dateien nur lesen. Braucht ein Agent etwas außerhalb seines Bereichs (eine neue
 Bibliothek im Versionskatalog, eine Änderung im Designsystem, ein Hook im Heft), beschreibt er
 das in seinem Abschlussbericht. Der Integrator setzt es um. Eigene Abhängigkeiten dürfen direkt
