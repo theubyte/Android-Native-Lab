@@ -1327,7 +1327,10 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             val hideI = sel?.items ?: emptySet()
             if (Build.VERSION.SDK_INT >= 29 && canvas.isHardwareAccelerated) {
                 val ink = page.ink
-                val key = ink.contentRevision * 31 + page.paper.ordinal * 7 + (sel?.hashCode()?.toLong() ?: 0L)
+                // Recorded for the zoom it is seen at, in steps so a pinch does not record every frame.
+                val step = kotlin.math.round(kotlin.math.ln(scale) / ZOOM_STEP_LN)
+                val sharp = kotlin.math.exp(step * ZOOM_STEP_LN)
+                val key = ink.contentRevision * 31 + page.paper.ordinal * 7 + (sel?.hashCode()?.toLong() ?: 0L) + step.toLong() * 1_000_003L
                 val n = nodes.getOrPut(page.id) { PageNode() }
                 val count = ink.strokes.size
                 // The system throws display lists away (app in the background, low memory, off screen)
@@ -1337,20 +1340,20 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                     !n.base.hasDisplayList() || (n.recorded > n.baseCount && !n.tail.hasDisplayList())
                 if (fresh || !n.canAppend(page, count)) {
                     val rc = n.base.beginRecording(WIDTH.toInt(), HEIGHT.toInt())
-                    try { n.incomplete = !PagePainter.paint(rc, page, hideStrokes = hideS, hideItems = hideI, asyncImages = true) } finally { n.base.endRecording() }
+                    try { n.incomplete = !PagePainter.paint(rc, page, hideStrokes = hideS, hideItems = hideI, asyncImages = true, screenScale = sharp) } finally { n.base.endRecording() }
                     n.tail.discardDisplayList()
                     n.key = key; n.epoch = imageEpoch; n.baseCount = count; n.recorded = count
                     dirtyPages -= i
                 } else if (count > n.recorded) {
                     // New pen strokes only: a small list on top instead of recording the whole page again.
                     val rc = n.tail.beginRecording(WIDTH.toInt(), HEIGHT.toInt())
-                    try { PagePainter.paintStrokes(rc, page, n.baseCount, count) } finally { n.tail.endRecording() }
+                    try { PagePainter.paintStrokes(rc, page, n.baseCount, count, sharp) } finally { n.tail.endRecording() }
                     n.recorded = count
                 }
                 canvas.drawRenderNode(n.base)
                 if (n.recorded > n.baseCount) canvas.drawRenderNode(n.tail)
             } else {
-                PagePainter.paint(canvas, page, hideStrokes = hideS, hideItems = hideI)
+                PagePainter.paint(canvas, page, hideStrokes = hideS, hideItems = hideI, screenScale = scale)
             }
         }
     }
@@ -1531,7 +1534,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             canvas.save()
             canvas.concat(pm)
             canvas.concat(drag)
-            PagePainter.paintSome(canvas, page, s.strokes, s.items)
+            PagePainter.paintSome(canvas, page, s.strokes, s.items, scale)
             canvas.restore()
             val r = RectF(s.bounds).also { drag.mapRect(it) }
             r.inset(-6f, -6f)
@@ -1546,3 +1549,5 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         const val RING_HOLD_MS = 300L
     }
 }
+
+private val ZOOM_STEP_LN = kotlin.math.ln(1.2f)

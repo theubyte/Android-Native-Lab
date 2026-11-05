@@ -19,7 +19,16 @@ object PagePainter {
         override fun initialValue(): CanvasStrokeRenderer = CanvasStrokeRenderer.create()
     }
     private val renderer: CanvasStrokeRenderer get() = renderers.get()!!
-    private val identity = Matrix()
+    private val toScreen = object : ThreadLocal<Matrix>() {
+        override fun initialValue() = Matrix()
+    }
+
+    /**
+     * The renderer smooths edges for the size it is told, whatever the canvas
+     * does later: told 1:1 and shown enlarged, every stroke comes out soft with
+     * dark blots where it crosses itself.
+     */
+    private fun matrix(screenScale: Float) = toScreen.get()!!.apply { setScale(screenScale, screenScale) }
 
     /**
      * Paints the page. With [asyncImages] pictures not yet decoded are left
@@ -32,7 +41,9 @@ object PagePainter {
         hideStrokes: Set<Long> = emptySet(),
         hideItems: Set<Long> = emptySet(),
         asyncImages: Boolean = false,
+        screenScale: Float = 1f,
     ): Boolean {
+        val identity = matrix(screenScale)
         var complete = true
         val sheet = page.background
         if (sheet != null) {
@@ -51,13 +62,15 @@ object PagePainter {
     }
 
     /** Strokes [from] until [to] of the page, in their order: what was written since the last full paint. */
-    fun paintStrokes(canvas: Canvas, page: CanvasPage, from: Int, to: Int) {
+    fun paintStrokes(canvas: Canvas, page: CanvasPage, from: Int, to: Int, screenScale: Float = 1f) {
+        val identity = matrix(screenScale)
         val strokes = page.ink.strokes
         for (i in from until to) renderer.draw(canvas, strokes[i].stroke, identity)
     }
 
     /** Just the given strokes and items (a moving selection). */
-    fun paintSome(canvas: Canvas, page: CanvasPage, strokes: Set<Long>, items: Set<Long>) {
+    fun paintSome(canvas: Canvas, page: CanvasPage, strokes: Set<Long>, items: Set<Long>, screenScale: Float = 1f) {
+        val identity = matrix(screenScale)
         for (it in page.ink.items) if (it is ImageItem && it.id in items) ItemPainter.draw(canvas, it)
         for (s in page.ink.strokes) if (s.tool == ToolKind.MARKER && s.id in strokes) renderer.draw(canvas, s.stroke, identity)
         for (s in page.ink.strokes) if (s.tool != ToolKind.MARKER && s.id in strokes) renderer.draw(canvas, s.stroke, identity)

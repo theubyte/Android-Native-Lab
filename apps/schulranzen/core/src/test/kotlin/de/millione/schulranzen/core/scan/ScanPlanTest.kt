@@ -41,9 +41,10 @@ class ScanPlanTest {
     }
 
     @Test fun bigPhotosShrinkSmallOnesStay() {
-        assertEquals(1800 to 2400, ScanPlan.fit(3000, 4000))
+        assertEquals(3000 to 4000, ScanPlan.fit(3000, 4000))
+        assertEquals(3000 to 4000, ScanPlan.fit(6000, 8000))
         assertEquals(800 to 600, ScanPlan.fit(800, 600))
-        assertEquals(2400 to 1, ScanPlan.fit(100_000, 1))
+        assertEquals(4000 to 1, ScanPlan.fit(100_000, 1))
     }
 
     @Test fun samplingNeverDropsBelowTheTarget() {
@@ -55,7 +56,7 @@ class ScanPlanTest {
     @Test fun posterPdfStaysInMemory() {
         val s = ScanPlan.pdfScale(595, 20_000)
         assertTrue(20_000 * s <= ScanPlan.PDF_HEIGHT * 1.5f + 1)
-        assertEquals(1654 / 595f, ScanPlan.pdfScale(595, 842), 0.001f)
+        assertEquals(2480 / 595f, ScanPlan.pdfScale(595, 842), 0.001f)
     }
 
     @Test fun onlyForeignContentIsAccepted() {

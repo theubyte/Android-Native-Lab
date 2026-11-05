@@ -34,12 +34,13 @@ object PageGeometry {
 
 /** Builds the Jetpack Ink brush for a tool, colour (ARGB) and size (page units). */
 object Brushes {
-    private const val EPSILON = 0.08f
+    /** Geometry tolerance in page units; far below the thinnest pen. */
+    private const val EPSILON = 0.02f
     private val pen by lazy { StockBrushes.pressurePen() }
     private val marker by lazy { StockBrushes.highlighter() }
 
-    /** Pen sizes offered in menus, in page units (0.4 … 2.1 mm). */
-    val penSizes = listOf(2f, 3f, 4.2f, 6f, 10f)
+    /** Pen sizes offered in menus, in page units (0.15 … 2.1 mm). */
+    val penSizes = listOf(0.7f, 1.2f, 2f, 3f, 4.2f, 6f, 10f)
     /** Marker sizes in page units (2.5 … 6 mm). */
     val markerSizes = listOf(12f, 18f, 26f)
 

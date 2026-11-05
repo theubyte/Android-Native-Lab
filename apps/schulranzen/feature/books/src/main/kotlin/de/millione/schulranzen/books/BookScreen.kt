@@ -657,7 +657,7 @@ private fun StylePanel(session: BookSession) {
             Spacer(Modifier.height(20.dp))
             Text("DICKE", style = Ranzen.type.caption, color = c.inkMuted)
             Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val sizes = if (marker) Brushes.markerSizes else Brushes.penSizes
                 val current = if (marker) session.markerSize else session.penSize
                 sizes.forEachIndexed { i, s ->
@@ -665,7 +665,7 @@ private fun StylePanel(session: BookSession) {
                         { if (marker) session.setMarker(session.markerColor, s) else session.setPen(session.penColor, s) },
                         selected = s == current, size = 48.dp, contentDescription = "Dicke ${i + 1} von ${sizes.size}",
                     ) {
-                        val dot = if (marker) (6 + s * 0.7f).dp else (4 + s * 2.2f).dp
+                        val dot = if (marker) (6 + s * 0.7f).dp else (2 + s * 2.2f).dp
                         Box(Modifier.size(dot).clip(CircleShape).background(Color(if (marker) session.markerColor else session.penColor)))
                     }
                 }

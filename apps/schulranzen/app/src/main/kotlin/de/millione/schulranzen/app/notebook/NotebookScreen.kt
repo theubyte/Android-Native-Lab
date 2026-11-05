@@ -645,7 +645,7 @@ private fun StylePanel(session: NotebookSession) {
             Spacer(Modifier.height(16.dp))
             Text("DICKE", style = Ranzen.type.caption, color = c.inkMuted)
             Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val sizes = if (marker) Brushes.markerSizes else Brushes.penSizes
                 sizes.forEach { s ->
                     val selected = s == currentSize
@@ -654,7 +654,7 @@ private fun StylePanel(session: NotebookSession) {
                         selected = selected, size = 48.dp,
                         contentDescription = "Dicke " + "%.1f".format(java.util.Locale.GERMANY, s / PageGeometry.UNITS_PER_MM) + " Millimeter",
                     ) {
-                        val dot = if (marker) (6 + s * 0.7f).dp else (4 + s * 2.2f).dp
+                        val dot = if (marker) (6 + s * 0.7f).dp else (2 + s * 2.2f).dp
                         Box(Modifier.size(dot).clip(CircleShape).background(Color(if (marker) session.markerColor else session.penColor)))
                     }
                 }

@@ -9,10 +9,10 @@ object ScanPlan {
     /** A scan never holds more sheets than this (a whole notebook, not a whole book). */
     const val MAX_SHEETS = 100
     /** Long side of a stored sheet, same as a picture in a notebook. */
-    const val MAX_LONG_SIDE = 2400
+    const val MAX_LONG_SIDE = 4000
     /** A4 at 200 dpi: PDF pages are rendered to fit inside this. */
-    const val PDF_WIDTH = 1654
-    const val PDF_HEIGHT = 2339
+    const val PDF_WIDTH = 2480
+    const val PDF_HEIGHT = 3508
 
     /**
      * Database position for pages inserted after the first [after] pages,

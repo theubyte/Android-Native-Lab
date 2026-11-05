@@ -1432,6 +1432,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
 
         private val renderer by lazy { CanvasStrokeRenderer.create() }
         private val identity = Matrix()
+        private var inkScale = 1f
         private val paper = Paint().apply { color = Color.WHITE }
         private val shadow = Paint(Paint.ANTI_ALIAS_FLAG)
         private val shadowRect = RectF()
@@ -1513,7 +1514,10 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
             val hideS = sel?.strokes ?: emptySet()
             val hideI = sel?.items ?: emptySet()
             if (Build.VERSION.SDK_INT >= 29 && canvas.isHardwareAccelerated) {
-                val key = ink.revision * 31 + rot[page] * 7 + (sel?.hashCode()?.toLong() ?: 0L)
+                // Recorded for the zoom it is seen at (edge smoothing), in steps so a pinch does not record every frame.
+                val step = kotlin.math.round(kotlin.math.ln(scale) / kotlin.math.ln(1.2f))
+                inkScale = kotlin.math.exp(step * kotlin.math.ln(1.2f))
+                val key = ink.revision * 31 + rot[page] * 7 + (sel?.hashCode()?.toLong() ?: 0L) + step.toLong() * 1_000_003L
                 val cached = nodes[page]
                 val node = (cached?.second as? RenderNode) ?: RenderNode("book-ink").also {
                     it.setPosition(0, 0, BookUnits.WIDTH.toInt(), unitH[page].roundToInt().coerceAtLeast(1))
@@ -1526,12 +1530,13 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                     nodes[page] = key to node
                 }
                 canvas.drawRenderNode(node)
-            } else paintInk(canvas, page, ink, hideS, hideI)
+            } else { inkScale = scale; paintInk(canvas, page, ink, hideS, hideI) }
         }
 
         /** Markers below ink, typed text on top, like in the notebook. [only] paints just the given ids. */
         fun paintInk(canvas: Canvas, page: Int, ink: PageInk, ids: Set<Long>, itemIds: Set<Long>, only: Boolean = false) {
             fun shown(id: Long, set: Set<Long>) = if (only) id in set else id !in set
+            val identity = this.identity.apply { setScale(inkScale, inkScale) }
             for (s in ink.strokes) if (s.tool == ToolKind.MARKER && shown(s.id, ids)) renderer.draw(canvas, s.stroke, identity)
             for (s in ink.strokes) if (s.tool != ToolKind.MARKER && shown(s.id, ids)) renderer.draw(canvas, s.stroke, identity)
             for (it in ink.items) if (shown(it.id, itemIds)) drawItem(canvas, page, it)

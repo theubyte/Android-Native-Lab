@@ -6,7 +6,7 @@ Plan und Design im Detail: [PLAN.md](PLAN.md). Regeln für parallele Agenten: [A
 
 Legende: `[x]` erledigt · `[ ]` offen · `[~]` teilweise · **(T)** nur auf dem echten Tablet prüfbar
 
-Letzte Aktualisierung: 05.11.2026, Version **0.5.1**
+Letzte Aktualisierung: 05.11.2026, Version **0.5.2**
 
 
 ---
@@ -120,6 +120,12 @@ Letzte Aktualisierung: 05.11.2026, Version **0.5.1**
 ---
 
 ## Erledigt
+
+### 0.5.2 – Schärfer und dünner (05.11.2026)
+- **Striche scharf beim Zoomen:** Die Kantenglättung rechnete immer mit der Grundgröße, vergrößert wurden Striche weich und bekamen dunkle Flecken. Seiten werden jetzt passend zum Zoom aufgezeichnet (Heft, Buch, Auswahl). Auf dem Emulator im Zoom geprüft.
+- **Dünnere Stifte:** neu 0,15 mm und 0,25 mm, feinere Strichgeometrie. Gilt für neue Striche.
+- **Höhere Auflösung:** Scans und Fotos bis 4000 px statt 2400 px, PDF-Seiten mit 300 dpi statt 200 dpi, JPEG-Qualität 92. Anzeige bis 4096 px. Gilt für neu eingefügte Blätter; vorhandene bleiben, wie sie gespeichert sind. Dateien und Abgleich werden dadurch größer.
+- Nicht geprüft: Schreibgefühl und Geschwindigkeit großer Seiten auf dem echten Tablet, hochaufgelöste Blätter im Speicher.
 
 ### 0.5.1 – Blätter und Live-Abgleich (05.11.2026)
 - **Leere/schwarze Blätter behoben:** Android verwirft die aufgezeichneten Seiten im Hintergrund, bei Speichermangel oder außerhalb des Bildes; die App zeichnete danach eine leere Seite. Daten waren nie betroffen. Sie prüft das jetzt und zeichnet neu, auch beim Buch. Im Emulator nachgestellt (Home + Speicherfreigabe) und nach der Korrektur erneut geprüft.

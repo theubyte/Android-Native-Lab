@@ -226,7 +226,7 @@ class ScanStore(private val context: Context, private val library: Library, priv
         return type == "application/pdf" || (type == null && uri.lastPathSegment?.endsWith(".pdf", ignoreCase = true) == true)
     }
 
-    /** At most 2400 px, upright, JPEG. Null if it is no readable picture. */
+    /** At most 4000 px, upright, JPEG. Null if it is no readable picture. */
     private fun copyImage(uri: Uri): String? {
         val bmp = decode(uri) ?: return null
         val name = UUID.randomUUID().toString() + ".jpg"
@@ -324,7 +324,7 @@ class ScanStore(private val context: Context, private val library: Library, priv
 
     private fun writeJpeg(bmp: Bitmap, file: File) {
         val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.outputStream().use { if (!bmp.compress(Bitmap.CompressFormat.JPEG, 88, it)) error("Bild nicht speicherbar") }
+        tmp.outputStream().use { if (!bmp.compress(Bitmap.CompressFormat.JPEG, 92, it)) error("Bild nicht speicherbar") }
         if (!tmp.renameTo(file)) { tmp.delete(); error("Bild nicht speicherbar") }
     }
 

@@ -95,7 +95,7 @@ object ItemPainter {
     var imageDir: File? = null
 
     private val layouts = LruCache<TextItem, StaticLayout>(200)
-    private val images = object : LruCache<String, Bitmap>(96 * 1024 * 1024) {
+    private val images = object : LruCache<String, Bitmap>(192 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount
     }
     private val decoding = ConcurrentHashMap.newKeySet<String>()
@@ -121,15 +121,15 @@ object ItemPainter {
 
     fun textHeight(t: TextItem): Float = max(t.size * 1.2f, layout(t).height.toFloat())
 
-    /** Picture for a file, decoded at most ~2000 px on the long side. */
+    /** Picture for a file, decoded at most ~4000 px on the long side (photos have no alpha: 565 halves the memory). */
     fun image(file: String): Bitmap? = images.get(file) ?: run {
         val f = File(imageDir ?: return null, file)
         if (!f.isFile) return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(f.path, bounds)
         var sample = 1
-        while (max(bounds.outWidth, bounds.outHeight) / sample > 2000) sample *= 2
-        val once = { s: Int -> BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = s }) }
+        while (max(bounds.outWidth, bounds.outHeight) / sample > 4096) sample *= 2
+        val once = { s: Int -> BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = s; if (bounds.outMimeType == "image/jpeg") inPreferredConfig = Bitmap.Config.RGB_565 }) }
         val bmp = try {
             once(sample)
         } catch (_: OutOfMemoryError) {

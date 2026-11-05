@@ -319,7 +319,7 @@ class Library(private val context: Context) {
                         ensureActive()
                         pdf.openPage(i).use { page ->
                             // A4 width; a strip of a page must not ask for a bitmap of many metres.
-                            val scale = min(1654f / max(page.width, 1), 3000f / max(page.height, 1))
+                            val scale = min(2480f / max(page.width, 1), 5000f / max(page.height, 1))
                             val w = (page.width * scale).toInt().coerceAtLeast(1); val h = (page.height * scale).toInt().coerceAtLeast(1)
                             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                             try {
@@ -327,7 +327,7 @@ class Library(private val context: Context) {
                                 page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
                                 val name = UUID.randomUUID().toString() + ".jpg"
                                 out += name
-                                writeJpeg(bmp, File(imageDir, name), 88)
+                                writeJpeg(bmp, File(imageDir, name), 92)
                             } finally {
                                 bmp.recycle()
                             }
@@ -388,7 +388,7 @@ class Library(private val context: Context) {
     suspend fun setLastPage(notebookId: String, page: Int) = dao.setLastPage(notebookId, page)
 
     /**
-     * Copies a picture into the app (at most 2400 px, JPEG) so the notebook
+     * Copies a picture into the app (at most 4000 px, JPEG) so the notebook
      * never depends on the gallery. Returns the file name and its aspect;
      * null when the picture cannot be decoded. A full disk throws.
      */
@@ -396,7 +396,7 @@ class Library(private val context: Context) {
         val src = runCatching {
             if (Build.VERSION.SDK_INT >= 28) ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { d, info, _ ->
                 val longSide = max(info.size.width, info.size.height)
-                if (longSide > 2400) d.setTargetSampleSize((longSide + 2399) / 2400)
+                if (longSide > 4000) d.setTargetSampleSize((longSide + 3999) / 4000)
                 d.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             } else context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
         }.getOrNull() ?: return@withContext null
@@ -406,7 +406,7 @@ class Library(private val context: Context) {
         } else src
         val name = UUID.randomUUID().toString() + ".jpg"
         try {
-            writeJpeg(solid, File(imageDir, name), 90)
+            writeJpeg(solid, File(imageDir, name), 92)
             name to (src.height.toFloat() / src.width)
         } finally {
             if (solid !== src) solid.recycle()
