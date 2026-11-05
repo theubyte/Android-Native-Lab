@@ -129,6 +129,7 @@ dependencies {
     implementation(libs.serialization.json)
     // Installs the crash capture before anything else runs (about/StartupInitializer).
     implementation("androidx.startup:startup-runtime:1.2.0")
+    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
     testImplementation(libs.junit)
     testImplementation(kotlin("test"))
 }
