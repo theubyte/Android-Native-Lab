@@ -1,21 +1,12 @@
 package de.millione.schulranzen.core.study
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
-import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.SocketTimeoutException
-import java.net.URL
-import java.net.UnknownHostException
 
 /** Why a call to the assistant failed; the UI words each kind for the learner. */
 enum class AssistantError { NO_KEY, INVALID_KEY, RATE_LIMIT, OVERLOADED, REFUSED, OFFLINE, TIMEOUT, BAD_REQUEST, SERVER, EMPTY }
@@ -25,18 +16,21 @@ class AssistantException(val error: AssistantError, message: String) : Exception
 /** One turn of a conversation; [role] is "user" or "assistant". */
 data class ChatTurn(val role: String, val text: String)
 
-data class AssistantReply(val text: String, val stopReason: String?)
+/** The verdict of Claude on a free answer. */
+data class AnswerReview(val grade: SelfGrade, val feedback: String)
 
 /**
- * The explanation helper on top of the Claude Messages API, as plain HTTP so
- * the app needs no SDK. Requests and replies are built and parsed here
- * (tested without network); [send] does the blocking call and must run on
- * an IO thread.
+ * What the explanation helper asks and how replies are read: prompts and parsers,
+ * tested without network. The call itself goes through the Anthropic SDK in the
+ * study feature, so this module stays free of it.
  */
 object ClaudeApi {
-    const val ENDPOINT = "https://api.anthropic.com/v1/messages"
-    const val VERSION = "2023-06-01"
-    const val MODEL = "claude-haiku-5-5"
+    /** The default model. */
+    const val MODEL = "claude-opus-5-5"
+    /** The cheap choice for a learner paying with their own key. */
+    const val MODEL_THRIFTY = "claude-haiku-5-5"
+    /** Server-side retry on another model after a safety decline. Haiku has none. */
+    const val FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -63,45 +57,41 @@ object ClaudeApi {
         [{"front": "…", "back": "…"}] und sonst nichts.
     """.trimIndent()
 
-    fun requestBody(system: String, turns: List<ChatTurn>, maxTokens: Int = 2048, model: String = MODEL): String =
-        buildJsonObject {
-            put("model", model)
-            put("max_tokens", maxTokens)
-            put("system", system)
-            // Short school answers need little deliberation; low effort keeps them quick and cheap.
-            put("output_config", buildJsonObject { put("effort", "low") })
-            put("messages", buildJsonArray {
-                turns.forEach { t -> add(buildJsonObject { put("role", t.role); put("content", t.text) }) }
-            })
-        }.toString()
+    /** Judges a learner's free answer against the card's solution. */
+    val SYSTEM_GRADE = """
+        Du bewertest die frei formulierte Antwort eines Auszubildenden zum Anlagenmechaniker SHK
+        wie ein fairer Prüfer. Maßstab ist die Musterlösung der Karte; andere Worte für dieselbe Sache sind richtig.
+        Tippfehler zählen nicht. Falsche Zahlen, Einheiten oder Fachbegriffe zählen.
+        Antworte ausschließlich mit einem JSON-Objekt der Form
+        {"grade": "RIGHT" | "PARTLY" | "WRONG", "feedback": "…"}.
+        Das Feedback ist auf Deutsch, höchstens drei Sätze, und sagt konkret, was fehlt oder falsch ist.
+    """.trimIndent()
 
-    /** Text of a successful reply. Thinking blocks and other non-text blocks are skipped. */
-    fun parseReply(body: String): AssistantReply {
-        val root = json.parseToJsonElement(body).jsonObject
-        val stop = (root["stop_reason"] as? JsonPrimitive)?.contentOrNull
-        if (stop == "refusal") throw AssistantException(AssistantError.REFUSED, "Dazu kann der Assistent nichts sagen.")
-        val text = (root["content"] as? JsonArray).orEmpty()
-            .mapNotNull { it as? JsonObject }
-            .filter { (it["type"] as? JsonPrimitive)?.contentOrNull == "text" }
-            .joinToString("") { (it["text"] as? JsonPrimitive)?.contentOrNull.orEmpty() }
-            .trim()
-        if (text.isEmpty()) throw AssistantException(AssistantError.EMPTY, "Die Antwort war leer.")
-        return AssistantReply(text, stop)
-    }
+    /** Makes exam questions from notes or a book page, answered as a JSON array. */
+    val SYSTEM_QUESTIONS = """
+        Du erstellst Prüfungsfragen für einen Auszubildenden zum Anlagenmechaniker SHK aus dem folgenden Text.
+        Schreibe 5 bis 20 Fragen, wie sie in einer Klassenarbeit oder Gesellenprüfung vorkommen: Verständnis, Rechnen mit
+        Werten aus dem Text, Abläufe, Begründungen, nicht nur Definitionen. Die Antwort ist knapp und vollständig.
+        Verwende nur, was im Text steht; was dort nicht steht, wird nicht gefragt und nicht ergänzt.
+        Antworte ausschließlich mit einem JSON-Array der Form [{"front": "Frage", "back": "Antwort"}].
+    """.trimIndent()
 
-    /** Maps an HTTP error to a kind; the API's own message is kept for details. */
-    fun parseError(status: Int, body: String?): AssistantException {
-        val msg = runCatching {
-            json.parseToJsonElement(body.orEmpty()).jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
-        }.getOrNull().orEmpty()
-        val kind = when (status) {
-            401, 403 -> AssistantError.INVALID_KEY
-            429 -> AssistantError.RATE_LIMIT
-            529 -> AssistantError.OVERLOADED
-            400, 404, 413, 422 -> AssistantError.BAD_REQUEST
-            else -> if (status >= 500) AssistantError.SERVER else AssistantError.BAD_REQUEST
+    fun gradeRequest(question: String, solution: String, answer: String): String =
+        "Frage:\n${question.trim()}\n\nMusterlösung:\n${solution.trim()}\n\nAntwort des Auszubildenden:\n${answer.trim()}"
+
+    /** Reads the verdict; null when the reply holds none, so the learner judges instead. */
+    fun parseReview(text: String): AnswerReview? {
+        val start = text.indexOf('{')
+        val end = text.lastIndexOf('}')
+        if (start < 0 || end <= start) return null
+        val o = runCatching { json.parseToJsonElement(text.substring(start, end + 1)).jsonObject }.getOrNull() ?: return null
+        val grade = when ((o["grade"] as? JsonPrimitive)?.contentOrNull?.uppercase()) {
+            "RIGHT" -> SelfGrade.RIGHT
+            "PARTLY" -> SelfGrade.PARTLY
+            "WRONG" -> SelfGrade.WRONG
+            else -> return null
         }
-        return AssistantException(kind, msg.ifEmpty { "HTTP $status" })
+        return AnswerReview(grade, (o["feedback"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty())
     }
 
     /**
@@ -119,41 +109,6 @@ object ClaudeApi {
             val b = (o["back"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
             if (f.isEmpty() || b.isEmpty()) null else CardSuggestion(f, b, SuggestionKind.ASSISTANT)
         }.distinctBy { it.front.lowercase() }
-    }
-
-    /** Blocking call. Run it on Dispatchers.IO. */
-    fun send(apiKey: String, system: String, turns: List<ChatTurn>, maxTokens: Int = 2048, endpoint: String = ENDPOINT): AssistantReply {
-        if (apiKey.isBlank()) throw AssistantException(AssistantError.NO_KEY, "Kein API-Schlüssel hinterlegt.")
-        val conn = (URL(endpoint).openConnection() as HttpURLConnection)
-        try {
-            conn.requestMethod = "POST"
-            conn.connectTimeout = 15_000
-            conn.readTimeout = 90_000
-            conn.doOutput = true
-            conn.setRequestProperty("content-type", "application/json")
-            conn.setRequestProperty("x-api-key", apiKey.trim())
-            conn.setRequestProperty("anthropic-version", VERSION)
-            conn.outputStream.use { it.write(requestBody(system, turns, maxTokens).toByteArray(Charsets.UTF_8)) }
-            val status = conn.responseCode
-            val stream = if (status in 200..299) conn.inputStream else conn.errorStream
-            val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
-            if (status !in 200..299) throw parseError(status, body)
-            return parseReply(body.orEmpty())
-        } catch (e: AssistantException) {
-            throw e
-        } catch (e: SocketTimeoutException) {
-            throw AssistantException(AssistantError.TIMEOUT, e.message ?: "Zeitüberschreitung")
-        } catch (e: UnknownHostException) {
-            throw AssistantException(AssistantError.OFFLINE, e.message ?: "Kein Netz")
-        } catch (e: IOException) {
-            throw AssistantException(AssistantError.OFFLINE, e.message ?: "Verbindungsfehler")
-        } catch (e: kotlinx.serialization.SerializationException) {
-            throw AssistantException(AssistantError.SERVER, "Antwort nicht lesbar")
-        } catch (e: IllegalArgumentException) {
-            throw AssistantException(AssistantError.SERVER, "Antwort nicht lesbar")
-        } finally {
-            conn.disconnect()
-        }
     }
 
     /** Learner-facing German text for an error. */

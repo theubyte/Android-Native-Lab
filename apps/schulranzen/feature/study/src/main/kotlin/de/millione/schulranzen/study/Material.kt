@@ -67,18 +67,20 @@ internal fun StudyOverlay(onDismiss: () -> Unit, width: Dp = 600.dp, content: @C
  * "Für Prüfung markieren": the host passes the place (notebook or book
  * page, optional area); the learner picks one of the coming exams (nearest
  * first) or the bookmark list, adds a note if wanted, and saves.
- * [onDone] is called after the link is stored.
+ * [onDone] is called after the link is stored. [initialNote] fills the note, e.g. with
+ * the text marked in a book.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun MarkForExamSheet(link: StudyLinkDraft, onDone: () -> Unit, onCancel: () -> Unit) {
+fun MarkForExamSheet(link: StudyLinkDraft, onDone: () -> Unit, onCancel: () -> Unit, initialNote: String = "") {
     val context = LocalContext.current
     val repo = remember { StudyRepository(context.applicationContext) }
     val exams by repo.nextExams.collectAsState(initial = null)
     val scope = rememberCoroutineScope()
     var choice by remember { mutableStateOf<Long?>(null) }
     var picked by remember { mutableStateOf(false) }
-    var note by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf(initialNote) }
+    var error by remember { mutableStateOf<String?>(null) }
     var label by remember { mutableStateOf(link.label) }
     var saving by remember { mutableStateOf(false) }
     val c = Ranzen.colors
@@ -118,14 +120,16 @@ fun MarkForExamSheet(link: StudyLinkDraft, onDone: () -> Unit, onCancel: () -> U
         Spacer(Modifier.height(20.dp))
         FieldLabel("Notiz (optional)")
         LineField(note, { note = it }, "z. B. Tabelle unten auswendig lernen", singleLine = false, minLines = 2)
+        error?.let { Text(it, style = Ranzen.type.body, color = c.signal, modifier = Modifier.padding(top = 8.dp)) }
         SheetActions(
             primary = if (saving) "Speichert …" else "Speichern",
             onPrimary = {
                 if (saving) return@SheetActions
                 saving = true
                 scope.launch {
-                    repo.addLink(choice, link.copy(label = label), note)
-                    onDone()
+                    runCatching { repo.addLink(choice, link.copy(label = label), note) }
+                        .onSuccess { onDone() }
+                        .onFailure { saving = false; error = "Die Stelle ließ sich nicht speichern. Bitte nochmal versuchen." }
                 }
             },
             onCancel = onCancel,

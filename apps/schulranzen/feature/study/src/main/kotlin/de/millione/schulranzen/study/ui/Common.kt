@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -70,6 +71,7 @@ import de.millione.schulranzen.design.RanzenIcons
 import de.millione.schulranzen.design.SignalButton
 import de.millione.schulranzen.design.SubjectPalette
 import de.millione.schulranzen.design.TactileKey
+import de.millione.schulranzen.design.rememberIsPhone
 import de.millione.schulranzen.design.softRaise
 import de.millione.schulranzen.study.StudySubject
 import java.time.LocalDate
@@ -104,6 +106,21 @@ internal object StudyIcons {
     val Edit = RanzenIcons.line("edit") {
         moveTo(4.5f, 19.5f); lineTo(5.3f, 15.7f); lineTo(15.6f, 5.4f); lineTo(18.6f, 8.4f); lineTo(8.3f, 18.7f); close()
         moveTo(13.6f, 7.4f); lineTo(16.6f, 10.4f)
+    }
+    /** An open page with a cross: the error list. */
+    val Mistakes = RanzenIcons.line("mistakes") {
+        moveTo(6f, 3.5f); lineTo(18f, 3.5f); lineTo(18f, 20.5f); lineTo(6f, 20.5f); close()
+        moveTo(9.5f, 9f); lineTo(14.5f, 14f); moveTo(14.5f, 9f); lineTo(9.5f, 14f)
+    }
+    /** Three rising bars: statistics. */
+    val Bars = RanzenIcons.line("bars") {
+        moveTo(5f, 20f); lineTo(5f, 13f); moveTo(12f, 20f); lineTo(12f, 8f); moveTo(19f, 20f); lineTo(19f, 4f)
+    }
+    /** Arrows in and out of a tray: import and export. */
+    val Transfer = RanzenIcons.line("transfer") {
+        moveTo(4f, 15f); lineTo(4f, 20f); lineTo(20f, 20f); lineTo(20f, 15f)
+        moveTo(9f, 8f); lineTo(9f, 16f); moveTo(6.5f, 13.5f); lineTo(9f, 16f); lineTo(11.5f, 13.5f)
+        moveTo(15f, 16f); lineTo(15f, 8f); moveTo(12.5f, 10.5f); lineTo(15f, 8f); lineTo(17.5f, 10.5f)
     }
     val Clock = RanzenIcons.line("clock") {
         moveTo(12f, 4f); arcToRelative(8f, 8f, 0f, true, true, 0f, 16f); arcToRelative(8f, 8f, 0f, true, true, 0f, -16f)
@@ -177,12 +194,44 @@ internal fun ScreenHeader(
     subtitle: String?,
     onBack: () -> Unit,
     accent: Color? = null,
+    showBack: Boolean = true,
     actions: @Composable () -> Unit = {},
 ) {
     val c = Ranzen.colors
+    val phone = rememberIsPhone()
+    // On a phone the keys would crush the title: they get their own row, in thumb reach of a scroll.
+    if (phone) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (showBack) {
+                    TactileKey(onBack, contentDescription = "Zurück") { RanzenIcon(RanzenIcons.Back) }
+                    Spacer(Modifier.width(12.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = Ranzen.type.heading, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (subtitle != null) {
+                        Spacer(Modifier.height(2.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Lamp(accent ?: c.signal, size = 6.dp)
+                            Spacer(Modifier.width(6.dp))
+                            Text(subtitle.uppercase(Locale.GERMANY), style = Ranzen.type.caption, color = c.inkMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) { actions() }
+        }
+        return
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        TactileKey(onBack, contentDescription = "Zurück") { RanzenIcon(RanzenIcons.Back) }
-        Spacer(Modifier.width(18.dp))
+        if (showBack) {
+            TactileKey(onBack, contentDescription = "Zurück") { RanzenIcon(RanzenIcons.Back) }
+            Spacer(Modifier.width(18.dp))
+        }
         Column(Modifier.weight(1f)) {
             Text(title, style = Ranzen.type.title, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (subtitle != null) {
@@ -202,15 +251,20 @@ internal fun ScreenHeader(
 @Composable
 internal fun StudyPage(header: @Composable () -> Unit, content: @Composable () -> Unit) {
     val c = Ranzen.colors
+    val phone = rememberIsPhone()
     Box(Modifier.fillMaxSize().background(c.desk)) {
-        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 32.dp)) {
-            Spacer(Modifier.height(22.dp))
+        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = if (phone) 16.dp else 32.dp)) {
+            Spacer(Modifier.height(if (phone) 10.dp else 22.dp))
             header()
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(if (phone) 10.dp else 20.dp))
             Box(Modifier.weight(1f).fillMaxWidth()) { content() }
         }
     }
 }
+
+/** Inner margin of a panel: generous on a tablet, tight enough for 360 dp on a phone. */
+internal val panelPad: Dp
+    @Composable get() = if (rememberIsPhone()) 16.dp else 26.dp
 
 /**
  * A sheet of paper that slides up over a dimmed desk, used instead of
@@ -219,13 +273,15 @@ internal fun StudyPage(header: @Composable () -> Unit, content: @Composable () -
 @Composable
 internal fun SheetHost(visible: Boolean, onDismiss: () -> Unit, width: Dp = 560.dp, content: @Composable () -> Unit) {
     val c = Ranzen.colors
+    val phone = rememberIsPhone()
     if (visible) {
         BackHandler(onBack = onDismiss)
         Box(Modifier.fillMaxSize().background(c.desk.copy(alpha = 0.6f)).pointerInput(Unit) { detectTapGestures { onDismiss() } })
     }
     Box(
-        Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.union(WindowInsets.ime)).padding(24.dp),
-        contentAlignment = Alignment.Center,
+        Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.union(WindowInsets.ime)).padding(if (phone) 8.dp else 24.dp),
+        // On a phone it rises from the bottom, where the thumb is.
+        contentAlignment = if (phone) Alignment.BottomCenter else Alignment.Center,
     ) {
         AnimatedVisibility(
             visible,
@@ -236,7 +292,7 @@ internal fun SheetHost(visible: Boolean, onDismiss: () -> Unit, width: Dp = 560.
                 Column(
                     // Swallow taps on the sheet so they do not reach the scrim below.
                     Modifier.pointerInput(Unit) { detectTapGestures { } }
-                        .widthIn(max = width).verticalScroll(rememberScrollState()).padding(30.dp),
+                        .widthIn(max = width).verticalScroll(rememberScrollState()).padding(if (phone) 18.dp else 30.dp),
                 ) { content() }
             }
         }
@@ -255,7 +311,20 @@ internal fun SheetActions(
 ) {
     val c = Ranzen.colors
     var confirm by remember { mutableStateOf(false) }
-    Spacer(Modifier.height(28.dp))
+    Spacer(Modifier.height(if (rememberIsPhone()) 18.dp else 28.dp))
+    if (rememberIsPhone()) {
+        // The long labels do not fit in one row at 360 dp; delete goes above, away from the thumb.
+        if (onDelete != null) {
+            QuietButton(if (confirm) "Wirklich löschen?" else deleteLabel, { if (confirm) onDelete() else confirm = true }, color = c.signal)
+            Spacer(Modifier.height(6.dp))
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            QuietButton(cancelLabel, onCancel)
+            Spacer(Modifier.weight(1f))
+            SignalButton(primary, onPrimary)
+        }
+        return
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (onDelete != null) {
             // Two taps to delete: no extra dialog, but no accident either.
@@ -351,10 +420,12 @@ internal fun SubjectPicker(
     ColorRow(colorIndex) { onChange(name, it, null) }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ColorRow(selected: Int, onSelect: (Int) -> Unit) {
     val c = Ranzen.colors
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    // Eight 48 dp targets do not fit next to each other on a phone.
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         SubjectPalette.colors.forEachIndexed { i, col ->
             val active = Math.floorMod(selected, SubjectPalette.colors.size) == i
             Box(

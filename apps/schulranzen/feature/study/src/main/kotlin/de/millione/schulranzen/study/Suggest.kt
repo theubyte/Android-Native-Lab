@@ -44,6 +44,7 @@ import de.millione.schulranzen.study.ui.FieldLabel
 import de.millione.schulranzen.study.ui.LineField
 import de.millione.schulranzen.study.ui.SheetActions
 import de.millione.schulranzen.study.ui.StudyIcons
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -52,11 +53,13 @@ import kotlinx.coroutines.withContext
  * "Karten vorschlagen": proposals for [text] (from a notebook page, a book
  * page, an explanation …). Offline proposals come at once; with an API key
  * Claude can make better ones. The learner edits, ticks and saves them.
- * An empty [text] shows a field to paste text into.
+ * An empty [text] shows a field to paste text into. Text that fits no pattern gets one
+ * plain card to word by hand. With a [source], the place the text came from is kept
+ * with the cards (as exam material or on the bookmark list), so the way back stays.
  */
 @Composable
-fun SuggestCardsSheet(text: String, onDone: () -> Unit, onCancel: () -> Unit) {
-    StudyOverlay(onCancel, width = 760.dp) { SuggestCardsContent(text, preferDeck = null, onDone = onDone, onCancel = onCancel) }
+fun SuggestCardsSheet(text: String, onDone: () -> Unit, onCancel: () -> Unit, source: StudyLinkDraft? = null) {
+    StudyOverlay(onCancel, width = 760.dp) { SuggestCardsContent(text, preferDeck = null, onDone = onDone, onCancel = onCancel, source = source) }
 }
 
 private class Draft(front: String, back: String, val kind: SuggestionKind) {
@@ -66,7 +69,7 @@ private class Draft(front: String, back: String, val kind: SuggestionKind) {
 }
 
 @Composable
-internal fun SuggestCardsContent(initialText: String, preferDeck: Long?, onDone: () -> Unit, onCancel: () -> Unit, preferExam: Long? = null) {
+internal fun SuggestCardsContent(initialText: String, preferDeck: Long?, onDone: () -> Unit, onCancel: () -> Unit, preferExam: Long? = null, examQuestions: Boolean = false, sourceText: (suspend () -> String?)? = null, source: StudyLinkDraft? = null) {
     val context = LocalContext.current
     val repo = remember { StudyRepository(context.applicationContext) }
     val assistant = remember { StudyAssistant(context.applicationContext) }
@@ -83,11 +86,19 @@ internal fun SuggestCardsContent(initialText: String, preferDeck: Long?, onDone:
     var error by remember { mutableStateOf<String?>(null) }
     var target by remember { mutableStateOf<CardTarget?>(null) }
     var saving by remember { mutableStateOf(false) }
+    var loadingSource by remember { mutableStateOf(false) }
+    var plainOnly by remember { mutableStateOf(false) }
+    var keepPlace by remember { mutableStateOf(true) }
+    var saveError by remember { mutableStateOf<String?>(null) }
 
     fun show(list: List<CardSuggestion>) {
         drafts.clear(); drafts.addAll(list.map { Draft(it.front, it.back, it.kind) }); analysed = true
     }
-    fun offline() = scope.launch { show(withContext(Dispatchers.Default) { CardSuggester.suggest(text) }) }
+    fun offline() = scope.launch {
+        val found = withContext(Dispatchers.Default) { if (examQuestions) de.millione.schulranzen.core.study.TextQuestions.fromText(text) else CardSuggester.suggest(text) }
+        plainOnly = found.isEmpty()
+        show(found.ifEmpty { listOfNotNull(CardSuggester.plainCard(text)) })
+    }
 
     LaunchedEffect(Unit) { if (initialText.isNotBlank()) offline() }
     LaunchedEffect(exams, decks) { if (target == null && exams != null) target = defaultTarget(exams.orEmpty(), decks, preferDeck, preferExam) }
@@ -95,13 +106,26 @@ internal fun SuggestCardsContent(initialText: String, preferDeck: Long?, onDone:
     Row(verticalAlignment = Alignment.CenterVertically) {
         RanzenIcon(StudyIcons.Wand, tint = c.signal)
         Spacer(Modifier.width(10.dp))
-        Text("Karten vorschlagen", style = Ranzen.type.title, color = c.ink)
+        Text(if (examQuestions) "Prüfungsfragen aus Text" else "Karten vorschlagen", style = Ranzen.type.title, color = c.ink)
     }
     Spacer(Modifier.height(18.dp))
     if (initialText.isBlank() || !analysed) {
         FieldLabel("Text")
         LineField(text, { text = it }, "Text einfügen, z. B. aus dem Heft oder Buch", singleLine = false, minLines = 5)
         Spacer(Modifier.height(12.dp))
+        if (sourceText != null) {
+            QuietButton(if (loadingSource) "Liest den Stoff …" else "Text aus markiertem Stoff holen", {
+                if (loadingSource) return@QuietButton
+                loadingSource = true
+                scope.launch {
+                    val loaded = sourceText()
+                    if (loaded.isNullOrBlank()) error = "In den markierten Stellen wurde kein Text gefunden. Bei Handschrift oder Scans erst erkennen lassen."
+                    else text = loaded
+                    loadingSource = false
+                }
+            }, color = c.ink)
+        }
+        error?.takeIf { !analysed }?.let { Text(it, style = Ranzen.type.caption, color = c.signal, modifier = Modifier.padding(top = 6.dp)) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             SignalButton("Vorschläge machen", { if (text.isNotBlank()) offline() })
         }
@@ -116,7 +140,7 @@ internal fun SuggestCardsContent(initialText: String, preferDeck: Long?, onDone:
                     busy = true; error = null
                     scope.launch {
                         try {
-                            val list = assistant.suggestCards(text)
+                            val list = if (examQuestions) assistant.suggestQuestions(text) else assistant.suggestCards(text)
                             if (list.isEmpty()) error = "Claude hat keine Karten gefunden." else show(list)
                         } catch (e: AssistantException) {
                             error = ClaudeApi.describe(e.error)
@@ -132,16 +156,33 @@ internal fun SuggestCardsContent(initialText: String, preferDeck: Long?, onDone:
         Spacer(Modifier.height(18.dp))
         CardTargetPicker(exams.orEmpty(), decks, target) { target = it }
     }
+    if (analysed && plainOnly && drafts.isNotEmpty()) {
+        Text("Kein bekanntes Muster im Text. Formuliere die Karte selbst fertig.", style = Ranzen.type.caption, color = c.inkMuted, modifier = Modifier.padding(top = 6.dp))
+    }
+    if (source != null && analysed) {
+        de.millione.schulranzen.study.ui.RetroSwitch("Stelle mit merken", keepPlace, { keepPlace = it }, hint = source.label)
+    }
+    saveError?.let { Text(it, style = Ranzen.type.body, color = c.signal, modifier = Modifier.padding(top = 8.dp)) }
     val chosen = drafts.count { it.selected && it.front.isNotBlank() }
     SheetActions(
         primary = when { saving -> "Speichert …"; chosen == 1 -> "1 Karte anlegen"; else -> "$chosen Karten anlegen" },
         onPrimary = {
             if (saving || chosen == 0) return@SheetActions
             saving = true
+            saveError = null
             scope.launch {
+                try {
                 val deckId = repo.resolveDeck(target)
-                drafts.filter { it.selected && it.front.isNotBlank() }.forEach { repo.addCard(deckId, it.front, it.back) }
+                repo.addCards(deckId, drafts.filter { it.selected && it.front.isNotBlank() }.map { it.front to it.back })
+                if (source != null && keepPlace) repo.addLink((target as? CardTarget.ToExam)?.examId, source)
                 onDone()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // Nothing was added: the sheet stays open with everything the learner edited.
+                    saving = false
+                    saveError = "Die Karten ließen sich nicht anlegen. Es wurde nichts gespeichert. Bitte nochmal versuchen."
+                }
             }
         },
         onCancel = onCancel,

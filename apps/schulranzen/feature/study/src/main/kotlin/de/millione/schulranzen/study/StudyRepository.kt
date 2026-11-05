@@ -2,7 +2,25 @@ package de.millione.schulranzen.study
 
 import android.content.Context
 import androidx.room.withTransaction
+import de.millione.schulranzen.core.study.Attempt
 import de.millione.schulranzen.core.study.CardSchedule
+import de.millione.schulranzen.core.study.CsvCard
+import de.millione.schulranzen.core.study.ErrorBook
+import de.millione.schulranzen.core.study.ErrorEntry
+import de.millione.schulranzen.core.study.MockPoint
+import de.millione.schulranzen.core.study.PlanCard
+import de.millione.schulranzen.core.study.PlanExam
+import de.millione.schulranzen.core.study.QuizCard
+import de.millione.schulranzen.core.study.Readiness
+import de.millione.schulranzen.core.study.ReadinessForecast
+import de.millione.schulranzen.core.study.ReadinessInput
+import de.millione.schulranzen.core.study.SelfGrade
+import de.millione.schulranzen.core.study.StatAnswer
+import de.millione.schulranzen.core.study.StudyStatistics
+import de.millione.schulranzen.core.study.StudySummary
+import de.millione.schulranzen.core.study.TodayPlan
+import de.millione.schulranzen.core.study.TodayPlanner
+import de.millione.schulranzen.core.study.TopicMatcher
 import de.millione.schulranzen.core.study.CardSuggester
 import de.millione.schulranzen.core.study.CardSuggestion
 import de.millione.schulranzen.core.study.LearningPath
@@ -21,6 +39,8 @@ import de.millione.schulranzen.study.data.Card
 import de.millione.schulranzen.study.data.Deck
 import de.millione.schulranzen.study.data.DeckCounts
 import de.millione.schulranzen.study.data.DeckProgress
+import de.millione.schulranzen.study.data.FocusSession
+import de.millione.schulranzen.study.data.MockAnswerRow
 import de.millione.schulranzen.study.data.MockRun
 import de.millione.schulranzen.study.data.StudyLink
 import de.millione.schulranzen.study.data.Exam
@@ -39,7 +59,9 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 
 /** Kinds of exams a trainee meets; [label] is shown in the UI. */
@@ -73,6 +95,35 @@ data class TimetableSettings(
 
 /** A lesson of a concrete day with its times. */
 data class LessonSlot(val lesson: Lesson, val period: PeriodTime?)
+
+/** A card on the error list with what the list shows about it. */
+data class ErrorItem(val card: Card, val entry: ErrorEntry, val deckName: String, val colorIndex: Int)
+
+/** What the plan page needs: the plan and the things its ids point at. */
+data class TodayBundle(val plan: TodayPlan, val exams: Map<Long, Exam>, val links: Map<Long, StudyLink>)
+
+/** One graded question of a mock exam, ready to be stored. */
+data class MockAnswerDraft(
+    val cardId: Long?,
+    val topic: String,
+    val type: String,
+    val question: String,
+    val solution: String,
+    val given: String,
+    val grade: SelfGrade,
+)
+
+data class ImportResult(val added: Int, val duplicates: Int)
+
+/** What a reminder needs to know at the moment it fires. */
+data class ReminderData(
+    val dueReviews: Int,
+    val fresh: Int,
+    val reviewedToday: Int,
+    val exams: List<Pair<Exam, Int?>>,
+)
+
+internal fun Card.quiz() = QuizCard(id, front, back, frontImage != null || backImage != null)
 
 /** Numbers for the overview: due today, reviews done today, day streak. */
 data class StudyOverview(val dueToday: Int, val reviewedToday: Int, val streak: Int, val totalCards: Int)
@@ -201,8 +252,14 @@ class StudyRepository(context: Context) {
             Card(deckId = deckId, front = front.trim(), back = back.trim(), frontImage = frontImage, backImage = backImage, dueEpochDay = LocalDate.now().toEpochDay()),
         )
 
+    /** Adds several cards at once: all of them or, on failure, none. */
+    suspend fun addCards(deckId: Long, cards: List<Pair<String, String>>) = db.withTransaction {
+        cards.forEach { (f, b) -> addCard(deckId, f, b) }
+    }
+
     suspend fun updateCardText(card: Card, front: String, back: String) =
-        dao.updateCard(card.copy(front = front.trim(), back = back.trim()))
+        // From the database: the caller's copy may hold an old schedule.
+        dao.updateCard((dao.card(card.id) ?: card).copy(front = front.trim(), back = back.trim()))
 
     /** Updates text and pictures; pictures that were replaced or removed are deleted. */
     suspend fun updateCard(card: Card, front: String, back: String, frontImage: String?, backImage: String?) {
@@ -229,12 +286,12 @@ class StudyRepository(context: Context) {
     /** The deck that belongs to an exam (same subject); created if there is none yet. */
     suspend fun deckForExam(examId: Long): Long = db.withTransaction {
         val exam = dao.exam(examId) ?: error("Prüfung fehlt")
-        val all = dao.deckCounts(LocalDate.now().toEpochDay()).first()
+        val all = dao.deckCountsNow(LocalDate.now().toEpochDay())
         deckFor(exam, all)?.id ?: dao.upsertDeck(Deck(name = exam.subject, colorIndex = exam.colorIndex, subjectId = exam.subjectId))
     }
 
     /** The deck that belongs to an exam, or null; nothing is created. */
-    suspend fun existingDeckForExam(exam: Exam): Long? = deckFor(exam, dao.deckCounts(LocalDate.now().toEpochDay()).first())?.id
+    suspend fun existingDeckForExam(exam: Exam): Long? = deckFor(exam, dao.deckCountsNow(LocalDate.now().toEpochDay()))?.id
 
     // ---- Exam links (Prüfungsstoff) and the bookmark list ------------------
 
@@ -249,6 +306,7 @@ class StudyRepository(context: Context) {
                 examId = examId, kind = link.kind.name, targetId = link.targetId, page = link.page,
                 rectX = link.rect?.x, rectY = link.rect?.y, rectW = link.rect?.w, rectH = link.rect?.h,
                 label = link.label.trim().ifEmpty { "${link.kind.label} · S. ${link.page + 1}" }, note = note.trim(),
+                pageId = link.pageId,
             ),
         )
 
@@ -271,6 +329,9 @@ class StudyRepository(context: Context) {
 
     suspend fun deleteLink(id: Long) = dao.deleteLink(id)
 
+    /** Remembers where a moved page is now, so the next list shows it right. */
+    suspend fun relocateLink(link: StudyLink, targetId: String, page: Int) = dao.relocateLink(link.id, targetId, page)
+
     // ---- Mock exams --------------------------------------------------------
 
     /** Cards of the given decks, for building a mock exam. */
@@ -281,18 +342,39 @@ class StudyRepository(context: Context) {
         MockExam.pick(cardsOf(deckIds), count, { it.schedule })
 
     /**
-     * Stores a finished mock exam and pulls the cards answered wrong (or
-     * left open) forward, so today's review starts with them.
+     * Stores a finished mock exam with its answers and pulls the cards answered
+     * wrong (or left open) forward, so today's review starts with them.
      */
-    suspend fun saveMockRun(examId: Long, result: MockResult, weakCardIds: Collection<Long>) = db.withTransaction {
-        dao.insertMockRun(
+    suspend fun saveMockRun(examId: Long, result: MockResult, answers: List<MockAnswerDraft>, seconds: Int, limitSeconds: Int?): Long = db.withTransaction {
+        val run = dao.insertMockRun(
             MockRun(
                 examId = examId, asked = result.asked, points = result.points, percent = result.percent, grade = result.grade,
-                weakTopics = result.weakTopics.joinToString("\n") { it.topic },
+                weakTopics = result.weakTopics.joinToString("\n") { it.topic }, seconds = seconds, limitSeconds = limitSeconds,
             ),
         )
-        if (weakCardIds.isNotEmpty()) dao.pullForward(weakCardIds.toList(), LocalDate.now().toEpochDay())
+        dao.insertMockAnswers(
+            answers.mapIndexed { i, a ->
+                MockAnswerRow(
+                    runId = run, cardId = a.cardId, position = i, topic = a.topic, type = a.type,
+                    question = a.question, solution = a.solution, given = a.given, grade = a.grade.name,
+                )
+            },
+        )
+        val weak = answers.filter { MockExam.needsRelearning(it.grade) }.mapNotNull { it.cardId }
+        if (weak.isNotEmpty()) dao.pullForward(weak, LocalDate.now().toEpochDay())
+        run
     }
+
+    suspend fun mockAnswers(runId: Long): List<MockAnswerRow> = dao.mockAnswers(runId)
+
+    suspend fun cardsById(ids: Collection<Long>): List<Card> {
+        if (ids.isEmpty()) return emptyList()
+        // Long sessions must not hit SQLite's limit on bound variables.
+        val found = ids.distinct().chunked(500).flatMap { dao.cardsById(it) }.associateBy { it.id }
+        return ids.mapNotNull { found[it] }
+    }
+
+    suspend fun deckCards(deckId: Long): List<Card> = dao.cardsOfDeck(deckId)
 
     fun mockRuns(examId: Long): Flow<List<MockRun>> = dao.mockRuns(examId)
 
@@ -323,6 +405,147 @@ class StudyRepository(context: Context) {
         if (exam == null) flowOf(null) else path(exam).map { p -> p.next?.let { exam to it } }
     }
 
+    // ---- Answer log, error list -----------------------------------------------
+
+    private fun dayOf(millis: Long): Long = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay()
+
+    private val attempts: Flow<List<Attempt>> = combine(dao.reviewLog(), dao.mockLog()) { reviews, mocks ->
+        reviews.map { Attempt(it.cardId, it.epochDay, it.at, ErrorBook.isRight(Rating.entries.getOrElse(it.rating) { Rating.GOOD })) } +
+            mocks.map { Attempt(it.cardId, dayOf(it.at), it.at, it.grade == SelfGrade.RIGHT.name) }
+    }
+
+    /** The error list: built from the log, so it needs no care. */
+    val errorBook: Flow<List<ErrorItem>> = combine(attempts, dao.allCards(), dao.deckCounts(0)) { log, cards, ds ->
+        val byId = cards.associateBy { it.id }
+        val deckOf = ds.associateBy { it.id }
+        ErrorBook.build(log).mapNotNull { e ->
+            val card = byId[e.cardId] ?: return@mapNotNull null
+            val deck = deckOf[card.deckId]
+            ErrorItem(card, e, deck?.name.orEmpty(), deck?.colorIndex ?: 0)
+        }
+    }
+
+    // ---- Today's plan ----------------------------------------------------------
+
+    val dailyMinutes: Flow<Int> = dao.settings().map { rows ->
+        rows.firstOrNull { it.key == "dailyMinutes" }?.value?.toIntOrNull() ?: TodayPlanner.DEFAULT_MINUTES
+    }
+
+    suspend fun saveDailyMinutes(minutes: Int) = dao.putSetting(SettingRow("dailyMinutes", minutes.toString()))
+
+    suspend fun studyMode(): String? = dao.settings().first().firstOrNull { it.key == "studyMode" }?.value
+
+    suspend fun saveStudyMode(name: String) = dao.putSetting(SettingRow("studyMode", name))
+
+    /** "Jetzt lernen": one session for today over all coming exams. [budget] overrides the daily time. */
+    suspend fun todayPlan(budget: Int? = null): TodayBundle {
+        val day = LocalDate.now()
+        val d = day.toEpochDay()
+        val decksNow = dao.deckCountsNow(d)
+        val cards = dao.allCards().first()
+        val errorIds = ErrorBook.build(attempts.first()).map { it.cardId }.toSet()
+        fun plan(c: Card) = PlanCard(c.id, c.schedule, c.id in errorIds || c.lapses >= 2)
+        val byDeck = cards.groupBy { it.deckId }
+        val exams = dao.examsFromNow(d)
+        val usedDecks = HashSet<Long>()
+        val links = HashMap<Long, StudyLink>()
+        val planExams = exams.map { e ->
+            val deck = deckFor(e, decksNow)
+            deck?.let { usedDecks += it.id }
+            val open = dao.linksNow(e.id).filter { it.doneAt == null }
+            open.forEach { links[it.id] = it }
+            val lastMock = dao.mockRunsNow(e.id).firstOrNull()
+            PlanExam(
+                id = e.id, date = LocalDate.ofEpochDay(e.dateEpochDay), weight = TodayPlanner.weightOf(e.kind),
+                cards = deck?.let { byDeck[it.id] }.orEmpty().map(::plan),
+                openLinkIds = open.map { it.id },
+                daysSinceMock = lastMock?.let { ChronoUnit.DAYS.between(LocalDate.ofEpochDay(dayOf(it.at)), day) },
+            )
+        }
+        val other = cards.filter { it.deckId !in usedDecks && it.dueEpochDay <= d }.map(::plan)
+        val minutes = budget ?: dailyMinutes.first()
+        return TodayBundle(TodayPlanner.build(planExams, other, day, minutes), exams.associateBy { it.id }, links)
+    }
+
+    // ---- Readiness ---------------------------------------------------------------
+
+    private fun readinessOf(exam: Exam, deckId: Long?, allCards: List<Card>, links: List<StudyLink>, runs: List<MockRun>, day: LocalDate): Readiness {
+        val cards = allCards.filter { it.deckId == deckId }
+        val topics = exam.topics.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        return ReadinessForecast.estimate(
+            ReadinessInput(
+                cards = cards.map { it.schedule },
+                cardTopics = if (topics.isEmpty()) emptyList() else cards.map { TopicMatcher.topicOf("${it.front} ${it.back}", topics, "") },
+                topics = topics,
+                mocks = runs.map { MockPoint(it.percent, ChronoUnit.DAYS.between(LocalDate.ofEpochDay(dayOf(it.at)), day).coerceAtLeast(0), it.asked) },
+                linksTotal = links.size,
+                linksDone = links.count { it.doneAt != null },
+                cardTarget = LearningPath.cardTarget(topics.size, links.size),
+                today = day,
+                examDate = LocalDate.ofEpochDay(exam.dateEpochDay),
+            ),
+        )
+    }
+
+    /** Forecast for one exam, kept up to date with cards, links and mock exams. */
+    fun readiness(exam: Exam): Flow<Readiness> = today.flatMapLatest { day ->
+        combine(dao.allCards(), dao.deckCounts(day.toEpochDay()), dao.links(exam.id), dao.mockRuns(exam.id)) { cards, ds, links, runs ->
+            readinessOf(exam, deckFor(exam, ds)?.id, cards, links, runs, day)
+        }
+    }
+
+    // ---- Statistics, focus --------------------------------------------------------
+
+    fun statistics(spanDays: Int): Flow<StudySummary> = today.flatMapLatest { day ->
+        combine(dao.reviewLog(), dao.focusByDay()) { log, focus ->
+            StudyStatistics.summary(
+                log.map { StatAnswer(it.epochDay, it.deckId, ErrorBook.isRight(Rating.entries.getOrElse(it.rating) { Rating.GOOD })) },
+                focus.associate { it.epochDay to it.minutes }, day, spanDays,
+            )
+        }
+    }
+
+    suspend fun addFocus(minutes: Int) {
+        if (minutes > 0) dao.insertFocus(FocusSession(epochDay = LocalDate.now().toEpochDay(), minutes = minutes))
+    }
+
+    // ---- Import and export -----------------------------------------------------------
+
+    /**
+     * Adds [cards] as new cards, each to its own named deck if the file says so, else to
+     * [deckId]. A front already in the deck (or twice in the file) is skipped: importing
+     * the same file again must not double a deck or touch what has been learnt.
+     */
+    suspend fun importCards(deckId: Long, cards: List<CsvCard>): ImportResult = db.withTransaction {
+        val today = LocalDate.now().toEpochDay()
+        val seen = HashMap<Long, MutableSet<String>>()
+        var added = 0
+        var dupes = 0
+        for (c in cards) {
+            val target = c.deck?.let { name ->
+                (dao.deckByName(name) ?: Deck(name = name, colorIndex = dao.deckCount()).let { it.copy(id = dao.upsertDeck(it)) }).id
+            } ?: deckId
+            val fronts = seen.getOrPut(target) { dao.frontsOf(target).map { it.trim().lowercase() }.toMutableSet() }
+            if (!fronts.add(c.front.trim().lowercase())) { dupes++; continue }
+            dao.insertCard(Card(deckId = target, front = c.front.trim(), back = c.back.trim(), dueEpochDay = today))
+            added++
+        }
+        ImportResult(added, dupes)
+    }
+
+    // ---- Reminders --------------------------------------------------------------------
+
+    suspend fun reminderData(): ReminderData {
+        val d = LocalDate.now()
+        val day = d.toEpochDay()
+        val decksNow = dao.deckCountsNow(day)
+        val cards = dao.allCards().first()
+        val exams = dao.examsFromNow(day).map { e ->
+            e to readinessOf(e, deckFor(e, decksNow)?.id, cards, dao.linksNow(e.id), dao.mockRunsNow(e.id), d).percent
+        }
+        return ReminderData(dao.dueReviewsNow(day), dao.freshNow(), dao.reviewsOnNow(day), exams)
+    }
+
     // ---- Card suggestions --------------------------------------------------
 
     /**
@@ -331,6 +554,9 @@ class StudyRepository(context: Context) {
      * With a key, [StudyAssistant.suggestCards] gives better ones.
      */
     fun suggestCards(text: String): List<CardSuggestion> = CardSuggester.suggest(text)
+
+    /** Exam runs over all exams, newest first. */
+    val allMockRuns: Flow<List<MockRun>> = dao.allMockRuns()
 
     /** Due cards of one deck (or all), in learning order: overdue first, new last. */
     suspend fun studyQueue(deckId: Long?): List<Card> {
@@ -383,7 +609,7 @@ class StudyRepository(context: Context) {
             val dow = day.dayOfWeek.value
             val byIndex = periods.associateBy { it.index }
             return all.asSequence()
-                .filter { it.day == dow }
+                .filter { it.day == dow && dow <= set.days }
                 .filter { !set.abWeeks || Timetable.takesPlace(cycleOf(it), day, set.anchor) }
                 .sortedBy { it.period }
                 .map { LessonSlot(it, byIndex[it.period]) }

@@ -1,10 +1,5 @@
 package de.millione.schulranzen.core.study
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.int
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -168,41 +163,6 @@ class LearningPathTest {
 }
 
 class ClaudeApiTest {
-    @Test fun requestBodyHasModelSystemAndTurns() {
-        val body = Json.parseToJsonElement(ClaudeApi.requestBody("sys", listOf(ChatTurn("user", "Was ist ein MAG?")), 500)).jsonObject
-        assertEquals("claude-haiku-5-5", body["model"]!!.jsonPrimitive.content)
-        assertEquals(500, body["max_tokens"]!!.jsonPrimitive.int)
-        assertEquals("sys", body["system"]!!.jsonPrimitive.content)
-        val msg = body["messages"]!!.jsonArray[0].jsonObject
-        assertEquals("user", msg["role"]!!.jsonPrimitive.content)
-        assertEquals("Was ist ein MAG?", msg["content"]!!.jsonPrimitive.content)
-        assertFalse(body.containsKey("temperature"))
-    }
-
-    @Test fun replyTextSkipsThinking() {
-        val r = ClaudeApi.parseReply(
-            """{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"Ein MAG "},{"type":"text","text":"gleicht aus."}],"stop_reason":"end_turn"}""",
-        )
-        assertEquals("Ein MAG gleicht aus.", r.text)
-        assertEquals("end_turn", r.stopReason)
-    }
-
-    @Test fun refusalAndEmptyAreErrors() {
-        val refused = runCatching { ClaudeApi.parseReply("""{"content":[],"stop_reason":"refusal"}""") }.exceptionOrNull() as AssistantException
-        assertEquals(AssistantError.REFUSED, refused.error)
-        val empty = runCatching { ClaudeApi.parseReply("""{"content":[],"stop_reason":"end_turn"}""") }.exceptionOrNull() as AssistantException
-        assertEquals(AssistantError.EMPTY, empty.error)
-    }
-
-    @Test fun httpErrorsMapToKinds() {
-        val e = ClaudeApi.parseError(401, """{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}""")
-        assertEquals(AssistantError.INVALID_KEY, e.error)
-        assertEquals("invalid x-api-key", e.message)
-        assertEquals(AssistantError.RATE_LIMIT, ClaudeApi.parseError(429, null).error)
-        assertEquals(AssistantError.OVERLOADED, ClaudeApi.parseError(529, "kaputt").error)
-        assertEquals(AssistantError.SERVER, ClaudeApi.parseError(503, "").error)
-    }
-
     @Test fun cardsFromFencedJson() {
         val cards = ClaudeApi.parseCards(
             "Hier:\n```json\n[{\"front\":\"Was ist ein MAG?\",\"back\":\"Membran-Ausdehnungsgefäß\"},{\"front\":\"\",\"back\":\"x\"},{\"front\":\"was ist ein mag?\",\"back\":\"doppelt\"}]\n```",
@@ -213,8 +173,15 @@ class ClaudeApiTest {
         assertTrue(ClaudeApi.parseCards("[kaputt").isEmpty())
     }
 
-    @Test fun noKeyFailsWithoutNetwork() {
-        val e = runCatching { ClaudeApi.send("", "s", listOf(ChatTurn("user", "x"))) }.exceptionOrNull() as AssistantException
-        assertEquals(AssistantError.NO_KEY, e.error)
+    @Test fun reviewIsReadFromJsonOrRefused() {
+        val r = ClaudeApi.parseReview("Bewertung:\n```json\n{\"grade\":\"PARTLY\",\"feedback\":\"Einheit fehlt.\"}\n```")
+        assertEquals(SelfGrade.PARTLY, r?.grade)
+        assertEquals("Einheit fehlt.", r?.feedback)
+        assertNull(ClaudeApi.parseReview("{\"grade\":\"VIELLEICHT\"}"))
+        assertNull(ClaudeApi.parseReview("kein JSON"))
+    }
+
+    @Test fun errorTextsNeverContainAKey() {
+        AssistantError.entries.forEach { assertFalse("sk-" in ClaudeApi.describe(it)) }
     }
 }

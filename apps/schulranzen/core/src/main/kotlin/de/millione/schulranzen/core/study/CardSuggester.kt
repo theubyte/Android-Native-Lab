@@ -1,7 +1,7 @@
 package de.millione.schulranzen.core.study
 
 /** Where a suggested card came from; the UI may show it as a small hint. */
-enum class SuggestionKind { DEFINITION, TERM, LIST, ASSISTANT }
+enum class SuggestionKind { DEFINITION, TERM, LIST, ASSISTANT, GAP }
 
 /** A card proposal the learner still has to confirm. */
 data class CardSuggestion(val front: String, val back: String, val kind: SuggestionKind)
@@ -78,6 +78,23 @@ object CardSuggester {
             sentences(line).forEach { s -> definitionOf(s)?.let(::add) }
         }
         return out.values.toList()
+    }
+
+    /**
+     * A plain card for text that fits no pattern, for the learner to word: first line or
+     * sentence in front, the rest behind. One sentence alone goes behind whole, under its
+     * opening words. Null for empty text.
+     */
+    fun plainCard(text: String): CardSuggestion? {
+        val clean = text.replace("\r", "").trim()
+        if (clean.isEmpty()) return null
+        val lines = clean.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        if (lines.size > 1) return CardSuggestion(lines.first(), lines.drop(1).joinToString("\n"), SuggestionKind.TERM)
+        val parts = sentences(clean)
+        if (parts.size > 1) return CardSuggestion(parts.first(), parts.drop(1).joinToString(" "), SuggestionKind.TERM)
+        val words = clean.split(Regex("\\s+"))
+        val front = if (words.size > 6) words.take(6).joinToString(" ") + " …" else clean
+        return CardSuggestion(front, clean, SuggestionKind.TERM)
     }
 
     private fun term(m: MatchResult): CardSuggestion? {

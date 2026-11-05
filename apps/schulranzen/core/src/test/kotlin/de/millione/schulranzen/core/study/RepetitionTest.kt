@@ -152,3 +152,78 @@ class RepetitionTest {
         assertEquals(listOf("overdue", "today", "new"), Repetition.queue(cards, day0) { it.s }.map { it.id })
     }
 }
+
+class RepetitionAuditTest {
+    private val day0 = LocalDate.of(2026, 10, 29)
+
+    @Test fun `repeating again in one sitting costs ease only once`() {
+        var s = CardSchedule(reps = 3, intervalDays = 10, ease = 2.5, lastReviewEpochDay = day0.minusDays(10).toEpochDay())
+        s = Repetition.review(s, Rating.AGAIN, day0)
+        assertEquals(2.3, s.ease, 1e-9)
+        repeat(5) { s = Repetition.review(s, Rating.AGAIN, day0) }
+        assertEquals(2.3, s.ease, 1e-9)
+        assertEquals(1, s.lapses, "retries in the same sitting are not new lapses")
+        // On a later day a failure counts again.
+        assertEquals(2.1, Repetition.review(s, Rating.AGAIN, day0.plusDays(1)).ease, 1e-9)
+    }
+
+    @Test fun `early review grows from the days really waited`() {
+        // Interval 20, pulled forward after 2 days: that proves 2 days, not 20.
+        val s = CardSchedule(reps = 4, intervalDays = 20, ease = 2.5, dueEpochDay = day0.toEpochDay(), lastReviewEpochDay = day0.minusDays(2).toEpochDay())
+        assertEquals(5, Repetition.review(s, Rating.GOOD, day0).intervalDays)
+        val same = s.copy(lastReviewEpochDay = day0.toEpochDay())
+        assertEquals(3, Repetition.review(same, Rating.GOOD, day0).intervalDays)
+    }
+
+    @Test fun `exam capped card does not balloon on its capped review`() {
+        val exam = day0.plusDays(6)
+        var s = CardSchedule(reps = 3, intervalDays = 10, ease = 2.5, dueEpochDay = day0.toEpochDay(), lastReviewEpochDay = day0.minusDays(10).toEpochDay())
+        s = Repetition.review(s, Rating.GOOD, day0, exam)
+        val again = Repetition.review(s, Rating.GOOD, LocalDate.ofEpochDay(s.dueEpochDay), exam)
+        assertEquals(13, again.intervalDays) // waited 5 days, not the planned 25
+        assertEquals(exam, LocalDate.ofEpochDay(again.dueEpochDay))
+    }
+
+    @Test fun `exam on the same day does not cap`() {
+        val r = Repetition.review(CardSchedule(), Rating.EASY, day0, day0)
+        assertEquals(day0.plusDays(3), LocalDate.ofEpochDay(r.dueEpochDay))
+    }
+
+    @Test fun `year boundary counts calendar days`() {
+        val eve = LocalDate.of(2026, 12, 31)
+        val r = Repetition.review(CardSchedule(), Rating.GOOD, eve)
+        assertEquals(LocalDate.of(2027, 1, 1), LocalDate.ofEpochDay(r.dueEpochDay))
+        assertTrue(r.isDue(LocalDate.of(2027, 1, 1)))
+        assertEquals(1, StudyStats.streak(setOf(eve.toEpochDay()), LocalDate.of(2027, 1, 1)))
+    }
+}
+
+class AuditPlanTimetableTest {
+    private val today = LocalDate.of(2026, 10, 29)
+
+    @Test fun `a b weeks stay right over a year boundary and before the anchor`() {
+        val anchor = LocalDate.of(2026, 12, 30) // Wednesday, A week
+        assertTrue(Timetable.isWeekA(LocalDate.of(2026, 12, 28), anchor))
+        assertTrue(Timetable.isWeekA(LocalDate.of(2027, 1, 3), anchor), "Sunday still belongs to the week")
+        assertFalse(Timetable.isWeekA(LocalDate.of(2027, 1, 4), anchor))
+        assertFalse(Timetable.isWeekA(LocalDate.of(2026, 12, 27), anchor), "the week before the anchor is B")
+    }
+
+    @Test fun `quota never goes negative when new cards are not yet due`() {
+        assertEquals(0, ExamPlanner.cardsToday(-3, 0, today, today.plusDays(2)))
+        assertEquals(2, ExamPlanner.cardsToday(-3, 4, today, today.plusDays(2)))
+    }
+
+    @Test fun `mock just below the mark is not done`() {
+        val p = LearningPath.build(PathInput(0, 0, 0, 12, 12, 12, 0, 66.97, 5))
+        assertEquals(StageState.ACTIVE, p.stages.first { it.kind == StageKind.MOCK }.state)
+    }
+
+    @Test fun `streak survives until the day is over and breaks after`() {
+        val d = today.toEpochDay()
+        assertEquals(2, StudyStats.streak(setOf(d - 1, d - 2), today))
+        assertEquals(0, StudyStats.streak(setOf(d - 2, d - 3), today))
+        assertEquals(3, StudyStats.streak(setOf(d, d - 1, d - 2, d - 4), today))
+        assertEquals(0, StudyStats.streak(emptySet(), today))
+    }
+}

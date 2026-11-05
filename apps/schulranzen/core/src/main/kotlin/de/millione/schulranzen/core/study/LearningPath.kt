@@ -63,7 +63,8 @@ object LearningPath {
         val mockDone = (i.mockBestPercent ?: 0.0) >= MockExam.SOLID_PERCENT
         val cardsP = if (mockDone && i.cards > 0) 1f else min(1f, i.cards.toFloat() / target)
         val learnP = if (i.cards == 0) 0f else min(1f, (i.cardsSolid.toFloat() / i.cards) / SOLID_SHARE)
-        val mockP = min(1f, ((i.mockBestPercent ?: 0.0) / MockExam.SOLID_PERCENT).toFloat())
+        // Just below the mark must not round up to "passed".
+        val mockP = if (mockDone) 1f else min(0.99f, ((i.mockBestPercent ?: 0.0) / MockExam.SOLID_PERCENT).toFloat())
         val eve = i.daysLeft <= 1
         val finalP = when {
             !eve || i.cards == 0 -> 0f

@@ -20,7 +20,7 @@ data class MockResult(
     val percent: Double,
     /** German school grade 1–6 after the IHK key. */
     val grade: Int,
-    /** Topics below the pass mark, weakest first. */
+    /** Topics below [MockExam.SOLID_PERCENT], weakest first. */
     val weakTopics: List<TopicScore>,
     val topics: List<TopicScore>,
 )
@@ -80,6 +80,16 @@ object MockExam {
         percent >= 30 -> 5
         else -> 6
     }
+
+    /**
+     * How the last run compares with the one before, in percentage points;
+     * null with fewer than two. [percents] are newest first.
+     */
+    fun trend(percents: List<Double>): Double? =
+        if (percents.size < 2) null else percents[0] - percents[1]
+
+    /** Whether a question counts as still open for relearning. */
+    fun needsRelearning(grade: SelfGrade): Boolean = grade != SelfGrade.RIGHT
 
     fun evaluate(answers: List<MockAnswer>): MockResult {
         val points = answers.sumOf { it.grade.points }
