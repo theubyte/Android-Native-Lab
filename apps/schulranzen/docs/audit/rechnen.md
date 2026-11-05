@@ -79,7 +79,7 @@ Definitionen sind als solche bezeichnet und nicht einzeln online nachgeschlagen.
 | gradient | Handrechnung | stimmt | richtig |
 | pythagoras | Handrechnung | stimmt | richtig |
 | mag | Reflex | Formel stimmt, Randbedingungen falsch (F1 bis F3) | korrigiert |
-| radiator | Formel in Fachartikeln mit 49,83 K bestätigt | stimmt; n je Heizkörper 1,2 bis 1,35 | vereinfacht |
+| radiator | deutschland-rechner.de und SBZ Monteur nennen dieselbe Formel mit 49,83 K | stimmt; n je Heizkörper 1,2 bis 1,35 | vereinfacht |
 | tw_peak | SHK Profi | stimmt; Entwurf E DIN 1988-300:2026-07 liegt vor | vereinfacht |
 | pump_head | Handrechnung | stimmt, R und Z sind Annahmen | vereinfacht |
 
@@ -114,7 +114,7 @@ Definitionen sind als solche bezeichnet und nicht einzeln online nachgeschlagen.
 | tw_peak | SHK Profi, Westermann | stimmt; nur Wohngebäude wählbar | vereinfacht |
 | insulation | GModG | Fußbodenfall falsch, Außenluft fehlte (F4, F5) | korrigiert |
 | heat_load | keine | q sind Erfahrungswerte | nicht belegbar |
-| radiator | Fachartikel, Handrechnung | stimmt | vereinfacht |
+| radiator | wie Formel, Handrechnung | stimmt | vereinfacht |
 | pump_head | Handrechnung | stimmt | vereinfacht |
 
 Gas und Abgas: Das Modul enthält keine Rechner dafür. Der Hinweis „ersetzt nicht die Fachplanung“ steht bei MAG, Sicherheitsventil,
@@ -134,7 +134,7 @@ Trinkwasser, Rohrdimensionierung, Heizlast und Pumpe.
 | Gefälle Abwasser | DAA | unbelüftete Sammelanschlussleitung falsch mit 0,5 % (F7) | korrigiert |
 | Sicherheitsventile | SYR | siehe F9, Gewinde jetzt Rp | korrigiert |
 | Ausdehnung Wasser | Reflex | höchstens 0,04 Prozentpunkte Abweichung, per Test abgesichert | richtig |
-| MAG-Normgrößen | Reflex-Baureihe, nicht jede Größe einzeln geprüft | plausibel | nicht belegbar |
+| MAG-Normgrößen | Reflex: N 8 bis N 100 gelesen, Bereich bis 1000 l genannt | Größen über 100 l nicht einzeln geprüft | nicht belegbar |
 | Berechnungsdurchflüsse | Westermann, WVND | alle 9 stimmen; Bezeichnungen präzisiert (F10) | korrigiert |
 | Spitzendurchfluss Konstanten | SHK Profi | alle 6 Zeilen stimmen | richtig |
 | Spezifische Heizlast | keine | Erfahrungswerte | nicht belegbar |
@@ -218,11 +218,13 @@ Einzeln offen in „Gefälle Abwasser“: Längen und Bögen der Einzelanschluss
 | M11 | `0^0` | 1 | Fehler |
 | M12 | `1E-200*1E-200`, `10^-400` | **0** | Fehler: zu klein |
 | M13 | Zahl mit 320 Ziffern, auch im Nenner | `1/∞` = **0** | Fehler: zu groß |
-| M14 | 300 × `(` oder `-` | mögliche Stack-Überlauf | Fehlermeldung |
+| M14 | 300 × `(` oder `-` | möglicher Stack-Überlauf | Fehlermeldung |
 | M15 | Handschrift: Kandidat mit den meisten Ziffern gewann | oft der falsche | Rangfolge der Erkennung |
 | M16 | Reparierte Buchstaben (1/l, 0/O, s/5, b/6/8, t/+) | still | `uncertain`, Alternativen in der Ergebnisblase |
 | M17 | Wort mit t, l, s, z. B. `Test 1` | wurde zur Rechnung | keine Rechnung |
 | M18 | `sin 30°` | Fehler | geht, auch im RAD-Modus als Grad |
+
+Die „Vorher“-Werte M1 bis M17 sind aus dem alten Code hergeleitet, nicht am alten Stand ausgeführt; die „Jetzt“-Werte sind Tests.
 
 Geprüft und richtig: Punkt vor Strich, Rechtsassoziativität der Potenz, `-2^2 = -4`, `2^-1`, Prozent (`200+10% = 220`, `200*10% = 20`), `(-8)^(1/3)`, deutsches Komma, Tausenderpunkt, Division durch 0, Wurzel und Logarithmus außerhalb des Definitionsbereichs, tan(90°), Fakultät bis 170, Rückeinlesen angezeigter Zahlen.
 

@@ -107,7 +107,7 @@ object ShkTables {
                 ShkDesign.MAG_SIZES.chunked(6).map { row -> listOf(row.joinToString(" · ")) },
                 "Immer die nächstgrößere Größe wählen. Lieferbare Größen je Hersteller.",
                 "mag",
-                source = "Baureihe Reflex N/NG, ohne Gewähr für einzelne Größen.",
+                source = "Reflex Baureihe N (8 bis 1000 l); Größen über 100 l nicht einzeln geprüft.",
             ),
             ShkTable(
                 "tap_points", "Berechnungsdurchflüsse Trinkwasser",
