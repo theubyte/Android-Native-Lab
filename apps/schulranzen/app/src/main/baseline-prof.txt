@@ -1,0 +1,11 @@
+# Hand-written startup rules; the libraries (Compose etc.) bring their own profiles,
+# AGP merges all of them. A measured profile needs a device, see docs/audit/release.md.
+HSPLde/millione/schulranzen/app/RanzenApp;->**(**)**
+HSPLde/millione/schulranzen/app/MainActivity**;->**(**)**
+HSPLde/millione/schulranzen/app/about/StartupInitializer;->**(**)**
+HSPLde/millione/schulranzen/app/about/CrashCatcher;->**(**)**
+HSPLde/millione/schulranzen/app/library/**;->**(**)**
+HSPLde/millione/schulranzen/app/data/**;->**(**)**
+HSPLde/millione/schulranzen/design/**;->**(**)**
+Lde/millione/schulranzen/app/MainActivity;
+Lde/millione/schulranzen/app/RanzenApp;
