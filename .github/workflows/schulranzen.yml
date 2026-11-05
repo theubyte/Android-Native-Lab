@@ -11,10 +11,12 @@ on:
 permissions:
   contents: read
 
+# Needs no secrets. Without signing/ the APKs are signed with a throwaway debug
+# key: they prove the build, but cannot update an installed app (docs/UPDATE.md).
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: apps/schulranzen
@@ -33,12 +35,25 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" --install 'platforms;android-36' 'build-tools;36.0.0'
       - name: Unit tests
-        run: gradle :core:test --no-daemon
+        run: gradle :core:test :app:testDebugUnitTest --no-daemon
+      - name: Android Lint (Pflicht, Bestand in app/lint-baseline.xml)
+        run: gradle :app:lintRelease --no-daemon
       - name: Debug APK
         run: gradle :app:assembleDebug --no-daemon
+      - name: Release APKs (R8)
+        run: gradle :app:assembleRelease --no-daemon
+      - name: release.sh ist syntaktisch in Ordnung
+        run: bash -n tools/release.sh
       - uses: actions/upload-artifact@v4
         with:
           name: schulranzen-debug-apk
           path: apps/schulranzen/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: schulranzen-lint-report
+          path: apps/schulranzen/app/build/reports/lint-results-*.html
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The system splash screen (Android 12+): desk colour and the notebook, no extra library. -->
+<resources>
+    <style name="Theme.Ranzen" parent="Base.Ranzen">
+        <item name="android:windowSplashScreenBackground">@color/paper</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+    </style>
+</resources>

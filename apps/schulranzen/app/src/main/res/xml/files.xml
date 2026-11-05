@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Only the camera hand-over folder is shared (photos of worksheets). -->
+<!-- Shared with other apps only on request: camera hand-over photos, a crash report the user shares, a verified update for the system installer. -->
 <paths>
     <cache-path name="camera" path="camera/" />
+    <cache-path name="reports" path="reports/" />
+    <cache-path name="updates" path="updates/" />
 </paths>
