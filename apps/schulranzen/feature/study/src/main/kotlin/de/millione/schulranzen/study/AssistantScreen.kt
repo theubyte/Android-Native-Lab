@@ -111,7 +111,7 @@ internal fun ExplainContent(
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "Die Erklärhilfe fragt Claude (Anthropic). Dafür braucht es einen eigenen API-Schlüssel. " +
-                            "Alles andere in „Lernen“ funktioniert auch ohne.",
+                            "Alles andere in „Lernen“ funktioniert auch ohne. Antworten kommen von einer KI und können falsch sein: prüfe sie an deinen Unterlagen.",
                         style = Ranzen.type.body, color = c.inkMuted,
                     )
                     Spacer(Modifier.height(16.dp))

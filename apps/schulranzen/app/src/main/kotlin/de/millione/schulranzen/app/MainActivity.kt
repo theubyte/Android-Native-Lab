@@ -280,6 +280,8 @@ class MainActivity : ComponentActivity() {
                                 TactileKey({ route = "backup" }, contentDescription = "Sichern und übernehmen") { RanzenIcon(AppIcons.Backup) }
                                 Spacer(Modifier.width(10.dp))
                                 TactileKey({ route = ScanRoute().encode() }, contentDescription = "Blätter scannen") { RanzenIcon(AppIcons.Scan) }
+                                Spacer(Modifier.width(10.dp))
+                                TactileKey({ route = "about" }, contentDescription = "Über Schulranzen") { RanzenIcon(de.millione.schulranzen.design.RanzenIcons.Settings) }
                                 Spacer(Modifier.width(16.dp))
                             },
                             today = {
@@ -316,6 +318,10 @@ class MainActivity : ComponentActivity() {
                             TimetableScreen(onBack = { route = "lib" }, subjects = studySubjects)
                         }
                         r == "shk" -> ShkScreen(onBack = { route = "lib" })
+                        r == "about" -> {
+                            BackHandler { route = "lib" }
+                            de.millione.schulranzen.app.about.AboutScreen(theme = mode, onTheme = app.settings::setTheme, onBack = { route = "lib" })
+                        }
                         r == "backup" -> {
                             BackHandler { route = "lib" }
                             BackupRoute(onBack = { route = "lib" })
@@ -398,6 +404,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 }
+                de.millione.schulranzen.app.about.StartupOverlays()
             }
         }
     }
@@ -492,12 +499,17 @@ class MainActivity : ComponentActivity() {
                     PhoneTab.BOOKS -> PhoneBooksTab(app.books, app.library, onOpen = { detail = "book:$it" })
                     PhoneTab.SCAN -> ScanFlow(app.scan, scanner, app.library,
                         onOpen = { nb, page -> detail = NotebookRoute(nb, page).encode() }, onSync = { detail = syncRoute })
-                    PhoneTab.SYNC -> PhoneSyncTab(app.settings, onSync = { detail = syncRoute })
+                    PhoneTab.SYNC -> PhoneSyncTab(app.settings, onSync = { detail = syncRoute }, onAbout = { detail = "about" })
                     PhoneTab.LEARN -> Unit
                 }
             },
             detailContent = { d ->
                 when {
+                    d == "about" -> {
+                        BackHandler { detail = null }
+                        val theme by app.settings.theme.collectAsState()
+                        de.millione.schulranzen.app.about.AboutScreen(theme = theme, onTheme = app.settings::setTheme, onBack = { detail = null })
+                    }
                     d == "timetable" -> {
                         BackHandler { detail = null }
                         TimetableScreen(onBack = { detail = null }, subjects = studySubjects)

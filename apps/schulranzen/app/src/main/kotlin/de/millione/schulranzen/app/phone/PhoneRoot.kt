@@ -313,7 +313,7 @@ fun PhoneBooksTab(shelf: BookShelf, library: Library, onOpen: (String) -> Unit) 
 
 /** Getting data between the devices, and the few settings a phone has. */
 @Composable
-fun PhoneSyncTab(settings: Settings, onSync: () -> Unit) {
+fun PhoneSyncTab(settings: Settings, onSync: () -> Unit, onAbout: () -> Unit) {
     val c = Ranzen.colors
     val theme by settings.theme.collectAsState()
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).verticalScroll(rememberScrollState())) {
@@ -329,6 +329,8 @@ fun PhoneSyncTab(settings: Settings, onSync: () -> Unit) {
                 SignalButton("Abgleichen", onSync, Modifier.fillMaxWidth(), icon = AppIcons.Sync)
             }
         }
+        Spacer(Modifier.height(16.dp))
+        QuietButton("Über Schulranzen", onAbout, Modifier.padding(horizontal = 16.dp).fillMaxWidth(), color = c.signal)
         Spacer(Modifier.height(16.dp))
         PaperPanel(Modifier.padding(horizontal = 16.dp).fillMaxWidth(), corner = 18.dp, depth = 0.6f) {
             Column(Modifier.padding(16.dp)) {

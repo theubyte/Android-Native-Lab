@@ -73,7 +73,11 @@ class SyncClient(
 
     init {
         if (baseUrl.isEmpty()) throw SyncException(SyncError.BAD_INPUT, "Bitte die Server-Adresse eintragen, z. B. 192.168.1.20:8788.")
-        try { URI(baseUrl).toURL() } catch (e: Exception) { throw SyncException(SyncError.BAD_INPUT, "Die Server-Adresse ist ungültig.", e) }
+        val uri = try { URI(baseUrl).also { it.toURL() } } catch (e: Exception) { throw SyncException(SyncError.BAD_INPUT, "Die Server-Adresse ist ungültig.", e) }
+        // PIN and backups must not cross the internet unencrypted; plain http is for the home network.
+        if (uri.scheme == "http" && !isPrivateHost(uri.host.orEmpty())) {
+            throw SyncException(SyncError.BAD_INPUT, "Ohne Verschlüsselung (http) geht nur ein Server im Heimnetz. Für das Internet https:// eintragen.")
+        }
     }
 
     /** True when the address answers like a Schulranzen sync server. */
@@ -498,6 +502,18 @@ class SyncClient(
         internal fun mb(bytes: Long): String = String.format(java.util.Locale.GERMANY, "%.1f MB", bytes / (1024.0 * 1024))
 
         /** "192.168.1.20:8788/" → "http://192.168.1.20:8788" (as V15 did). */
+        /** Addresses that only exist inside a home network or a private tunnel. */
+        fun isPrivateHost(host: String): Boolean {
+            val h = host.lowercase().trim('[', ']')
+            if (h == "localhost" || '.' !in h && ':' !in h) return true
+            if (h.endsWith(".local") || h.endsWith(".lan") || h.endsWith(".home.arpa") || h.endsWith(".fritz.box")) return true
+            if (h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return true
+            val p = h.split('.').mapNotNull { it.toIntOrNull() }
+            if (p.size != 4) return false
+            return p[0] == 10 || p[0] == 127 || p[0] == 192 && p[1] == 168 || p[0] == 172 && p[1] in 16..31 ||
+                p[0] == 169 && p[1] == 254 || p[0] == 100 && p[1] in 64..127 // the last one: Tailscale and similar
+        }
+
         fun normalizeUrl(s: String?): String {
             var v = s?.trim().orEmpty()
             if (v.isEmpty()) return ""
