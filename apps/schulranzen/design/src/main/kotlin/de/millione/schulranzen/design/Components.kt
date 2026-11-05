@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +38,8 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription as semanticsDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Image
@@ -96,7 +99,8 @@ fun TactileKey(
             .clip(shape)
             .background(if (selected) c.paper else c.raised)
             .border(if (selected) 1.5.dp else 0.5.dp, if (selected) edge else c.line.copy(alpha = 0.6f), shape)
-            .clickable(source, indication = null, role = Role.Button, onClickLabel = contentDescription, onClick = onClick),
+            .clickable(source, indication = null, role = Role.Button, onClickLabel = contentDescription, onClick = onClick)
+            .then(if (contentDescription != null) Modifier.semantics { semanticsDescription = contentDescription } else Modifier),
         contentAlignment = Alignment.Center,
     ) { content() }
 }
@@ -217,9 +221,11 @@ fun SignalButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifie
 fun QuietButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, color: Color = Ranzen.colors.inkMuted) {
     Box(
         modifier
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center,
     ) { Text(text, style = Ranzen.type.label, color = color) }
 }
 

@@ -213,7 +213,7 @@ private fun PageThumb(page: CanvasPage, index: Int, current: Boolean, version: I
     val snapshot = remember(page, page.ink.revision, page.paper, version) {
         CanvasPage(page.id, page.paper, PageInk(page.ink.strokes.toList(), page.ink.items.toList()), background = page.background)
     }
-    val bmp by produceState<Bitmap?>(null, snapshot) { value = withContext(Dispatchers.Default) { PagePainter.thumbnail(snapshot, widthPx) } }
+    val bmp by produceState<Bitmap?>(null, snapshot) { value = withContext(Dispatchers.Default) { runCatching { PagePainter.thumbnail(snapshot, widthPx) }.getOrNull() } }
     val shape = RoundedCornerShape(6.dp)
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick)) {
         Box(

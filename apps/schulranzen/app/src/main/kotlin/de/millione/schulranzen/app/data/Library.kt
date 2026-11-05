@@ -120,6 +120,14 @@ class Library(private val context: Context) {
     /** Ids of every notebook, trashed ones included. */
     suspend fun allNotebookIds(): List<String> = dao.allNotebooks().map { it.id }
 
+    /** Where page [pageId] is now, wherever it was moved; null if it is gone or in the trash. */
+    suspend fun locatePage(pageId: String): Pair<String, Int>? {
+        val page = dao.pageById(pageId) ?: return null
+        val nb = dao.notebook(page.notebookId)?.takeIf { it.trashedAt == null } ?: return null
+        val index = dao.pages(nb.id).indexOfFirst { it.id == pageId }
+        return if (index >= 0) nb.id to index else null
+    }
+
     /** 0-based position of page [pageId] in its notebook, or 0. */
     suspend fun pageIndex(notebookId: String, pageId: String): Int =
         dao.pages(notebookId).indexOfFirst { it.id == pageId }.coerceAtLeast(0)

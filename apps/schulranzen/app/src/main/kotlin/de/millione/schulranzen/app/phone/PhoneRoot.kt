@@ -277,6 +277,7 @@ fun PhoneBooksTab(shelf: BookShelf, library: Library, onOpen: (String) -> Unit) 
     val shown = booksOrNull.orEmpty().filter { b -> (subject == null || b.subjectId == subject) && (q.isEmpty() || b.title.lowercase(Locale.GERMANY).contains(q)) }
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
         TabTitle("Bücher", booksOrNull?.size)
+        de.millione.schulranzen.books.ContinueReadingCard(shelf, { onOpen(it.id) }, Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
         SearchLine(query, { query = it }, "Bücher suchen")
         Spacer(Modifier.height(10.dp))
         SubjectFilter(subjects, subject) { subject = it }

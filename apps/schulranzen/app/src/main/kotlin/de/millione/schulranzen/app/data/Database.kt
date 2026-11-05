@@ -143,6 +143,9 @@ interface LibraryDao {
     @Query("UPDATE notebook SET lastPage = :page WHERE id = :id")
     suspend fun setLastPage(id: String, page: Int)
 
+    @Query("SELECT * FROM page WHERE id = :id")
+    suspend fun pageById(id: String): Page?
+
     @Query("SELECT * FROM page WHERE notebookId = :notebookId ORDER BY position")
     suspend fun pages(notebookId: String): List<Page>
 

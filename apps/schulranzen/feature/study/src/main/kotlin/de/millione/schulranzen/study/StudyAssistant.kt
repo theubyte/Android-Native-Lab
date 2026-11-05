@@ -70,9 +70,9 @@ class AssistantKey(context: Context) {
         runCatching { decrypt(stored) }.getOrElse { clear(); null }
     }
 
-    /** The chosen model; the default unless the learner picked the cheap one. */
+    /** The chosen model; the cheap one unless the learner asked for the best answers, since their own key pays. */
     var model: String
-        get() = prefs.getString(FIELD_MODEL, null) ?: ClaudeApi.MODEL
+        get() = prefs.getString(FIELD_MODEL, null) ?: ClaudeApi.MODEL_THRIFTY
         set(value) { prefs.edit().putString(FIELD_MODEL, value).apply() }
 
     /** "sk-ant-…a1b2" for showing which key is stored. */

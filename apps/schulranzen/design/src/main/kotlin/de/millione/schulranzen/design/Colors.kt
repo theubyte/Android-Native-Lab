@@ -40,7 +40,7 @@ val LightColors = RanzenColors(
     line = Color(0xFFDDD6C8),
     bevelLight = Color(0xFFFFFFFF),
     bevelShadow = Color(0x2E6B5A3C),
-    signal = Color(0xFFD9542F),
+    signal = Color(0xFFC24420),
     onSignal = Color(0xFFFFF8F0),
 )
 

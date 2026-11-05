@@ -1,5 +1,7 @@
 package de.millione.schulranzen.app.notebook
 
+import de.millione.schulranzen.backup.EditGate
+import kotlinx.coroutines.joinAll
 import android.graphics.RectF
 import android.net.Uri
 import androidx.compose.runtime.getValue
@@ -126,6 +128,7 @@ class NotebookSession(
     private val saves = HashMap<String, PendingSave>()
     private var failedSaves = 0
     private var loadJob: Job? = null
+    private var gate: AutoCloseable? = null
     /** Ruling of new pages after a worksheet (a worksheet's own paper is plain). */
     private var defaultPaper = PaperStyle.LINED
 
@@ -137,6 +140,9 @@ class NotebookSession(
         applyTool()
         loadJob = scope.launch {
             try {
+                // A merge must not change pages held here; a reader never saves them, so it only waits.
+                val entered = EditGate.enterWhenFree()
+                if (canvas.readOnly) entered.close() else gate = entered
                 val nb = library.notebook(notebookId) ?: run { missing = true; return@launch }
                 title = nb.title
                 defaultPaper = PaperStyle.of(nb.paper)
@@ -178,7 +184,16 @@ class NotebookSession(
         canvas.settleStrokes()
         flushAll()
         val last = page
-        if (loaded) scope.launch { library.setLastPage(notebookId, last) }
+        val writing = saves.values.map { it.job }
+        val leaving = gate; gate = null
+        scope.launch {
+            try {
+                writing.joinAll()
+                if (loaded) library.setLastPage(notebookId, last)
+            } finally {
+                leaving?.close()
+            }
+        }
         mathInk?.close(); mathInk = null
         // The next notebook may already have opened on the canvas (screen fading out).
         if (canvas.listener === this) canvas.listener = null
@@ -316,7 +331,7 @@ class NotebookSession(
         val rect = info?.second?.let { r ->
             LinkRect(r.left / PageGeometry.WIDTH, r.top / PageGeometry.HEIGHT, r.width() / PageGeometry.WIDTH, r.height() / PageGeometry.HEIGHT)
         }
-        return StudyLinkDraft(StudyLinkKind.NOTEBOOK_PAGE, notebookId, p, rect, "$title, S. ${p + 1}" + if (rect != null) " (Auswahl)" else "")
+        return StudyLinkDraft(StudyLinkKind.NOTEBOOK_PAGE, notebookId, p, rect, "$title, S. ${p + 1}" + if (rect != null) " (Auswahl)" else "", pageId = canvas.allPages.getOrNull(p)?.id)
     }
 
     fun markForExam() { markDraft = linkDraft() }

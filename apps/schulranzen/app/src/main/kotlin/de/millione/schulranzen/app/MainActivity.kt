@@ -41,6 +41,15 @@ import de.millione.schulranzen.books.BookPane
 import de.millione.schulranzen.books.BookLink
 import de.millione.schulranzen.study.StudyLinkDraft
 import de.millione.schulranzen.study.StudyLinkKind
+import de.millione.schulranzen.study.LinkTarget
+import de.millione.schulranzen.study.StudyLinkTargets
+import de.millione.schulranzen.study.StudyLinkText
+import de.millione.schulranzen.study.StudyReminders
+import de.millione.schulranzen.study.CardFromClipSheet
+import de.millione.schulranzen.study.SuggestCardsSheet
+import de.millione.schulranzen.books.BookLearn
+import de.millione.schulranzen.books.ContinueReadingCard
+import de.millione.schulranzen.backup.EditGate
 import de.millione.schulranzen.study.LinkRect
 import de.millione.schulranzen.study.MarkForExamSheet
 import de.millione.schulranzen.ink.PageGeometry
@@ -103,6 +112,27 @@ import kotlinx.coroutines.SupervisorJob
 
 /** Process-wide objects; saving runs in [scope] so leaving a screen never drops a write. */
 class RanzenApp : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        StudyLinkTargets.resolver = ::resolveLink
+        StudyLinkText.provider = { link ->
+            link.note.takeIf { it.isNotBlank() } ?: link.pageId?.let { handwriting.pageText(it) }
+        }
+        de.millione.schulranzen.app.data.installBackupSync(this)
+    }
+
+    /** Pages can move between notebooks and books can go: a link follows or says so, never the wrong place. */
+    private suspend fun resolveLink(link: de.millione.schulranzen.study.data.StudyLink): LinkTarget {
+        if (StudyLinkKind.of(link.kind) == StudyLinkKind.BOOK_PAGE) {
+            val book = books.book(link.targetId) ?: return LinkTarget.Missing
+            return if (link.page < book.pageCount) LinkTarget.Found(book.id, link.page) else LinkTarget.Missing
+        }
+        val pageId = link.pageId
+        if (pageId != null) return library.locatePage(pageId)?.let { (nb, index) -> LinkTarget.Found(nb, index) } ?: LinkTarget.Missing
+        val nb = library.notebook(link.targetId)?.takeIf { it.trashedAt == null } ?: return LinkTarget.Missing
+        return if (link.page < nb.pageCount) LinkTarget.Found(nb.id, link.page) else LinkTarget.Missing
+    }
+
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val library by lazy { Library(this) }
     val settings by lazy { Settings(this) }
@@ -161,6 +191,8 @@ class MainActivity : ComponentActivity() {
     private val app get() = application as RanzenApp
     /** Goes up when another app shared sheets with us: the UI then shows the scan flow. */
     private val shares = mutableIntStateOf(0)
+    /** Goes up when a reminder was tapped: the UI then shows Lernen. */
+    private val studyCalls = mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -179,7 +211,7 @@ class MainActivity : ComponentActivity() {
         setContentView(root)
         hideTaskBar()
         // After a restore the intent is the old one; its sheets are already in the draft.
-        if (savedInstanceState == null) receiveShare(intent)
+        if (savedInstanceState == null) { receiveShare(intent); receiveReminder(intent) }
 
         ui.setContent {
             val mode by app.settings.theme.collectAsState()
@@ -222,6 +254,7 @@ class MainActivity : ComponentActivity() {
                 // Where we are, as a saveable string: "lib", "nb:<id>", "study", "timetable", "scan".
                 var route by rememberSaveable { mutableStateOf("lib") }
                 LaunchedEffect(shares.intValue) { if (shares.intValue > 0) route = ScanRoute().encode() }
+                LaunchedEffect(studyCalls.intValue) { if (studyCalls.intValue > 0) route = "study" }
                 AnimatedContent(
                     route,
                     transitionSpec = { (fadeIn() + scaleIn(spring(dampingRatio = 0.8f), initialScale = 0.97f)) togetherWith fadeOut() },
@@ -249,7 +282,12 @@ class MainActivity : ComponentActivity() {
                                 TactileKey({ route = ScanRoute().encode() }, contentDescription = "Blätter scannen") { RanzenIcon(AppIcons.Scan) }
                                 Spacer(Modifier.width(16.dp))
                             },
-                            today = { TodayStrip(Modifier.fillMaxWidth(), onClick = { route = "timetable" }) },
+                            today = {
+                                androidx.compose.foundation.layout.Column(Modifier.fillMaxWidth()) {
+                                    TodayStrip(Modifier.fillMaxWidth(), onClick = { route = "timetable" })
+                                    ContinueReadingCard(app.books, { route = "book:${it.id}" }, Modifier.fillMaxWidth())
+                                }
+                            },
                             shelf = app.books,
                             onOpenBook = { route = "book:$it" },
                             searchExtra = { q ->
@@ -292,12 +330,25 @@ class MainActivity : ComponentActivity() {
                         r.startsWith("book:") -> {
                             BackHandler { route = "lib" }
                             var clip by remember { mutableStateOf<java.io.File?>(null) }
-                            var mark by remember { mutableStateOf<StudyLinkDraft?>(null) }
+                            var mark by remember { mutableStateOf<BookLink?>(null) }
+                            var learn by remember { mutableStateOf<BookLearn?>(null) }
                             val br = BookRoute.parse(r)
+                            val gated = rememberEditGate()
                             Box(Modifier.fillMaxSize()) {
-                                BookScreen(br.id, onBack = { route = "lib" }, onClip = { clip = it },
-                                    onMarkForExam = { mark = it.toDraft() }, startPage = br.page, highlight = br.flash)
-                                mark?.let { d -> MarkForExamSheet(d, onDone = { mark = null }, onCancel = { mark = null }) }
+                                if (gated) BookScreen(br.id, onBack = { route = "lib" }, onClip = { clip = it },
+                                    onMarkForExam = { mark = it }, startPage = br.page, highlight = br.flash,
+                                    onLearn = { learn = it })
+                                mark?.let { d ->
+                                    MarkForExamSheet(d.toDraft(), onDone = {
+                                        mark = null
+                                        Toast.makeText(this@MainActivity, "Für die Prüfung gemerkt", Toast.LENGTH_SHORT).show()
+                                    }, onCancel = { mark = null }, initialNote = d.text.orEmpty())
+                                }
+                                when (val l = learn) {
+                                    is BookLearn.ImageCard -> CardFromClipSheet(l.image, l.link.toDraft(), onDone = { learn = null }, onCancel = { learn = null })
+                                    is BookLearn.TextCards -> SuggestCardsSheet(l.text, onDone = { learn = null }, onCancel = { learn = null }, source = l.link.toDraft())
+                                    null -> Unit
+                                }
                                 clip?.let { file ->
                                     ClipTargetSheet(app.library, onPick = { nb ->
                                         app.scope.launch {
@@ -331,7 +382,13 @@ class MainActivity : ComponentActivity() {
                                     Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.End + WindowInsetsSides.Bottom))) {
                                         BookPane(bookId, Modifier.fillMaxSize(), onClip = { session.insertImageFile(it) },
                                             onClose = { route = NotebookRoute(id).encode() },
-                                            onMarkForExam = { session.markDraft = it.toDraft() })
+                                            onMarkForExam = { session.markDraft = it.toDraft() },
+                                            onLearn = { l ->
+                                                when (l) {
+                                                    is BookLearn.ImageCard -> session.cardClip = l.image to l.link.toDraft()
+                                                    is BookLearn.TextCards -> session.suggestText = l.text
+                                                }
+                                            })
                                     }
                                 },
                             )
@@ -406,6 +463,7 @@ class MainActivity : ComponentActivity() {
         var tab by rememberSaveable { mutableStateOf(PhoneTab.LEARN) }
         var detail by rememberSaveable { mutableStateOf<String?>(null) }
         LaunchedEffect(shares.intValue) { if (shares.intValue > 0) { tab = PhoneTab.SCAN; detail = null } }
+        LaunchedEffect(studyCalls.intValue) { if (studyCalls.intValue > 0) { tab = PhoneTab.LEARN; detail = null } }
         val syncRoute = "backup"
         PhoneShell(
             tab, { tab = it }, detail,
@@ -486,6 +544,12 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun receiveReminder(intent: Intent?) {
+        if (intent?.getBooleanExtra(StudyReminders.EXTRA_OPEN_STUDY, false) != true) return
+        intent.removeExtra(StudyReminders.EXTRA_OPEN_STUDY)
+        studyCalls.intValue++
+    }
+
     /** Sheets shared from another app go into the scan draft right away, while the grant lasts. */
     private fun receiveShare(intent: Intent?) {
         val action = intent?.action
@@ -536,6 +600,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         receiveShare(intent)
+        receiveReminder(intent)
         if (!BuildConfig.DEBUG || canvas.readOnly) return
         val s = session ?: return
         val x = intent.getFloatExtra("x", 0f); val y = intent.getFloatExtra("y", 0f)
@@ -580,6 +645,22 @@ private fun routeOf(link: de.millione.schulranzen.study.data.StudyLink): String 
 }
 
 /** Book places are stored with both axes divided by the page width (book units are 1000 wide). */
+/**
+ * Holds off a sync merge while a book with its ink is open (see [EditGate]);
+ * false until a running merge is through, the book opens after that.
+ */
+@androidx.compose.runtime.Composable
+private fun rememberEditGate(): Boolean {
+    var free by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        var gate: AutoCloseable? = null
+        scope.launch { gate = EditGate.enterWhenFree(); free = true }
+        onDispose { scope.coroutineContext[kotlinx.coroutines.Job]?.cancel(); gate?.close() }
+    }
+    return free
+}
+
 private fun BookLink.toDraft() = StudyLinkDraft(
     StudyLinkKind.BOOK_PAGE, bookId, page,
     rect?.let { LinkRect(it.left / 1000f, it.top / 1000f, it.width() / 1000f, it.height() / 1000f) },
