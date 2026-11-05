@@ -78,6 +78,14 @@ class BackupSettings private constructor(context: Context) {
         val lastTargets: String = "",
         val lastError: String? = null,
         val lastErrorAt: Long = 0,
+        /** Sync when the app is opened. */
+        val syncOnOpen: Boolean = false,
+        /** Sync every few hours in the background. */
+        val syncBackground: Boolean = false,
+        val syncWifiOnly: Boolean = true,
+        val lastSyncAt: Long = 0,
+        val lastSyncText: String = "",
+        val lastSyncError: String? = null,
     ) {
         val hasTarget: Boolean get() = localTree != null || toServer
         /** An encrypted automatic backup cannot ask for the password. */
@@ -107,6 +115,12 @@ class BackupSettings private constructor(context: Context) {
         lastTargets = prefs.getString("last_targets", "").orEmpty(),
         lastError = prefs.getString("last_error", null),
         lastErrorAt = prefs.getLong("last_error_at", 0),
+        syncOnOpen = prefs.getBoolean("sync_on_open", false),
+        syncBackground = prefs.getBoolean("sync_background", false),
+        syncWifiOnly = prefs.getBoolean("sync_wifi_only", true),
+        lastSyncAt = prefs.getLong("last_sync_at", 0),
+        lastSyncText = prefs.getString("last_sync_text", "").orEmpty(),
+        lastSyncError = prefs.getString("last_sync_error", null),
     )
 
     private inline fun edit(block: SharedPreferences.Editor.() -> Unit) {
@@ -148,6 +162,16 @@ class BackupSettings private constructor(context: Context) {
     }
 
     fun clearError() = edit { remove("last_error") }
+
+    fun setSyncOnOpen(v: Boolean) = edit { putBoolean("sync_on_open", v) }
+    fun setSyncBackground(v: Boolean) = edit { putBoolean("sync_background", v) }
+    fun setSyncWifiOnly(v: Boolean) = edit { putBoolean("sync_wifi_only", v) }
+
+    /** Result of a sync, for the line on the screen. */
+    internal fun recordSync(text: String?, error: String?) = edit {
+        if (text != null) { putLong("last_sync_at", System.currentTimeMillis()); putString("last_sync_text", text) }
+        if (error != null) putString("last_sync_error", error) else remove("last_sync_error")
+    }
 
     companion object {
         /** Prefs file name; excluded from backups, kept on restore. */

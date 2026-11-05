@@ -118,12 +118,13 @@ class SyncClientTest {
         c.token = null
         c.login(email, "123456")
 
-        val zip = tmp.newFile("b.zip").apply { writeBytes(ByteArray(200_000) { (it * 31).toByte() }) }
+        // Starts like a ZIP: the real server refuses anything else.
+        val zip = tmp.newFile("b.zip").apply { writeBytes(byteArrayOf(0x50, 0x4B, 3, 4) + ByteArray(200_000) { (it * 31).toByte() }) }
         var sent = 0L
         val up = c.upload(zip) { s2, _ -> sent = s2 }
         assertEquals(zip.length(), sent)
         assertEquals(zip.length(), up.size)
-        val zip2 = tmp.newFile("c.zip").apply { writeBytes(byteArrayOf(9, 8, 7)) }
+        val zip2 = tmp.newFile("c.zip").apply { writeBytes(byteArrayOf(0x50, 0x4B, 3, 4, 9, 8, 7)) }
         val up2 = c.upload(zip2)
 
         val versions = c.versions()

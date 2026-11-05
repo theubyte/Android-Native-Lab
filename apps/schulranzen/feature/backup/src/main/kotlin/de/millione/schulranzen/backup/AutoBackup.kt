@@ -156,6 +156,9 @@ object AutoBackup {
                     }
                 }
             } ?: throw BackupException("Datei im Backup-Ordner konnte nicht geöffnet werden.")
+            // Old backups go after this: be sure the new one really arrived whole.
+            val arrived = doc.length()
+            if (arrived > 0 && arrived != total) throw BackupException("Das Backup kam im Ordner nicht vollständig an.")
             val renamed = runCatching { DocumentsContract.renameDocument(context.contentResolver, doc.uri, name) }.getOrNull()
             if (renamed == null) {
                 // No rename support: write the final name directly instead.
@@ -201,7 +204,7 @@ class AutoBackupWorker(context: Context, params: WorkerParameters) : CoroutineWo
                 return Result.failure()
             }
         } else null
-        val manager = BackupManager(ctx)
+        val manager = BackupManager(ctx, AutoSync.hooks(ctx))
         val done = ArrayList<String>()
         val errors = ArrayList<String>()
         var size = 0L
@@ -262,6 +265,9 @@ class AutoBackupWorker(context: Context, params: WorkerParameters) : CoroutineWo
  */
 class AutoBackupInitializer : Initializer<Unit> {
     override fun create(context: Context) {
+        // Before anything opens the data: a restore that died half way is undone first.
+        runCatching { BackupManager.recoverInterrupted(context) }
+            .onFailure { BackupSettings.get(context).recordRun(null, 0, "", "Eine unterbrochene Wiederherstellung konnte nicht rückgängig gemacht werden: " + BackupManager.messageOf(it)) }
         runCatching { AutoBackup.ensureScheduled(context) }
     }
 

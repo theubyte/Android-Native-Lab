@@ -185,6 +185,27 @@ object BackupCrypto {
         return DecryptingInputStream(input, header, keys.enc)
     }
 
+    /**
+     * Keys for many small files under one password, so the expensive derivation
+     * runs once. [salt] null = new keys; the same password and salt give the
+     * same keys, and so the same blob ids, on every device.
+     */
+    fun session(password: CharArray, salt: ByteArray? = null, iterations: Int = DEFAULT_ITERATIONS): CryptoSession {
+        require(iterations in MIN_ITERATIONS..MAX_ITERATIONS) { "iterations" }
+        val s = salt ?: ByteArray(CryptoHeader.SALT_SIZE).also(random::nextBytes)
+        return CryptoSession(s, iterations, Keys.derive(password, s, iterations))
+    }
+
+    /** The keys of an existing container; throws [WrongPasswordException] when [password] does not fit. */
+    fun sessionFor(container: ByteArray, password: CharArray): CryptoSession {
+        val header = CryptoHeader.read(container.inputStream())
+        val keys = Keys.derive(password, header.salt, header.iterations)
+        if (!MessageDigest.isEqual(keys.check, header.keyCheck)) throw WrongPasswordException()
+        return CryptoSession(header.salt, header.iterations, keys)
+    }
+
+    internal fun newPrefix(): ByteArray = ByteArray(CryptoHeader.PREFIX_SIZE).also(random::nextBytes)
+
     /** Only checks the password against [file]'s header (one key derivation). */
     fun checkPassword(file: File, password: CharArray): Boolean = file.inputStream().buffered().use { i ->
         val header = CryptoHeader.read(i)
@@ -262,15 +283,16 @@ object BackupCrypto {
     internal const val TAG = TAG_BYTES
 
     /** Keys derived from one password: AES key and the stored check value. */
-    internal class Keys(val enc: SecretKeySpec, val check: ByteArray) {
+    internal class Keys(val enc: SecretKeySpec, val check: ByteArray, val ids: SecretKeySpec) {
         companion object {
             fun derive(password: CharArray, salt: ByteArray, iterations: Int): Keys {
                 val master = Pbkdf2.sha256(passwordBytes(password), salt, iterations, 32)
                 val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(master, "HmacSHA256")) }
                 val enc = mac.doFinal("schulranzen-backup/aes-gcm".toByteArray(Charsets.US_ASCII))
                 val check = mac.doFinal("schulranzen-backup/key-check".toByteArray(Charsets.US_ASCII)).copyOf(CryptoHeader.CHECK_SIZE)
+                val ids = mac.doFinal("schulranzen-backup/blob-id".toByteArray(Charsets.US_ASCII))
                 master.fill(0)
-                return Keys(SecretKeySpec(enc, "AES"), check).also { enc.fill(0) }
+                return Keys(SecretKeySpec(enc, "AES"), check, SecretKeySpec(ids, "HmacSHA256")).also { enc.fill(0); ids.fill(0) }
             }
         }
     }
@@ -281,6 +303,49 @@ object BackupCrypto {
      */
     fun passwordBytes(password: CharArray): ByteArray =
         Normalizer.normalize(String(password), Normalizer.Form.NFC).toByteArray(Charsets.UTF_8)
+}
+
+/**
+ * Encrypts and decrypts many files with one derived key, each in the normal
+ * container format with its own random nonce prefix. (Seven random bytes per
+ * file: a repeat stays negligible far beyond the number of files in a backup.)
+ */
+class CryptoSession internal constructor(
+    val salt: ByteArray,
+    private val iterations: Int,
+    private val keys: BackupCrypto.Keys,
+) {
+    /**
+     * Name of a file's encrypted copy on the server: keyed, so the server cannot
+     * tell which known file it stores, but the same on every device, so a file
+     * is uploaded once.
+     */
+    fun blobId(plainSha256: String): String =
+        Hashing.hex(Mac.getInstance("HmacSHA256").apply { init(keys.ids) }.doFinal(plainSha256.toByteArray(Charsets.US_ASCII)))
+
+    /** Neither stream is closed. */
+    fun encrypt(input: InputStream, output: OutputStream) {
+        val header = CryptoHeader(BackupCrypto.VERSION, iterations, salt, BackupCrypto.DEFAULT_CHUNK, BackupCrypto.newPrefix(), keys.check)
+        val enc = EncryptingOutputStream(NonClosing(output), header, keys.enc)
+        val buf = ByteArray(64 * 1024)
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            enc.write(buf, 0, n)
+        }
+        enc.close()
+    }
+
+    fun encrypt(plain: ByteArray): ByteArray = java.io.ByteArrayOutputStream(plain.size + 256).also { encrypt(plain.inputStream(), it) }.toByteArray()
+
+    /** Reads the header at once; damaged data throws while reading, like [BackupCrypto.decryptingStream]. */
+    fun decrypting(input: InputStream): InputStream {
+        val header = CryptoHeader.read(input)
+        if (!MessageDigest.isEqual(keys.check, header.keyCheck) || !header.salt.contentEquals(salt)) throw WrongPasswordException()
+        return DecryptingInputStream(input, header, keys.enc)
+    }
+
+    fun decrypt(container: ByteArray): ByteArray = decrypting(container.inputStream()).use { it.readBytes() }
 }
 
 /**

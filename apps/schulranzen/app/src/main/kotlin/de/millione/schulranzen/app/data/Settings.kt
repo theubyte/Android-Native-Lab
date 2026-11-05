@@ -61,4 +61,22 @@ class Settings(context: Context) {
     var markerSize: Float
         get() = prefs.getFloat("markerSize", 18f)
         set(v) = prefs.edit().putFloat("markerSize", v).apply()
+
+    /** Favourite pens, see [de.millione.schulranzen.core.notebook.PenPresets]. */
+    var penPresets: String?
+        get() = prefs.getString("penPresets", null)
+        set(v) = prefs.edit().putString("penPresets", v).apply()
+
+    var recentPenColors: String?
+        get() = prefs.getString("recentPenColors", null)
+        set(v) = prefs.edit().putString("recentPenColors", v).apply()
+
+    var recentMarkerColors: String?
+        get() = prefs.getString("recentMarkerColors", null)
+        set(v) = prefs.edit().putString("recentMarkerColors", v).apply()
+
+    /** Order of the notebooks in the library. */
+    var librarySort: String?
+        get() = prefs.getString("librarySort", null)
+        set(v) = prefs.edit().putString("librarySort", v).apply()
 }

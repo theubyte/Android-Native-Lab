@@ -95,6 +95,9 @@ class PageInk(strokes: List<PageStroke> = emptyList(), items: List<PageItem> = e
     /** Bumped on every change; renderers re-record when it differs. */
     var revision = 0L
         private set
+    /** Bumped on every change except appending a stroke, so a renderer can append cheaply. */
+    var contentRevision = 0L
+        private set
 
     fun add(s: PageStroke) { list += s; revision++ }
 
@@ -110,6 +113,7 @@ class PageInk(strokes: List<PageStroke> = emptyList(), items: List<PageItem> = e
         }
         objects += edit.addedItems
         revision++
+        contentRevision++
     }
 
     fun revert(edit: PageEdit) {
@@ -124,6 +128,7 @@ class PageInk(strokes: List<PageStroke> = emptyList(), items: List<PageItem> = e
         }
         for ((index, s) in edit.removedItems) objects.add(index.coerceIn(0, objects.size), s)
         revision++
+        contentRevision++
     }
 
     /** Edit that replaces the given strokes/items by their changed versions. */

@@ -7,6 +7,7 @@ import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -166,6 +167,86 @@ class FullBackupTest {
         // files/ is the old version again.
         assertTrue(File(t["files"], "ink/p1.rnz").exists())
         assertFalse(File(t["files"], "new.txt").exists())
+    }
+
+    @Test fun killedDuringTheSwapPutsTheOldDataBack() {
+        val t = app()
+        val trash = File(data, "old")
+        // What a process killed half way leaves: journal written, one folder set aside, the new one in place.
+        trash.mkdirs()
+        File(data, "old.journal").writeText("files\ndatabases\nshared_prefs")
+        assertTrue(t.getValue("files").renameTo(File(trash, "files")))
+        t.getValue("files").mkdirs()
+        File(t["files"], "neu.txt").writeText("halb")
+
+        assertTrue(FullBackup.recover(trash, t))
+        assertTrue(File(t["files"], "ink/p1.rnz").exists())
+        assertFalse(File(t["files"], "neu.txt").exists())
+        assertFalse(File(data, "old.journal").exists())
+        assertFalse(trash.exists())
+        // Nothing to do the next time.
+        assertFalse(FullBackup.recover(trash, t))
+    }
+
+    @Test fun finishedSwapLeavesOnlyLeftoversToClean() {
+        val t = app()
+        val trash = File(data, "old").apply { mkdirs() }
+        File(trash, "files").mkdirs()
+        File(trash, "files/alt.txt").writeText("alt")
+        assertFalse(FullBackup.recover(trash, t), "no journal: the swap was finished")
+        assertFalse(trash.exists())
+        assertTrue(File(t["files"], "ink/p1.rnz").exists())
+    }
+
+    @Test fun aSecondRestoreNeverDeletesDataOfAnInterruptedOne() {
+        val t = app()
+        val zip = backup(t)
+        val trash = File(data, "old").apply { mkdirs() }
+        File(data, "old.journal").writeText("files")
+        val before = File(t["files"], "ink/p1.rnz").readBytes()
+        assertTrue(t.getValue("files").renameTo(File(trash, "files")))
+        t.getValue("files").mkdirs()
+        val stage = File(data, "stage")
+        FullBackup.extractVerified(zip, stage, t.keys)
+        FullBackup.swap(stage, t, trash)
+        assertContentEquals(before, File(t["files"], "ink/p1.rnz").readBytes())
+        assertFalse(File(data, "old.journal").exists())
+    }
+
+    @Test fun preservedFileThatIsNotHereIsNotTakenFromTheBackup() {
+        val t = app()
+        File(t["shared_prefs"], "backup_sync.xml").writeText("<fremdes Konto/>")
+        val zip = backup(t)
+        File(t["shared_prefs"], "backup_sync.xml").delete()
+        val stage = File(data, "stage")
+        FullBackup.extractVerified(zip, stage, t.keys)
+        FullBackup.swap(stage, t, File(data, "old"), preserve = listOf("shared_prefs/backup_sync.xml"))
+        assertFalse(File(t["shared_prefs"], "backup_sync.xml").exists())
+    }
+
+    @Test fun tooLittleSpaceIsSaidBeforeAnythingHappens() {
+        app()
+        val big = data.usableSpace + (1L shl 40)
+        val e = assertFailsWith<NoSpaceException> { Space.require(data, big, "Das Auspacken") }
+        assertTrue(e.message!!.startsWith("Zu wenig Speicher frei: Das Auspacken braucht"))
+        Space.require(data, 1, "x")
+    }
+
+    @Test fun errorsAreGerman() {
+        assertEquals("Verbindung vom Server zurückgesetzt.", BackupErrors.message(SyncClient.networkError(java.net.SocketException("Connection reset"))))
+        assertTrue(BackupErrors.message(java.io.IOException("write failed: ENOSPC (No space left on device)")).startsWith("Kein Speicherplatz"))
+        assertEquals("Die Datei konnte nicht gelesen oder geschrieben werden. Bitte erneut versuchen.", BackupErrors.message(java.io.IOException("EIO something")))
+        assertEquals("Falsches Passwort. Bitte noch einmal versuchen.", BackupErrors.message(WrongPasswordException()))
+        assertTrue(BackupErrors.message(IllegalStateException("english")).startsWith("Unerwarteter Fehler"))
+        assertFalse(BackupErrors.message(IllegalStateException("english")).contains("english"))
+        assertTrue(BackupErrors.message(SyncConflictException()).contains("anderes Gerät"))
+    }
+
+    @Test fun reportSummaryNamesEverything() {
+        assertEquals("Hefte: nichts Neues", MergeReport("Hefte").summary())
+        assertEquals("Hefte: 2 neu, 1 gelöscht, 1 Konflikt", MergeReport("Hefte", added = 2, removed = 1, conflicts = 1).summary())
+        assertEquals("3 Seiten neu, 1 Konflikt.", SyncText.headline(listOf(MergeReport("Hefte", added = 3, conflicts = 1))))
+        assertEquals("Alles aktuell.", SyncText.headline(emptyList(), upToDate = true))
     }
 
     private fun rewrite(src: File, dst: File, add: Map<String, ByteArray> = emptyMap(), change: (String, ByteArray) -> ByteArray? = { _, b -> b }) {

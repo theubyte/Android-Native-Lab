@@ -15,6 +15,10 @@ interface BackupHooks {
     suspend fun beforeBackup() {}
     /** Close every database and stop writers; the data folders are replaced next. */
     suspend fun beforeRestore() {}
+    /** The checked backup lies in [stage], the swap comes next; the databases are closed. */
+    suspend fun beforeSwap(stage: File) {}
+    /** Only when the swap succeeded. */
+    suspend fun afterSwap() {}
     /** Called after the swap (or its rollback). */
     suspend fun afterRestore() {}
 
@@ -36,14 +40,23 @@ data class MergeReport(
     val warnings: List<String> = emptyList(),
     /** Set when the participant failed; the others still ran. */
     val error: String? = null,
+    /** Items this device deleted because the backup says they are gone. */
+    val removed: Int = 0,
+    /** Both sides changed the same item; the older version was kept as a copy. */
+    val conflicts: Int = 0,
 ) {
     val ok: Boolean get() = error == null
 
     /** One German line for the UI. */
     fun summary(): String = when {
         error != null -> "$name: Fehler – $error"
-        added == 0 && updated == 0 -> "$name: nichts Neues"
-        else -> "$name: $added neu, $updated aktualisiert"
+        added == 0 && updated == 0 && removed == 0 && conflicts == 0 -> "$name: nichts Neues"
+        else -> buildList {
+            if (added > 0) add("$added neu")
+            if (updated > 0) add("$updated aktualisiert")
+            if (removed > 0) add("$removed gelöscht")
+            if (conflicts > 0) add(if (conflicts == 1) "1 Konflikt" else "$conflicts Konflikte")
+        }.joinToString(", ", prefix = "$name: ")
     }
 }
 
@@ -57,6 +70,16 @@ interface MergeParticipant {
     /** German, shown in the result, e.g. "Hefte". */
     val name: String
     suspend fun merge(backupDir: File): MergeReport
+
+    /**
+     * The local data is about to leave this device (backup, sync, file for
+     * another device): record what must travel with it, e.g. what was deleted.
+     * Returns warnings for the user.
+     */
+    suspend fun prepareExport(): List<String> = emptyList()
+
+    /** The other side now has what [prepareExport] saw; both start from it next time. */
+    suspend fun committed() {}
 }
 
 /** Result of [mergeById]. */
@@ -119,7 +142,7 @@ class FolderMergeParticipant(
     private val source: String = "files/" + dir.name,
     override val name: String = dir.name,
     /** Relative paths ("a/b.bin") that are left alone, e.g. temp files. */
-    private val exclude: (String) -> Boolean = { it.endsWith(".tmp") },
+    private val exclude: (String) -> Boolean = { it.endsWith(".tmp") || it.contains(".damaged") },
 ) : MergeParticipant {
     init { require(ZipPaths.isSafe(source)) { "Ungültiger Pfad: $source" } }
 
@@ -159,19 +182,30 @@ class FolderMergeParticipant(
         return remote.length() != local.length() || Hashing.sha256(remote) != Hashing.sha256(local)
     }
 
-    private fun copyAtomic(src: File, dst: File) {
-        dst.parentFile?.mkdirs()
-        val tmp = File(dst.parentFile, dst.name + ".merge.tmp")
-        try {
-            src.copyTo(tmp, overwrite = true)
-            tmp.setLastModified(src.lastModified())
-            if (!tmp.renameTo(dst)) {
-                // Some file systems refuse to rename over an existing file.
-                dst.delete()
-                if (!tmp.renameTo(dst)) throw IOException("konnte nicht ersetzt werden")
-            }
-        } finally {
-            tmp.delete()
+    private fun copyAtomic(src: File, dst: File) = atomicCopy(src, dst)
+}
+
+/**
+ * What a stage holds, written into it next to the data. A sync only fetches
+ * files that differ from the local ones, so a path may be listed here without
+ * lying in the stage; then the local file has exactly this content.
+ */
+class RemoteIndex(entries: List<BackupEntry>) {
+    private val byPath = entries.associateBy { it.path }
+
+    operator fun get(path: String): BackupEntry? = byPath[path]
+
+    companion object {
+        const val FILE_NAME = ".remote-index.json"
+
+        fun write(stage: File, entries: List<BackupEntry>) =
+            atomicWrite(File(stage, FILE_NAME), BackupManifest.json.encodeToString(BackupManifest.serializer(), BackupManifest(entries = entries)))
+
+        /** Null when the stage has no index. */
+        fun read(stage: File): RemoteIndex? {
+            val f = File(stage, FILE_NAME)
+            if (!f.isFile) return null
+            return RemoteIndex(BackupManifest.json.decodeFromString(BackupManifest.serializer(), f.readText()).entries)
         }
     }
 }

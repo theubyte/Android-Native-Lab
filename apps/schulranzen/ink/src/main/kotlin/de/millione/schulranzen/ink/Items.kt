@@ -11,10 +11,13 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.util.LruCache
+import de.millione.schulranzen.core.notebook.SafeFile
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -76,9 +79,8 @@ object ItemCodec {
 
     fun write(file: File, items: List<PageItem>) {
         if (items.isEmpty()) { file.delete(); return }
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(PageItem.serializer()), items))
-        if (!tmp.renameTo(file)) { file.delete(); tmp.renameTo(file) }
+        val text = json.encodeToString(kotlinx.serialization.builtins.ListSerializer(PageItem.serializer()), items)
+        SafeFile.write(file) { it.write(text.toByteArray()) }
     }
 
     fun read(file: File): List<PageItem> =
@@ -92,17 +94,23 @@ object ItemPainter {
     /** Folder the image files live in; set by the app. */
     var imageDir: File? = null
 
-    private val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG)
     private val layouts = LruCache<TextItem, StaticLayout>(200)
-    private val images = object : LruCache<String, Bitmap>(64 * 1024 * 1024) {
+    private val images = object : LruCache<String, Bitmap>(96 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount
     }
+    private val decoding = ConcurrentHashMap.newKeySet<String>()
+    private val decoder by lazy { Executors.newSingleThreadExecutor { r -> Thread(r, "ink-images").apply { isDaemon = true } } }
+    /** A picture asked for with async = true is ready now. Any thread. */
+    @Volatile var onImageReady: (() -> Unit)? = null
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
 
     private fun layout(t: TextItem): StaticLayout = layouts.get(t) ?: run {
-        paint.typeface = typeface
-        paint.textSize = t.size
-        paint.color = t.color
+        // Its own paint: a layout keeps the paint it was built with and draws with it.
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+            typeface = this@ItemPainter.typeface
+            textSize = t.size
+            color = t.color
+        }
         StaticLayout.Builder.obtain(t.text, 0, t.text.length, paint, max(1, t.width.toInt()))
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
             .setLineSpacing(0f, 1.15f)
@@ -121,23 +129,48 @@ object ItemPainter {
         BitmapFactory.decodeFile(f.path, bounds)
         var sample = 1
         while (max(bounds.outWidth, bounds.outHeight) / sample > 2000) sample *= 2
-        BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample })?.also { images.put(file, it) }
+        val once = { s: Int -> BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = s }) }
+        val bmp = try {
+            once(sample)
+        } catch (_: OutOfMemoryError) {
+            // Low memory costs sharpness, not the page.
+            images.evictAll()
+            try { once(sample * 2) } catch (_: OutOfMemoryError) { null }
+        }
+        bmp?.also { images.put(file, it) }
     }
+
+    /** The picture if it is decoded; otherwise decodes it in the background and returns null. */
+    private fun imageOrRequest(file: String): Bitmap? = images.get(file) ?: run {
+        if (decoding.add(file)) decoder.execute {
+            try { if (image(file) != null) onImageReady?.invoke() } finally { decoding.remove(file) }
+        }
+        null
+    }
+
+    /** A deleted picture must not live on in the cache. */
+    fun forget(file: String) { images.remove(file) }
 
     /**
      * A worksheet filling the sheet: scaled to fit A4 with its aspect kept,
      * centred, so a photo or PDF page sits like a printed handout.
      */
-    fun drawSheet(canvas: Canvas, file: String) {
-        val bmp = image(file) ?: return
+    fun drawSheet(canvas: Canvas, file: String, async: Boolean = false): Boolean {
+        val bmp = (if (async) imageOrRequest(file) else image(file)) ?: return !async
         val pw = PageGeometry.WIDTH; val ph = PageGeometry.HEIGHT
         val s = minOf(pw / bmp.width, ph / bmp.height)
         val w = bmp.width * s; val h = bmp.height * s
         val l = (pw - w) / 2; val t = (ph - h) / 2
         canvas.drawBitmap(bmp, null, RectF(l, t, l + w, t + h), bitmapPaint)
+        return true
     }
 
-    fun draw(canvas: Canvas, item: PageItem) {
+    /**
+     * Draws [item]. With [async] a picture that is not decoded yet is skipped
+     * (the page stays smooth while scrolling) and false is returned; draw
+     * again after [onImageReady].
+     */
+    fun draw(canvas: Canvas, item: PageItem, async: Boolean = false): Boolean {
         when (item) {
             is TextItem -> {
                 canvas.save()
@@ -146,9 +179,10 @@ object ItemPainter {
                 canvas.restore()
             }
             is ImageItem -> {
-                val bmp = image(item.file) ?: return
+                val bmp = (if (async) imageOrRequest(item.file) else image(item.file)) ?: return !async
                 canvas.drawBitmap(bmp, null, item.bounds(), bitmapPaint)
             }
         }
+        return true
     }
 }

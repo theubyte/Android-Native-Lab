@@ -4,63 +4,66 @@ import androidx.ink.storage.decode
 import androidx.ink.storage.encode
 import androidx.ink.strokes.Stroke
 import androidx.ink.strokes.StrokeInputBatch
+import de.millione.schulranzen.core.notebook.InkFileFormat
+import de.millione.schulranzen.core.notebook.SafeFile
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
 import java.io.IOException
 
 /**
- * Page file: "RNZ1", stroke count, then per stroke id, tool, colour, size
- * and the Jetpack Ink input batch (its own compact, versioned encoding).
- * The brush is rebuilt from tool/colour/size, so brush tuning applies to
- * old pages too. Written to a temp file and renamed: a crash never leaves
- * half a page.
+ * Page file ([InkFileFormat]): per stroke id, tool, colour, size and the
+ * Jetpack Ink input batch (its own compact, versioned encoding). The brush
+ * is rebuilt from tool/colour/size, so brush tuning applies to old pages
+ * too. Written through [SafeFile]: a crash never leaves half a page.
  */
 object InkCodec {
-    private const val MAGIC = 0x524E5A31 // "RNZ1"
+    /** What could be read; [damaged] when the file was cut off or partly unreadable. */
+    class Loaded(val strokes: List<PageStroke>, val damaged: Boolean)
 
     fun write(file: File, strokes: List<PageStroke>) {
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        file.parentFile?.mkdirs()
-        DataOutputStream(tmp.outputStream().buffered()).use { out ->
-            out.writeInt(MAGIC)
-            out.writeInt(strokes.size)
+        SafeFile.write(file) { raw ->
+            val out = DataOutputStream(raw)
+            InkFileFormat.writeHeader(out, strokes.size)
             val buf = ByteArrayOutputStream()
             for (s in strokes) {
-                out.writeLong(s.id)
-                out.writeByte(s.tool.code.toInt())
-                out.writeInt(s.color)
-                out.writeFloat(s.size)
                 buf.reset()
                 s.stroke.inputs.encode(buf)
-                out.writeInt(buf.size())
+                InkFileFormat.writeRecordHead(out, s.id, s.tool.code, s.color, s.size, buf.size())
                 buf.writeTo(out)
             }
-        }
-        if (!tmp.renameTo(file)) {
-            file.delete()
-            if (!tmp.renameTo(file)) throw IOException("Seite konnte nicht gespeichert werden: ${file.name}")
+            out.flush()
         }
     }
 
-    fun read(file: File): List<PageStroke> {
-        if (!file.isFile) return emptyList()
-        DataInputStream(file.inputStream().buffered()).use { inp ->
-            if (inp.readInt() != MAGIC) throw IOException("Keine Schulranzen-Seite: ${file.name}")
-            val n = inp.readInt()
-            val out = ArrayList<PageStroke>(n)
-            repeat(n) {
-                val id = inp.readLong()
-                val tool = ToolKind.of(inp.readByte())
-                val color = inp.readInt()
-                val size = inp.readFloat()
-                val bytes = ByteArray(inp.readInt()).also { inp.readFully(it) }
-                val inputs = StrokeInputBatch.decode(ByteArrayInputStream(bytes))
-                out += PageStroke(id, tool, color, size, Stroke(Brushes.brush(tool, color, size), inputs))
+    /**
+     * Reads as many strokes as the file still holds. A broken stroke costs
+     * that stroke, not the page. Device read errors and low memory throw:
+     * those say nothing about the file.
+     */
+    fun readChecked(file: File): Loaded {
+        if (!file.isFile) return Loaded(emptyList(), false)
+        val out = ArrayList<PageStroke>()
+        var bad = false
+        val whole = file.inputStream().buffered().use { input ->
+            InkFileFormat.parse(input, file.length()) { id, code, color, size, payload ->
+                try {
+                    val tool = ToolKind.of(code)
+                    val inputs = StrokeInputBatch.decode(ByteArrayInputStream(payload))
+                    out += PageStroke(id, tool, color, size, Stroke(Brushes.brush(tool, color, size), inputs))
+                } catch (_: Exception) {
+                    bad = true
+                }
             }
-            return out
         }
+        return Loaded(out, bad || !whole)
+    }
+
+    /** Strokes of the file; throws only when nothing at all could be read from a damaged file. */
+    fun read(file: File): List<PageStroke> {
+        val loaded = readChecked(file)
+        if (loaded.damaged && loaded.strokes.isEmpty()) throw IOException("Keine Schulranzen-Seite: ${file.name}")
+        return loaded.strokes
     }
 }

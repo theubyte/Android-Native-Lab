@@ -25,7 +25,7 @@ import java.net.UnknownHostException
 import javax.net.ssl.SSLException
 
 /** Why a server call failed; the UI shows [SyncException.message] as is. */
-enum class SyncError { UNREACHABLE, BAD_INPUT, WRONG_LOGIN, EXISTS, SESSION_EXPIRED, NOT_FOUND, TOO_LARGE, SERVER, PROTOCOL }
+enum class SyncError { UNREACHABLE, BAD_INPUT, WRONG_LOGIN, EXISTS, SESSION_EXPIRED, NOT_FOUND, TOO_LARGE, SERVER, PROTOCOL, RATE_LIMITED, NO_SPACE, SERVER_TOO_OLD }
 
 /** [httpCode] is set when the server answered (null = network or input problem). */
 class SyncException(val error: SyncError, message: String, cause: Throwable? = null, val httpCode: Int? = null) : IOException(message, cause)
@@ -48,6 +48,12 @@ data class UploadResult(val version: String, val size: Long)
  * - `GET /api/sync/versions` → `{ok, versions: [{version, size, mtime}]}`, newest first
  * - `GET /api/sync/latest`, `GET /api/sync/version/<name>` → the ZIP
  *
+ * For the page-by-page sync ([SyncRemote], server API 2): `GET /api/sync/head`,
+ * `POST /api/sync/blobs/missing`, `PUT|GET /api/sync/blob/<id>` and
+ * `POST /api/sync/commit` with `If-Match` or `If-None-Match: *`. An older server
+ * answers 404 there, reported as [SyncError.SERVER_TOO_OLD]; its full backups
+ * keep working.
+ *
  * Auth is `Authorization: Bearer <token>`; the server answers a bad or
  * expired token with a bare 401 (HTML, not JSON). Blocking: call it on an
  * IO thread.
@@ -62,7 +68,7 @@ class SyncClient(
      * file to disk first (gunicorn timeout there: 600 s).
      */
     private val uploadTimeoutMs: Int = 600_000,
-) {
+) : SyncRemote {
     val baseUrl: String = normalizeUrl(serverUrl)
 
     init {
@@ -182,13 +188,19 @@ class SyncClient(
             if (version.contains('/') || version.contains('\\') || !version.endsWith(".zip")) throw SyncException(SyncError.BAD_INPUT, "Ungültiger Versionsname.")
             "/api/sync/version/" + URLEncoder.encode(version, "UTF-8").replace("+", "%20")
         }
+        return download(path, target, progress) { code ->
+            if (code == 404) SyncException(SyncError.NOT_FOUND, (if (version == null) "Auf dem Server liegt noch kein Backup." else "Diese Version gibt es auf dem Server nicht mehr.") + " (HTTP 404)", httpCode = code) else null
+        }
+    }
+
+    private fun download(path: String, target: File, progress: (Long, Long) -> Unit, special: (Int) -> SyncException?): File {
         val h = open("GET", path, auth = true)
         try {
             val code = try { h.responseCode } catch (e: IOException) { throw networkError(e) }
             if (code != 200) {
                 val text = readBody(h.errorStream)
                 val o = parse(text)
-                if (code == 404) throw SyncException(SyncError.NOT_FOUND, (if (version == null) "Auf dem Server liegt noch kein Backup." else "Diese Version gibt es auf dem Server nicht mehr.") + " (HTTP 404)", httpCode = code)
+                special(code)?.let { throw it }
                 throw serverError(code, o, text)
             }
             val total = h.contentLengthLong
@@ -213,16 +225,127 @@ class SyncClient(
                 tmp.delete(); throw e
             } catch (e: IOException) {
                 tmp.delete()
+                if (BackupErrors.isDiskFull(e)) throw NoSpaceException("Kein Speicherplatz mehr frei. Bitte Platz schaffen und erneut versuchen.")
                 val n = networkError(e)
                 throw SyncException(n.error, "Download abgebrochen. ${n.message}", e)
             }
             target.delete()
-            if (!tmp.renameTo(target)) { tmp.copyTo(target, overwrite = true); tmp.delete() }
+            if (!tmp.renameTo(target)) {
+                try {
+                    tmp.copyTo(target, overwrite = true)
+                } catch (e: IOException) {
+                    target.delete()
+                    throw e
+                } finally {
+                    tmp.delete()
+                }
+            }
             return target
         } finally {
             h.disconnect()
         }
     }
+
+    // --- page-by-page sync ----------------------------------------------
+
+    override fun head(): RemoteHead? {
+        val (code, text) = request("GET", "/api/sync/head", auth = true, limit = MAX_MANIFEST)
+        val o = parse(text)
+        if (code == 404) throw tooOld()
+        if (code != 200) throw serverError(code, o, text)
+        val rev = o?.get("rev")?.jsonPrimitive?.contentOrNull ?: return null
+        val manifest = o["manifest"]?.jsonPrimitive?.contentOrNull
+            ?: throw SyncException(SyncError.PROTOCOL, "Antwort des Servers ist unverständlich.")
+        return RemoteHead(rev, java.util.Base64.getDecoder().decode(manifest))
+    }
+
+    override fun missing(ids: List<String>): List<String> {
+        val result = ArrayList<String>()
+        // In parts: the list of a large library is longer than a server wants to read at once.
+        for (part in ids.chunked(2000)) {
+            val body = buildJsonObject { put("ids", kotlinx.serialization.json.JsonArray(part.map { kotlinx.serialization.json.JsonPrimitive(it) })) }.toString()
+            val (code, text) = request("POST", "/api/sync/blobs/missing", auth = true, json = body)
+            val o = parse(text)
+            if (code == 404) throw tooOld()
+            if (code != 200) throw serverError(code, o, text)
+            val arr = runCatching { o!!["missing"]!!.jsonArray }.getOrNull()
+                ?: throw SyncException(SyncError.PROTOCOL, "Antwort des Servers ist unverständlich.")
+            arr.mapTo(result) { it.jsonPrimitive.content }
+        }
+        return result
+    }
+
+    override fun putBlob(id: String, file: File, sha256: String, progress: (Long, Long) -> Unit) {
+        val h = open("PUT", "/api/sync/blob/$id", auth = true)
+        h.readTimeout = uploadTimeoutMs
+        try {
+            val total = file.length()
+            h.doOutput = true
+            h.setRequestProperty("Content-Type", "application/octet-stream")
+            h.setRequestProperty("X-Content-SHA256", sha256)
+            h.setFixedLengthStreamingMode(total)
+            val (code, text) = exchange(h) {
+                h.outputStream.buffered(64 * 1024).use { out ->
+                    file.inputStream().use { input ->
+                        val buf = ByteArray(64 * 1024)
+                        var sent = 0L
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            sent += n
+                            progress(sent, total)
+                        }
+                    }
+                }
+            }
+            // The file changed after it was hashed; a fresh look at the data sorts that out.
+            if (code == 422) throw SyncConflictException("Eine Datei hat sich beim Senden geändert.")
+            if (code !in 200..299) throw serverError(code, parse(text), text)
+        } catch (e: java.io.FileNotFoundException) {
+            throw SyncConflictException("Eine Datei ist beim Senden verschwunden.")
+        } finally {
+            h.disconnect()
+        }
+    }
+
+    override fun getBlob(id: String, target: File, progress: (Long, Long) -> Unit) {
+        download("/api/sync/blob/$id", target, progress) { code ->
+            if (code == 404) SyncException(SyncError.NOT_FOUND, "Eine Datei fehlt auf dem Server. (HTTP 404)", httpCode = code) else null
+        }
+    }
+
+    override fun commit(expected: String?, manifest: ByteArray, blobs: List<String>, device: String): String {
+        val body = buildJsonObject {
+            put("manifest", java.util.Base64.getEncoder().encodeToString(manifest))
+            put("blobs", kotlinx.serialization.json.JsonArray(blobs.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+            put("device", device)
+        }.toString()
+        val h = open("POST", "/api/sync/commit", auth = true)
+        try {
+            h.doOutput = true
+            h.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            if (expected != null) h.setRequestProperty("If-Match", "\"$expected\"") else h.setRequestProperty("If-None-Match", "*")
+            val (code, text) = exchange(h) { h.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) } }
+            val o = parse(text)
+            when (code) {
+                200 -> return o?.get("rev")?.jsonPrimitive?.contentOrNull
+                    ?: throw SyncException(SyncError.PROTOCOL, "Der Server hat den neuen Stand nicht bestätigt.")
+                // Someone was faster (412), or a file was cleaned away meanwhile (409): look again.
+                412, 409 -> throw SyncConflictException()
+                404 -> throw tooOld()
+                else -> throw serverError(code, o, text)
+            }
+        } finally {
+            h.disconnect()
+        }
+    }
+
+    private fun tooOld() = SyncException(
+        SyncError.SERVER_TOO_OLD,
+        "Der Server kann noch nicht abgleichen. Bitte den Server aktualisieren (siehe Anleitung). Vollbackups funktionieren weiter.",
+        httpCode = 404,
+    )
 
     // --- plumbing -------------------------------------------------------
 
@@ -246,24 +369,24 @@ class SyncClient(
         return h
     }
 
-    private fun request(method: String, path: String, auth: Boolean, json: String? = null): Pair<Int, String> {
+    private fun request(method: String, path: String, auth: Boolean, json: String? = null, limit: Int = 1 shl 20): Pair<Int, String> {
         val h = open(method, path, auth)
         try {
             if (json != null) {
                 h.doOutput = true
                 h.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             }
-            return exchange(h) { if (json != null) h.outputStream.use { it.write(json.toByteArray(Charsets.UTF_8)) } }
+            return exchange(h, limit) { if (json != null) h.outputStream.use { it.write(json.toByteArray(Charsets.UTF_8)) } }
         } finally {
             h.disconnect()
         }
     }
 
-    private inline fun exchange(h: HttpURLConnection, send: () -> Unit): Pair<Int, String> {
+    private inline fun exchange(h: HttpURLConnection, limit: Int = 1 shl 20, send: () -> Unit): Pair<Int, String> {
         try {
             send()
             val code = h.responseCode
-            val body = readBody(if (code in 200..299) h.inputStream else h.errorStream)
+            val body = readBody(if (code in 200..299) h.inputStream else h.errorStream, limit)
             return code to body
         } catch (e: SyncException) {
             throw e
@@ -279,8 +402,8 @@ class SyncClient(
         }
     }
 
-    private fun readBody(input: InputStream?): String =
-        input?.use { s -> s.readNBytesCompat(1 shl 20).toString(Charsets.UTF_8) } ?: ""
+    private fun readBody(input: InputStream?, limit: Int = 1 shl 20): String =
+        input?.use { s -> s.readNBytesCompat(limit).toString(Charsets.UTF_8) } ?: ""
 
     private fun InputStream.readNBytesCompat(max: Int): ByteArray {
         val out = java.io.ByteArrayOutputStream()
@@ -320,6 +443,8 @@ class SyncClient(
             401 -> SyncException(SyncError.SESSION_EXPIRED, "Anmeldung abgelehnt$tail. Bitte neu anmelden.", httpCode = code)
             404 -> SyncException(SyncError.NOT_FOUND, "Nicht gefunden$tail. Stimmt die Server-Adresse?", httpCode = code)
             413 -> SyncException(SyncError.TOO_LARGE, "Das Backup ist größer als das Limit des Servers (MAX_UPLOAD_MB)$tail.", httpCode = code)
+            429 -> SyncException(SyncError.RATE_LIMITED, detail ?: "Zu viele Fehlversuche. Bitte später erneut versuchen.", httpCode = code)
+            507 -> SyncException(SyncError.NO_SPACE, "Auf dem Server ist der Speicher voll$tail.", httpCode = code)
             in 300..399 -> SyncException(SyncError.PROTOCOL, "Der Server leitet um$tail. Bitte die genaue Adresse eintragen (http:// oder https://).", httpCode = code)
             502, 503, 504 -> SyncException(SyncError.SERVER, "Server überlastet oder Zeitüberschreitung$tail. Später erneut versuchen.", httpCode = code)
             else -> SyncException(SyncError.SERVER, "Serverfehler$tail.", httpCode = code)
@@ -359,6 +484,8 @@ class SyncClient(
 
     companion object {
         private const val PREFLIGHT_BYTES = 1L shl 20
+        /** The file list of a large library, base64: far more than an error page may be. */
+        private const val MAX_MANIFEST = 128 shl 20
 
         /** The server's "error" field, or the title of an HTML error page, shortened. */
         internal fun detailOf(o: JsonObject?, body: String): String? {

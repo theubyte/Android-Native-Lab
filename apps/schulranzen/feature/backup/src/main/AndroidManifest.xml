@@ -15,5 +15,15 @@
                 android:name="de.millione.schulranzen.backup.AutoBackupInitializer"
                 android:value="androidx.startup" />
         </provider>
+        <!-- Hands a file for another device to the share sheet; only that one folder. -->
+        <provider
+            android:name="de.millione.schulranzen.backup.ShareFileProvider"
+            android:authorities="${applicationId}.backup.share"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/backup_share" />
+        </provider>
     </application>
 </manifest>

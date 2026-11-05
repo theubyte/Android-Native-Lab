@@ -1,6 +1,24 @@
 package de.millione.schulranzen.app.notebook
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import de.millione.schulranzen.core.notebook.PenPreset
+import de.millione.schulranzen.core.notebook.PenPresets
+import de.millione.schulranzen.ink.PageGeometry
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -53,6 +71,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -116,10 +135,22 @@ fun NotebookScreen(
     onBookBeside: (() -> Unit)? = null,
     /** Narrow pane next to a book: keep the rail vertical even when the pane is taller than wide. */
     compact: Boolean = false,
+    /** Opens the document scanner for this notebook; null hides the entry. */
+    onScan: (() -> Unit)? = null,
 ) {
     val c = Ranzen.colors
     var panel by remember { mutableStateOf(Panel.NONE) }
     session.density = LocalDensity.current.density
+    // Home, recents, another app: the process may not come back, so the pages are written now.
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { session.onPause() }
+    // A link to a notebook that is gone (deleted, or failed to open) leads back, not to a dead screen.
+    if (session.missing) {
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        LaunchedEffect(Unit) {
+            android.widget.Toast.makeText(ctx, "Dieses Heft gibt es nicht mehr", android.widget.Toast.LENGTH_SHORT).show()
+            onBack()
+        }
+    }
     BackHandler {
         when {
             session.textDraft != null -> session.cancelText()
@@ -138,7 +169,8 @@ fun NotebookScreen(
     val pickWorksheetPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) session.addWorksheetPdf(uri)
     }
-    var cameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    // Saved: the system may end the process while the camera app is open.
+    var cameraUri by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<android.net.Uri?>(null) }
     val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         val u = cameraUri
         if (ok && u != null) session.addWorksheetImages(listOf(u))
@@ -189,7 +221,7 @@ fun NotebookScreen(
         if (session.tool == ToolKind.LASSO && session.selection == null && session.clip != null && panel == Panel.NONE) {
             Box(safe.fillMaxSize().padding(top = 70.dp), contentAlignment = Alignment.TopCenter) {
                 PaperPanel(corner = 14.dp, depth = 0.7f) {
-                    Row(Modifier.clickable { session.paste() }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.heightIn(min = 48.dp).clickable { session.paste() }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         RanzenIcon(RanzenIcons.Copy, size = 18.dp); Spacer(Modifier.width(8.dp))
                         Text("Einfügen", style = Ranzen.type.label, color = c.ink)
                     }
@@ -223,6 +255,7 @@ fun NotebookScreen(
             enter = fadeIn() + scaleIn(spring(dampingRatio = 0.7f), initialScale = 0.92f),
             exit = fadeOut() + scaleOut(targetScale = 0.95f)) {
             MorePanel(session, settings, pdfRuling, { pdfRuling = it },
+                onScan = onScan?.let { open -> { panel = Panel.NONE; open() } },
                 onImage = { panel = Panel.NONE; pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                 onWorksheetPhotos = { panel = Panel.NONE; pickWorksheets.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                 onWorksheetPdf = { panel = Panel.NONE; pickWorksheetPdf.launch(arrayOf("application/pdf")) },
@@ -290,7 +323,8 @@ fun NotebookScreen(
             Box(safe.fillMaxSize().padding(bottom = 28.dp), contentAlignment = Alignment.BottomCenter) {
                 Text(
                     msg, style = Ranzen.type.label, color = c.paper,
-                    modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(c.ink.copy(alpha = 0.9f)).padding(horizontal = 18.dp, vertical = 10.dp),
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }.widthIn(max = 620.dp)
+                        .clip(RoundedCornerShape(12.dp)).background(c.ink.copy(alpha = 0.9f)).padding(horizontal = 18.dp, vertical = 10.dp),
                 )
             }
         }
@@ -306,11 +340,11 @@ private fun ToolRail(
     onPages: () -> Unit,
     onMore: () -> Unit,
     onBack: () -> Unit,
-    /** Smaller keys and gaps when the screen is too short for the full rail. */
+    /** Smaller gaps when the screen is too short for the full rail; keys stay at 48 dp, the rail scrolls. */
     dense: Boolean = false,
 ) {
     val c = Ranzen.colors
-    val keySize = if (dense) 42.dp else 48.dp
+    val keySize = 48.dp
     // Tool name next to the key the pen hovers over: name and key centre in window pixels.
     var hovered by remember { mutableStateOf<Pair<String, Offset>?>(null) }
     @Composable
@@ -435,11 +469,9 @@ private fun SelectionBar(session: NotebookSession, frame: android.graphics.RectF
                     BarButton(RanzenIcons.Image, "Bildkarte", session::cardFromSelection)
                     BarButton(RanzenIcons.Bookmark, "Prüfung", session::markForExam)
                 }
-                if (colors) Row(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    InkPalette.pen.forEach { argb ->
-                        Box(Modifier.size(30.dp).clip(CircleShape).clickable { session.recolor(argb); colors = false }, contentAlignment = Alignment.Center) {
-                            Lamp(Color(argb), size = 20.dp)
-                        }
+                if (colors) Row(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    PenPresets.fill(session.recentPen, InkPalette.pen, 6).forEach { argb ->
+                        ColorDot(argb, selected = false, { session.recolor(argb); colors = false }, lamp = 20.dp)
                     }
                 }
             }
@@ -450,7 +482,7 @@ private fun SelectionBar(session: NotebookSession, frame: android.graphics.RectF
 @Composable
 private fun BarButton(icon: ImageVector?, label: String, onClick: () -> Unit, tint: Color = Ranzen.colors.ink, lead: (@Composable () -> Unit)? = null) {
     Column(
-        Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
+        Modifier.widthIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
@@ -488,12 +520,8 @@ private fun TextEditor(old: TextItem?, session: NotebookSession) {
                     }
                     Spacer(Modifier.width(if (i == 2) 20.dp else 8.dp))
                 }
-                InkPalette.pen.forEach { argb ->
-                    Box(
-                        Modifier.size(34.dp).clip(CircleShape).border(if (argb == color) 2.dp else 0.dp, if (argb == color) c.ink else Color.Transparent, CircleShape)
-                            .clickable { color = argb },
-                        contentAlignment = Alignment.Center,
-                    ) { Lamp(Color(argb), size = 20.dp) }
+                PenPresets.fill(session.recentPen, InkPalette.pen, 6).forEach { argb ->
+                    ColorDot(argb, argb == color, { color = argb }, lamp = 20.dp)
                 }
             }
             Spacer(Modifier.height(24.dp))
@@ -508,39 +536,123 @@ private fun TextEditor(old: TextItem?, session: NotebookSession) {
     }
 }
 
+/** A colour to tap: 48 dp target with its name for the screen reader. */
+@Composable
+private fun ColorDot(argb: Int, selected: Boolean, onClick: () -> Unit, lamp: Dp = 26.dp) {
+    val c = Ranzen.colors
+    Box(
+        Modifier.size(48.dp).clip(CircleShape)
+            .border(if (selected) 2.dp else 0.dp, if (selected) c.ink else Color.Transparent, CircleShape)
+            .clickable(onClick = onClick)
+            .semantics { contentDescription = colorName(argb); this.selected = selected },
+        contentAlignment = Alignment.Center,
+    ) { Lamp(Color(argb), size = lamp) }
+}
+
+/** A favourite pen: its colour and width at a glance. Tap uses it, holding removes it. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PresetKey(p: PenPreset, active: Boolean, onUse: () -> Unit, onRemove: () -> Unit) {
+    val c = Ranzen.colors
+    val kind = ToolKind.of(p.tool)
+    val shape = RoundedCornerShape(14.dp)
+    val mm = "%.1f".format(java.util.Locale.GERMANY, p.size / PageGeometry.UNITS_PER_MM)
+    Column(
+        Modifier.size(48.dp).clip(shape).background(c.raised)
+            .border(if (active) 1.5.dp else 0.5.dp, if (active) c.signal else c.line, shape)
+            .combinedClickable(onClickLabel = "Verwenden", onLongClickLabel = "Favorit entfernen", onLongClick = onRemove, onClick = onUse)
+            .semantics { contentDescription = "${toolName(kind)}, ${colorName(p.color)}, $mm Millimeter" },
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+    ) {
+        RanzenIcon(if (kind == ToolKind.MARKER) RanzenIcons.Marker else RanzenIcons.Pen, tint = Color(p.color), size = 22.dp)
+        Spacer(Modifier.height(3.dp))
+        Box(Modifier.width(24.dp).height((p.size * 0.45f).coerceIn(1f, 7f).dp).clip(RoundedCornerShape(2.dp)).background(Color(p.color)))
+    }
+}
+
+/** Any colour by hue, saturation and brightness; it counts as used when a slider is let go. */
+@Composable
+private fun CustomColor(current: Int, onPick: (Int) -> Unit) {
+    val c = Ranzen.colors
+    val hsv = remember { FloatArray(3).also { android.graphics.Color.colorToHSV(current, it) } }
+    var hue by remember { mutableFloatStateOf(hsv[0]) }
+    var sat by remember { mutableFloatStateOf(hsv[1]) }
+    var value by remember { mutableFloatStateOf(hsv[2]) }
+    val color = android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, value))
+    val colors = SliderDefaults.colors(thumbColor = c.signal, activeTrackColor = c.signal, inactiveTrackColor = c.line)
+    @Composable
+    fun row(label: String, v: Float, range: ClosedFloatingPointRange<Float>, set: (Float) -> Unit) {
+        Text(label, style = Ranzen.type.caption, color = c.inkMuted)
+        Slider(v, set, valueRange = range, onValueChangeFinished = { onPick(color) }, colors = colors,
+            modifier = Modifier.semantics { contentDescription = label })
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Lamp(Color(color), size = 26.dp)
+        Spacer(Modifier.width(12.dp))
+        Text("Eigene Farbe", style = Ranzen.type.label, color = c.ink)
+    }
+    Spacer(Modifier.height(6.dp))
+    row("Farbton", hue, 0f..360f) { hue = it }
+    row("Sättigung", sat, 0f..1f) { sat = it }
+    row("Helligkeit", value, 0f..1f) { value = it }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StylePanel(session: NotebookSession) {
     val c = Ranzen.colors
     val marker = session.tool == ToolKind.MARKER
     PaperPanel(corner = 22.dp) {
-        Column(Modifier.padding(22.dp).width(300.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp).width(320.dp)) {
             Text(if (marker) "Marker" else "Stift", style = Ranzen.type.heading, color = c.ink)
-            Spacer(Modifier.height(16.dp))
-            Text("FARBE", style = Ranzen.type.caption, color = c.inkMuted)
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                val colors = if (marker) InkPalette.marker else InkPalette.pen
-                val current = if (marker) session.markerColor else session.penColor
-                colors.forEach { argb ->
-                    Box(
-                        Modifier.size(38.dp).clip(CircleShape)
-                            .border(if (argb == current) 2.dp else 0.dp, if (argb == current) c.ink else Color.Transparent, CircleShape)
-                            .clickable { if (marker) session.setMarker(argb) else session.setPen(argb) },
-                        contentAlignment = Alignment.Center,
-                    ) { Lamp(Color(argb), size = 26.dp) }
+            Spacer(Modifier.height(14.dp))
+            val current = if (marker) session.markerColor else session.penColor
+            val currentSize = if (marker) session.markerSize else session.penSize
+            val pick: (Int) -> Unit = { if (marker) session.setMarker(it) else session.setPen(it) }
+            Text("FAVORITEN", style = Ranzen.type.caption, color = c.inkMuted)
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                session.presets.forEach { p ->
+                    val active = p.color == current && p.size == currentSize && ToolKind.of(p.tool) == (if (marker) ToolKind.MARKER else ToolKind.PEN)
+                    PresetKey(p, active, { session.usePreset(p) }, { session.removePreset(p) })
+                }
+                TactileKey(session::addPreset, contentDescription = "Diesen Stift als Favorit speichern") { RanzenIcon(RanzenIcons.Plus) }
+            }
+            if (session.presets.isEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text("Mit + merken. Lang drücken entfernt einen Favoriten.", style = Ranzen.type.caption, color = c.inkMuted)
+            }
+            val recent = if (marker) session.recentMarker else session.recentPen
+            if (recent.isNotEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                Text("ZULETZT", style = Ranzen.type.caption, color = c.inkMuted)
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    recent.forEach { argb -> ColorDot(argb, argb == current, { pick(argb) }) }
                 }
             }
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
+            Text("FARBE", style = Ranzen.type.caption, color = c.inkMuted)
+            Spacer(Modifier.height(4.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                (if (marker) InkPalette.marker + ExtraColors.marker else InkPalette.pen + ExtraColors.pen).forEach { argb ->
+                    ColorDot(argb, argb == current, { pick(argb) })
+                }
+            }
+            var custom by remember { mutableStateOf(false) }
+            QuietButton(if (custom) "Eigene Farbe schließen" else "Eigene Farbe …", { custom = !custom }, color = c.ink)
+            if (custom) key(marker) { CustomColor(current, pick) }
+            Spacer(Modifier.height(16.dp))
             Text("DICKE", style = Ranzen.type.caption, color = c.inkMuted)
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 val sizes = if (marker) Brushes.markerSizes else Brushes.penSizes
-                val current = if (marker) session.markerSize else session.penSize
                 sizes.forEach { s ->
-                    val selected = s == current
+                    val selected = s == currentSize
                     TactileKey(
                         { if (marker) session.setMarker(session.markerColor, s) else session.setPen(session.penColor, s) },
-                        selected = selected, size = 46.dp,
+                        selected = selected, size = 48.dp,
+                        contentDescription = "Dicke " + "%.1f".format(java.util.Locale.GERMANY, s / PageGeometry.UNITS_PER_MM) + " Millimeter",
                     ) {
                         val dot = if (marker) (6 + s * 0.7f).dp else (4 + s * 2.2f).dp
                         Box(Modifier.size(dot).clip(CircleShape).background(Color(if (marker) session.markerColor else session.penColor)))
@@ -551,6 +663,7 @@ private fun StylePanel(session: NotebookSession) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MorePanel(
     session: NotebookSession,
@@ -563,13 +676,15 @@ private fun MorePanel(
     onWorksheetCamera: () -> Unit,
     onPdf: () -> Unit,
     onBookBeside: (() -> Unit)?,
+    onScan: (() -> Unit)? = null,
 ) {
     val c = Ranzen.colors
     PaperPanel(corner = 22.dp) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp).width(360.dp)) {
             Text("Seite", style = Ranzen.type.heading, color = c.ink)
             Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            @Suppress("UNUSED_VARIABLE") val v = session.pagesVersion
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val current = session.currentPaper()
                 PaperStyle.entries.forEach { style ->
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { session.setPaper(style) }) {
@@ -579,14 +694,15 @@ private fun MorePanel(
                     }
                 }
             }
+            ActionRow(RanzenIcons.Paper, "Dieses Papier für alle Seiten", session::setPaperForAll)
             Spacer(Modifier.height(10.dp))
-            @Suppress("UNUSED_VARIABLE") val v = session.pagesVersion
             val page = session.currentPage()
             ToggleRow("Lesezeichen auf dieser Seite", page?.bookmarked == true) { session.toggleBookmark() }
             ToggleRow("Seite sperren", page?.locked == true) { session.toggleLock() }
             Spacer(Modifier.height(16.dp))
             Text("Arbeitsblatt als neue Seite", style = Ranzen.type.heading, color = c.ink)
             Spacer(Modifier.height(4.dp))
+            if (onScan != null) ActionRow(RanzenIcons.Paper, "Scannen (Kanten, mehrere Seiten)", onScan)
             ActionRow(RanzenIcons.Camera, "Fotografieren", onWorksheetCamera)
             ActionRow(RanzenIcons.Image, "Aus Fotos (auch mehrere)", onWorksheetPhotos)
             ActionRow(RanzenIcons.Paper, "Aus PDF – jede Seite wird ein Blatt", onWorksheetPdf)
@@ -609,6 +725,7 @@ private fun MorePanel(
             Text("Teilen", style = Ranzen.type.heading, color = c.ink)
             Spacer(Modifier.height(4.dp))
             ActionRow(RanzenIcons.Export, "Heft als PDF speichern", onPdf)
+            ActionRow(RanzenIcons.Export, "Heft als PDF teilen", session::sharePdf)
             ToggleRow("PDF mit Linien und Karos", pdfRuling, onPdfRuling)
             Spacer(Modifier.height(16.dp))
             Text("Stift", style = Ranzen.type.heading, color = c.ink)
@@ -644,7 +761,7 @@ private fun MorePanel(
 private fun ActionRow(icon: ImageVector, label: String, onClick: () -> Unit) {
     val c = Ranzen.colors
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 10.dp, horizontal = 4.dp),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 10.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RanzenIcon(icon, size = 22.dp)
@@ -688,6 +805,16 @@ internal fun PaperSwatch(style: PaperStyle, selected: Boolean) {
             PaperStyle.DOTTED -> {
                 val s = 6.dp.toPx()
                 var y = s; while (y < size.height) { var x = s; while (x < size.width) { drawCircle(rule, 1.2f, Offset(x, y)); x += s }; y += s }
+            }
+            PaperStyle.NARROW -> {
+                var y = 10.dp.toPx(); while (y < size.height - 4) { drawLine(rule, Offset(0f, y), Offset(size.width, y), 1f); y += 5.dp.toPx() }
+                drawLine(Color(0xFFE3A99C), Offset(12.dp.toPx(), 0f), Offset(12.dp.toPx(), size.height), 1f)
+            }
+            PaperStyle.MILLIMETER -> {
+                val mm = Color(0xFFE3B3A2)
+                val s = 3.dp.toPx()
+                var x = s; while (x < size.width) { drawLine(mm, Offset(x, 0f), Offset(x, size.height), 0.6f); x += s }
+                var y = s; while (y < size.height) { drawLine(mm, Offset(0f, y), Offset(size.width, y), 0.6f); y += s }
             }
             PaperStyle.BLANK -> Unit
         }

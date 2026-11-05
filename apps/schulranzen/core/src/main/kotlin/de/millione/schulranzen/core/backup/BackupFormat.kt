@@ -99,5 +99,25 @@ object Hashing {
     private const val HEX = "0123456789abcdef"
 }
 
+/** Fails early and clearly when a step cannot fit, instead of half way through. */
+object Space {
+    /** Kept free on top, so the device stays usable. */
+    const val MARGIN = 32L * 1024 * 1024
+
+    fun require(dir: File, bytes: Long, what: String) {
+        var d: File? = dir
+        while (d != null && !d.exists()) d = d.parentFile
+        val free = d?.usableSpace ?: return
+        // 0 means "unknown" on some file systems.
+        if (free in 1 until bytes + MARGIN) {
+            throw NoSpaceException("Zu wenig Speicher frei: $what braucht etwa ${megabytes(bytes + MARGIN)}, frei sind ${megabytes(free)}. Es wurde nichts verändert.")
+        }
+    }
+
+    private fun megabytes(b: Long) = String.format(java.util.Locale.GERMANY, "%.0f MB", b / (1024.0 * 1024))
+}
+
+class NoSpaceException(message: String) : BackupException(message)
+
 /** Deletes a file or folder tree; true when nothing is left. */
 internal fun File.deleteTree(): Boolean = !exists() || deleteRecursively()

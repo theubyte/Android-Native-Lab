@@ -157,6 +157,41 @@ class BackupCryptoTest {
         assertFalse(File(tmp.root, "other.zip.tmp").exists())
     }
 
+    @Test fun sessionWritesTheNormalFormat() {
+        val pw = "ein gutes Passwort".toCharArray()
+        val s = BackupCrypto.session(pw, iterations = 10_000)
+        val plain = ByteArray(3_000_000) { (it % 97).toByte() }
+        val sealed = s.encrypt(plain)
+        assertContentEquals(plain, s.decrypt(sealed))
+        // Any tool that knows the password reads it too, also without the session.
+        val other = java.io.ByteArrayOutputStream()
+        BackupCrypto.decrypt(sealed.inputStream(), other, pw)
+        assertContentEquals(plain, other.toByteArray())
+        assertFalse(s.encrypt(plain).contentEquals(sealed), "fresh nonce each time")
+    }
+
+    @Test fun sessionsOfTheSamePasswordAgree() {
+        val pw = "ein gutes Passwort".toCharArray()
+        val s = BackupCrypto.session(pw, iterations = 10_000)
+        val sealed = s.encrypt("x".toByteArray())
+        val again = BackupCrypto.sessionFor(sealed, pw)
+        assertContentEquals("x".toByteArray(), again.decrypt(sealed))
+        assertEquals(s.blobId("abc"), again.blobId("abc"))
+        assertTrue(s.blobId("abc") != s.blobId("abd"))
+        assertEquals(64, s.blobId("abc").length)
+        assertFailsWith<WrongPasswordException> { BackupCrypto.sessionFor(sealed, "falsch-falsch".toCharArray()) }
+        // New salt: other keys.
+        assertTrue(BackupCrypto.session(pw, iterations = 10_000).blobId("abc") != s.blobId("abc"))
+    }
+
+    @Test fun sessionNoticesDamage() {
+        val s = BackupCrypto.session("ein gutes Passwort".toCharArray(), iterations = 10_000)
+        val sealed = s.encrypt(ByteArray(5000) { 1 })
+        sealed[sealed.size - 3] = (sealed[sealed.size - 3] + 1).toByte()
+        assertFailsWith<TamperedBackupException> { s.decrypt(sealed) }
+        assertFailsWith<TamperedBackupException> { s.decrypt(s.encrypt(ByteArray(5000)).copyOf(1000)) }
+    }
+
     @Test fun defaultIterationsAreStrong() {
         assertTrue(BackupCrypto.DEFAULT_ITERATIONS >= 600_000)
         assertFailsWith<IllegalArgumentException> { BackupCrypto.encryptingStream(ByteArrayOutputStream(), pw, 1000) }
