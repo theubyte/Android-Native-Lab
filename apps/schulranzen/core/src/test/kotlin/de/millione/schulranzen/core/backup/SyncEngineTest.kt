@@ -81,8 +81,16 @@ class Device(root: File, private val remote: SyncRemote, val name: String = "Ger
             val f = File(backupDir, "databases/ranzen.json")
             return if (f.isFile) json.decodeFromString(list, f.readText()) else null
         }
-        override suspend fun write(notebook: NotebookState) = save(notebooks().filter { it.id != notebook.id } + notebook.copy(pages = notebook.pages.map { it.copy(hash = null, modified = 0) }))
-        override suspend fun delete(notebookId: String) = save(notebooks().filter { it.id != notebookId })
+        override suspend fun apply(write: List<NotebookState>, delete: List<String>) {
+            val written = write.map { n -> n.copy(pages = n.pages.map { it.copy(hash = null, modified = 0) }) }
+            val taken = written.flatMapTo(HashSet()) { n -> n.pages.map { it.id } }
+            val rest = notebooks().filter { n -> n.id !in delete && written.none { it.id == n.id } }
+                .map { n -> n.copy(pages = n.pages.filter { it.id !in taken }) }
+            val result = rest + written
+            val all = result.flatMap { n -> n.pages.map { it.id } }
+            check(all.size == all.toSet().size) { "Seite doppelt: $all" }
+            save(result)
+        }
     }
     companion object {
         /** Eight bytes: as long as a real ink file without strokes, which counts as blank. */
@@ -128,6 +136,19 @@ class Device(root: File, private val remote: SyncRemote, val name: String = "Ger
         File(images, image).writeBytes(bytes)
         change(nb) { it.copy(pages = it.pages + PageState(page, "BLANK", background = image)) }
     }
+    /** Page overview: to the end of another notebook, same id. */
+    fun movePage(from: String, to: String, page: String) {
+        val p = page(from, page)
+        change(from) { it.copy(pages = it.pages.filter { x -> x.id != page }) }
+        change(to) { it.copy(pages = it.pages + p) }
+    }
+    /** "Hefte zusammenführen": all pages to the end of [into], the other one is gone. */
+    fun mergeNotebooks(from: String, into: String) {
+        val moved = notebooks().first { it.id == from }.pages
+        change(into) { it.copy(pages = it.pages + moved) }
+        save(notebooks().filter { it.id != from })
+    }
+
     /** Like the page menu: without touching updatedAt. */
     fun setBookmark(nb: String, page: String, on: Boolean) =
         save(notebooks().map { n -> if (n.id != nb) n else n.copy(pages = n.pages.map { if (it.id == page) it.copy(bookmarked = on) else it }) })
@@ -171,6 +192,65 @@ class Device(root: File, private val remote: SyncRemote, val name: String = "Ger
 }
 
 class SyncEngineTest {
+    @Test fun movedPageIsNotDoubled() {
+        tablet.create("a", "p1", "p2"); tablet.create("b", "p3")
+        tablet.write("a", "p2", "wandert")
+        tablet.sync(); phone.sync()
+
+        tablet.movePage("a", "b", "p2")
+        tablet.sync()
+        val r = phone.sync()
+        assertEquals(0, r.conflicts)
+        assertEquals(0, r.removed)
+        for (d in listOf(tablet, phone)) {
+            assertEquals(listOf("p1"), d.pages("a"), d.name)
+            assertEquals(listOf("p3", "p2"), d.pages("b"), d.name)
+            assertEquals("wandert", d.content("p2"), d.name)
+        }
+        tablet.sync(); phone.sync()
+        assertEquals(listOf("p3", "p2"), tablet.pages("b"))
+    }
+
+    @Test fun movedHereAndEditedThereKeepsTheEditAtTheNewPlace() {
+        tablet.create("a", "p1", "p2"); tablet.create("b", "p3")
+        tablet.write("a", "p2", "Anfang")
+        tablet.sync(); phone.sync()
+        tablet.movePage("a", "b", "p2")
+        phone.write("a", "p2", "auf dem Handy geändert", at = 9_000_000)
+        phone.sync(); tablet.sync(); phone.sync()
+        for (d in listOf(tablet, phone)) {
+            assertFalse("p2" in d.pages("a"), d.name)
+            assertTrue("p2" in d.pages("b"), d.name)
+            assertEquals("auf dem Handy geändert", d.content("p2"), d.name)
+        }
+    }
+
+    @Test fun mergedNotebooksKeepEveryPageEverywhere() {
+        tablet.create("a", "p1"); tablet.create("b", "p2", "p3")
+        listOf("p1", "p2", "p3").forEach { tablet.write(if (it == "p1") "a" else "b", it, "Inhalt $it") }
+        tablet.sync(); phone.sync()
+        tablet.mergeNotebooks("b", "a")
+        tablet.sync()
+        val r = phone.sync()
+        assertEquals(0, r.removed, "the pages live on in the other notebook")
+        for (d in listOf(tablet, phone)) {
+            assertEquals(listOf("a"), d.notebooks().map { it.id }, d.name)
+            assertEquals(listOf("p1", "p2", "p3"), d.pages("a"), d.name)
+            listOf("p1", "p2", "p3").forEach { assertEquals("Inhalt $it", d.content(it), d.name) }
+        }
+    }
+
+    @Test fun damagedCopiesAreLeftAlone() {
+        tablet.create("heft", "p1")
+        tablet.write("heft", "p1", "x")
+        tablet.sync(); phone.sync()
+        val keep = File(phone.ink, "p1.rnz.damaged").apply { writeText("Rettungsgut") }
+        tablet.write("heft", "p1", "y")
+        tablet.sync(); phone.sync()
+        assertEquals("y", phone.content("p1"))
+        assertEquals("Rettungsgut", keep.readText())
+    }
+
     @Test fun bookmarksLocksAndPaperTravelWithoutATimeStamp() {
         tablet.create("heft", "p1", "p2")
         tablet.write("heft", "p1", "eins")

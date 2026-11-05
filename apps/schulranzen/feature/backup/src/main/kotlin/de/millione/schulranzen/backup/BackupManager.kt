@@ -119,7 +119,10 @@ class BackupManager(context: Context, var hooks: BackupHooks = BackupHooks.None)
     private fun syncRoots(): List<BackupRoot> {
         val t = targets()
         return listOf(
-            BackupRoot("files", t.getValue("files")) { rel -> rel.substringBefore('/') !in SYNC_FOLDERS || rel.endsWith(".tmp") },
+            BackupRoot("files", t.getValue("files")) { rel ->
+                // Copies of damaged pages stay where they were found; full backups do carry them.
+                rel.substringBefore('/') !in SYNC_FOLDERS || rel.endsWith(".tmp") || rel.contains(".damaged")
+            },
             BackupRoot("databases", t.getValue("databases")) { it !in SYNC_DATABASES },
         )
     }

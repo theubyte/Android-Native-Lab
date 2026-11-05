@@ -3,15 +3,20 @@ package de.millione.schulranzen.core.backup
 import kotlinx.serialization.json.Json
 import java.io.File
 
-/** The structure of the notebooks on this device and in a backup; [write] and [delete] are one transaction each. */
+/** The structure of the notebooks on this device and in a backup. */
 interface NotebookStore {
     /** Everything including the bin, pages in reading order. Hashes and file times are filled in by the caller. */
     suspend fun readLocal(): List<NotebookState>
     /** The same from an extracted backup; null when it has no notebooks. */
     suspend fun readRemote(backupDir: File): List<NotebookState>?
-    /** Replaces (or creates) the notebook with exactly these pages in this order. */
-    suspend fun write(notebook: NotebookState)
-    suspend fun delete(notebookId: String)
+    /**
+     * In one transaction: replaces (or creates) each notebook in [write] with
+     * exactly these pages in this order, a page coming from another notebook
+     * moving along, and removes the notebooks in [delete]. It must be one,
+     * because a page moved between two notebooks may never be in neither of them:
+     * it would count as deleted by the user.
+     */
+    suspend fun apply(write: List<NotebookState>, delete: List<String>)
 }
 
 /**
@@ -50,17 +55,10 @@ class NotebookSyncParticipant(
         if (update.held > 0) warnings += heldWarning(update.held)
         val remoteTombstones = readTombstones(File(backupDir, TOMBSTONE_PATH))
 
-        val plan = NotebookMerge.plan(local, remote, state.base.takeIf { state.hasBase }, update.tombstones, remoteTombstones, clock())
+        val plan = NotebookMerge.plan(local, remote, state.base.takeIf { state.hasBase }, update.tombstones, remoteTombstones, clock(), state.exportedPages)
         for (n in plan.notebooks) applyFiles(n, backupDir, index)
-        val localById = local.associateBy { it.id }
-        for (n in plan.notebooks) {
-            store.write(n.notebook)
-            for (id in n.removePages) deletePageFiles(id)
-        }
-        for (id in plan.removeNotebooks) {
-            store.delete(id)
-            localById[id]?.pages?.forEach { deletePageFiles(it.id) }
-        }
+        store.apply(plan.notebooks.map { it.notebook }, plan.removeNotebooks)
+        for (id in plan.removeFiles) deletePageFiles(id)
         writeTombstones(plan.tombstones)
         // The other side's state is what both devices know now, even if sending ours fails later.
         NotebookSyncState.write(stateFile, state.copy(base = remote, hasBase = true))
@@ -203,20 +201,9 @@ class NotebookSyncParticipant(
         }
     }
 
+    /** The old page stays until the new one is complete. `.damaged` copies have other names and are never touched. */
     private fun copyIfThere(src: File, dst: File) {
-        if (!src.isFile) return
-        dst.parentFile?.mkdirs()
-        val tmp = File(dst.parentFile, dst.name + ".merge.tmp")
-        try {
-            src.copyTo(tmp, overwrite = true)
-            tmp.setLastModified(src.lastModified())
-            if (!tmp.renameTo(dst)) {
-                dst.delete()
-                if (!tmp.renameTo(dst)) throw BackupException("Seite konnte nicht übernommen werden: ${dst.name}")
-            }
-        } finally {
-            tmp.delete()
-        }
+        if (src.isFile) atomicCopy(src, dst)
     }
 
     private fun deletePageFiles(id: String) {

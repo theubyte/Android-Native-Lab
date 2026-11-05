@@ -262,6 +262,38 @@ class NotebookMergeTest {
         assertEquals(200, r.notebook.updatedAt)
     }
 
+    @Test fun aMovedPageHasOneHome() {
+        val base = listOf(nb("a", pages = arrayOf(page("p1"), page("p2"))), nb("b", pages = arrayOf(page("p3"))))
+        val moved = listOf(nb("a", updatedAt = 200, pages = arrayOf(page("p1"))), nb("b", updatedAt = 200, pages = arrayOf(page("p3"), page("p2"))))
+        val r = merge(base, moved, base)
+        assertEquals(listOf("p1"), r.notebooks.single { it.notebook.id == "a" }.ids())
+        assertEquals(listOf("p3", "p2"), r.notebooks.single { it.notebook.id == "b" }.ids())
+        assertTrue(r.removeFiles.isEmpty(), "its files stay")
+        assertEquals(0, r.pagesRemoved)
+        // The side that moved it has nothing to do.
+        assertTrue(merge(moved, base, base).notebooks.isEmpty())
+    }
+
+    @Test fun movedTwiceWithoutBaseStillGivesOneHome() {
+        val x = listOf(nb("a", updatedAt = 300, pages = arrayOf(page("p"))), nb("b", updatedAt = 100, pages = emptyArray()))
+        val y = listOf(nb("a", updatedAt = 300, pages = emptyArray()), nb("b", updatedAt = 100, pages = arrayOf(page("p"))))
+        val onX = merge(x, y)
+        val onY = merge(y, x)
+        fun pagesOf(p: NotebookMergePlan, l: List<NotebookState>) = l.associate { it.id to it.pages.map { q -> q.id } } + p.notebooks.associate { it.notebook.id to it.ids() }
+        assertEquals(mapOf("a" to listOf("p"), "b" to emptyList()), pagesOf(onX, x))
+        assertEquals(pagesOf(onX, x), pagesOf(onY, y))
+    }
+
+    @Test fun removingANotebookKeepsPagesThatMovedOut() {
+        val base = listOf(nb("a", pages = arrayOf(page("p1"))), nb("b", pages = arrayOf(page("p2"), page("p3"))))
+        val there = listOf(nb("a", updatedAt = 200, pages = arrayOf(page("p1"), page("p2"))))
+        val tombs = listOf(Tombstone("b", notebook = true, at = 200), Tombstone("p3", hash = "h-p3", at = 200))
+        val r = merge(base, there, base, rt = tombs)
+        assertEquals(listOf("b"), r.removeNotebooks)
+        assertEquals(listOf("p3"), r.removeFiles)
+        assertEquals(listOf("p1", "p2"), r.only().ids())
+    }
+
     @Test fun bookmarkWithoutTimeStampWins() {
         val base = nb(pages = arrayOf(page("a")))
         val marked = nb(pages = arrayOf(page("a", bookmarked = true)))

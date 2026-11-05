@@ -142,7 +142,7 @@ class FolderMergeParticipant(
     private val source: String = "files/" + dir.name,
     override val name: String = dir.name,
     /** Relative paths ("a/b.bin") that are left alone, e.g. temp files. */
-    private val exclude: (String) -> Boolean = { it.endsWith(".tmp") },
+    private val exclude: (String) -> Boolean = { it.endsWith(".tmp") || it.contains(".damaged") },
 ) : MergeParticipant {
     init { require(ZipPaths.isSafe(source)) { "Ungültiger Pfad: $source" } }
 
@@ -182,21 +182,7 @@ class FolderMergeParticipant(
         return remote.length() != local.length() || Hashing.sha256(remote) != Hashing.sha256(local)
     }
 
-    private fun copyAtomic(src: File, dst: File) {
-        dst.parentFile?.mkdirs()
-        val tmp = File(dst.parentFile, dst.name + ".merge.tmp")
-        try {
-            src.copyTo(tmp, overwrite = true)
-            tmp.setLastModified(src.lastModified())
-            if (!tmp.renameTo(dst)) {
-                // Some file systems refuse to rename over an existing file.
-                dst.delete()
-                if (!tmp.renameTo(dst)) throw IOException("konnte nicht ersetzt werden")
-            }
-        } finally {
-            tmp.delete()
-        }
-    }
+    private fun copyAtomic(src: File, dst: File) = atomicCopy(src, dst)
 }
 
 /**

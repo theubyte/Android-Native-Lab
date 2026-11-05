@@ -1,5 +1,6 @@
 package de.millione.schulranzen.core.backup
 
+import de.millione.schulranzen.core.notebook.SafeFile
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -57,8 +58,8 @@ data class TombstoneFile(val format: Int = 1, val tombstones: List<Tombstone> = 
 /**
  * What this device believes the others know, kept outside the data (it must
  * neither be backed up nor restored): [base] is the last state of the other
- * side that was merged, [exported] every page id ever handed out with the
- * content it had then.
+ * side that was merged, [exportedPages] every page id handed out with its last
+ * few contents, oldest first: any of them may be what another device has.
  */
 @Serializable
 data class NotebookSyncState(
@@ -66,7 +67,7 @@ data class NotebookSyncState(
     val base: List<NotebookState> = emptyList(),
     /** False until the first merge: there is nothing to compare with yet. */
     val hasBase: Boolean = false,
-    val exportedPages: Map<String, String?> = emptyMap(),
+    val exportedPages: Map<String, List<String?>> = emptyMap(),
     val exportedNotebooks: Set<String> = emptySet(),
 ) {
     companion object {
@@ -105,6 +106,8 @@ data class NotebookMergePlan(
     /** Only notebooks that change on this device. */
     val notebooks: List<NotebookPlan>,
     val removeNotebooks: List<String>,
+    /** Pages that exist nowhere any more, so their files can go. Pages moved to another notebook are not among them. */
+    val removeFiles: List<String>,
     val tombstones: List<Tombstone>,
     val pagesAdded: Int,
     val pagesUpdated: Int,
@@ -132,6 +135,9 @@ data class NotebookMergePlan(
  * - **Mass deletions are held back**: when more than [MASS_DELETE_SHARE] of
  *   the pages (and at least [MASS_DELETE_MIN]) would go, a damaged device is more likely
  *   than a user cleaning up, so nothing is deleted and a warning says so.
+ * - **A page has one home.** Its id stays when it moves to another notebook, so
+ *   both sides are compared by id over all notebooks. The side that moved it
+ *   decides where it lives, and it is never doubled.
  * - Trash: the later event wins, trashing or working in the notebook.
  */
 object NotebookMerge {
@@ -139,6 +145,7 @@ object NotebookMerge {
     const val MASS_DELETE_SHARE = 0.6
     /** After this time a device that was away so long may bring something back; better than growing forever. */
     const val TOMBSTONE_DAYS = 365L
+    private const val EXPORT_HISTORY = 8
 
     fun plan(
         local: List<NotebookState>,
@@ -147,12 +154,36 @@ object NotebookMerge {
         localTombstones: List<Tombstone>,
         remoteTombstones: List<Tombstone>,
         now: Long,
+        /** What this device last handed out (a file can be merged before anything came back): also a state both may know. */
+        exported: Map<String, List<String?>> = emptyMap(),
     ): NotebookMergePlan {
         val lById = local.associateBy { it.id }
         val rById = remote.associateBy { it.id }
         val bById = base?.associateBy { it.id }.orEmpty()
         val bPages = HashMap<String, PageState>()
         base?.forEach { n -> n.pages.forEach { bPages[it.id] = it } }
+        val lAll = HashMap<String, Pair<PageState, NotebookState>>()
+        local.forEach { n -> n.pages.forEach { lAll[it.id] = it to n } }
+        val rAll = HashMap<String, Pair<PageState, NotebookState>>()
+        remote.forEach { n -> n.pages.forEach { rAll[it.id] = it to n } }
+        val bHome = HashMap<String, String>()
+        base?.forEach { n -> n.pages.forEach { bHome[it.id] = n.id } }
+        /** Which notebook a page belongs to after the merge. */
+        fun home(pid: String): String {
+            val l = lAll[pid]?.second
+            val r = rAll[pid]?.second
+            if (l == null) return r!!.id
+            if (r == null || l.id == r.id) return l.id
+            val b = bHome[pid]
+            return when {
+                b == l.id -> r.id
+                b == r.id -> l.id
+                r.updatedAt != l.updatedAt -> if (r.updatedAt > l.updatedAt) r.id else l.id
+                else -> maxOf(l.id, r.id)
+            }
+        }
+        val homes = (lAll.keys + rAll.keys).groupBy { home(it) }
+
         val lTomb = localTombstones.filterNot { it.notebook }.associateBy { it.id }
         val rTomb = remoteTombstones.filterNot { it.notebook }.associateBy { it.id }
         val lNbTomb = localTombstones.filter { it.notebook }.associateBy { it.id }
@@ -169,7 +200,7 @@ object NotebookMerge {
         // Mass deletion check over everything the other side wants to delete here.
         val localContentPages = local.sumOf { n -> n.pages.count { it.hash != null } }
         val wanted = local.sumOf { n ->
-            n.pages.count { p -> p.hash != null && p.id !in (rById[n.id]?.pages?.map { it.id }?.toSet().orEmpty()) && dead(rTomb[p.id], p) }
+            n.pages.count { p -> p.hash != null && p.id !in rAll && dead(rTomb[p.id], p) }
         }
         val hold = wanted >= MASS_DELETE_MIN && wanted > localContentPages * MASS_DELETE_SHARE
 
@@ -184,14 +215,18 @@ object NotebookMerge {
         val plans = ArrayList<NotebookPlan>()
         val removeNotebooks = ArrayList<String>()
         val alive = HashSet<String>()
+        fun ancestors(pid: String): List<String?> = buildList {
+            bPages[pid]?.let { add(it.hash) }
+            exported[pid]?.let { addAll(it) }
+        }
+        val existingIds = lAll.keys + rAll.keys
 
         for (id in (local.map { it.id } + remote.map { it.id }).distinct()) {
             val l = lById[id]
             val r = rById[id]
             val b = bById[id]
-            val lPages = l?.pages.orEmpty().associateBy { it.id }
-            val rPages = r?.pages.orEmpty().associateBy { it.id }
-            val allIds = lPages.keys + rPages.keys
+            // Pages of this notebook here and there, or at home here after a move.
+            val allIds = homes[id].orEmpty().toSet()
 
             val decided = LinkedHashMap<String, PagePlan>()
             val copies = LinkedHashMap<String, PagePlan>() // original id -> copy behind it
@@ -200,12 +235,12 @@ object NotebookMerge {
             var nAdded = 0; var nUpdated = 0; var nRemoved = 0; var nKept = 0
 
             for (pid in allIds) {
-                val lp = lPages[pid]
-                val rp = rPages[pid]
+                val lp = lAll[pid]?.first
+                val rp = rAll[pid]?.first
                 when {
                     lp != null && rp != null -> {
-                        val outcome = mergeContent(lp, rp, bPages[pid], allIds)
-                        val meta = mergeMeta(lp, rp, bPages[pid], newer = newer(l!!, r!!))
+                        val outcome = mergeContent(lp, rp, ancestors(pid), existingIds)
+                        val meta = mergeMeta(lp, rp, bPages[pid], newer = newer(lAll.getValue(pid).second, rAll.getValue(pid).second))
                         decided[pid] = when (outcome.winner) {
                             PageSource.REMOTE -> {
                                 nUpdated++
@@ -252,6 +287,8 @@ object NotebookMerge {
             }
 
             val order = mergeOrder(l, r, b, decided.keys)
+                // A page moved in by a device whose notebook is unknown here has no neighbours to follow.
+                .let { o -> o + decided.keys.filter { it !in o } }
             val finalPages = ArrayList<PagePlan>()
             for (pid in order) {
                 finalPages += decided.getValue(pid)
@@ -277,18 +314,20 @@ object NotebookMerge {
             .groupBy { it.notebook to it.id }.values.map { same -> same.maxBy { it.at } }
             .filter { it.id !in alive && it.at >= limit }
             .sortedWith(compareBy({ it.notebook }, { it.id }))
-        return NotebookMergePlan(plans, removeNotebooks, tombstones, added, updated, removed, kept, conflicts, warnings)
+        val removeFiles = lAll.keys.filter { it !in alive }.sorted()
+        return NotebookMergePlan(plans, removeNotebooks, removeFiles, tombstones, added, updated, removed, kept, conflicts, warnings)
     }
 
     private class Outcome(val winner: PageSource, val copy: PagePlan?, val conflict: Boolean)
 
-    private fun mergeContent(l: PageState, r: PageState, b: PageState?, existing: Set<String>): Outcome {
+    private fun mergeContent(l: PageState, r: PageState, known: List<String?>, existing: Set<String>): Outcome {
         if (l.hash == r.hash) return Outcome(PageSource.LOCAL, null, false)
-        if (b != null) {
-            // Only one side moved since the common state. An "edit" that is older
+        if (known.isNotEmpty()) {
+            // Only one side moved since a common state. An "edit" that is older
             // than the state both knew is an old file or a wrong clock: not trusted.
-            if (l.hash == b.hash && r.modified >= l.modified) return Outcome(PageSource.REMOTE, null, false)
-            if (r.hash == b.hash) return Outcome(PageSource.LOCAL, null, false)
+            if (r.hash in known && l.hash !in known) return Outcome(PageSource.LOCAL, null, false)
+            if (l.hash in known && r.modified >= l.modified) return Outcome(PageSource.REMOTE, null, false)
+            if (r.hash in known) return Outcome(PageSource.LOCAL, null, false)
         } else {
             if (l.hash == null) return Outcome(PageSource.REMOTE, null, false)
             if (r.hash == null) return Outcome(PageSource.LOCAL, null, false)
@@ -429,7 +468,8 @@ object NotebookMerge {
     fun updateTombstones(state: NotebookSyncState, current: List<NotebookState>, existing: List<Tombstone>, now: Long): TombstoneUpdate {
         val pageIds = current.flatMapTo(HashSet()) { n -> n.pages.map { it.id } }
         val nbIds = current.mapTo(HashSet()) { it.id }
-        val known = LinkedHashMap<String, String?>(state.exportedPages)
+        val known = LinkedHashMap<String, String?>()
+        state.exportedPages.forEach { (id, hashes) -> known[id] = hashes.lastOrNull() }
         state.base.forEach { n -> n.pages.forEach { p -> if (p.id !in known) known[p.id] = p.hash } }
         val knownNotebooks = state.exportedNotebooks + state.base.map { it.id }
         val have = existing.mapTo(HashSet()) { it.notebook to it.id }
@@ -447,8 +487,13 @@ object NotebookMerge {
 
     /** Updates what has been handed out: called right before an export or upload. */
     fun exported(state: NotebookSyncState, current: List<NotebookState>): NotebookSyncState {
-        val pages = LinkedHashMap<String, String?>()
-        current.forEach { n -> n.pages.forEach { pages[it.id] = it.hash } }
+        val pages = LinkedHashMap<String, List<String?>>()
+        current.forEach { n ->
+            n.pages.forEach { p ->
+                val before = state.exportedPages[p.id].orEmpty()
+                pages[p.id] = if (before.lastOrNull() == p.hash && before.isNotEmpty()) before else (before + p.hash).takeLast(EXPORT_HISTORY)
+            }
+        }
         return state.copy(exportedPages = pages, exportedNotebooks = current.mapTo(LinkedHashSet()) { it.id })
     }
 
@@ -471,12 +516,11 @@ object NotebookMerge {
 data class TombstoneUpdate(val tombstones: List<Tombstone>, val held: Int)
 
 /** Writes a text file whole or not at all. */
-internal fun atomicWrite(file: File, text: String) {
-    file.parentFile?.mkdirs()
-    val tmp = File(file.parentFile, file.name + ".tmp")
-    tmp.writeText(text)
-    if (!tmp.renameTo(file)) {
-        file.delete()
-        if (!tmp.renameTo(file)) throw BackupException("${file.name} konnte nicht gespeichert werden.")
-    }
+internal fun atomicWrite(file: File, text: String) = SafeFile.write(file) { it.write(text.toByteArray(Charsets.UTF_8)) }
+
+/** Copies whole or not at all, keeps the file's time; the old [dst] stays until the new one is complete. */
+internal fun atomicCopy(src: File, dst: File) {
+    val time = src.lastModified()
+    SafeFile.write(dst) { out -> src.inputStream().use { it.copyTo(out, 64 * 1024) } }
+    if (time > 0) dst.setLastModified(time)
 }
