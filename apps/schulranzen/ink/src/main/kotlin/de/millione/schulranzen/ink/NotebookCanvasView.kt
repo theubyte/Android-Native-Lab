@@ -132,7 +132,8 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     private val pages = ArrayList<CanvasPage>()
     val pageCount get() = pages.size
     val history = InkHistory()
-    private var nextStrokeId = SystemClock.elapsedRealtimeNanos()
+    // Wall clock: uptime starts over after a reboot and could meet ids already stored on a page.
+    private var nextStrokeId = System.currentTimeMillis() shl 20
     fun newId() = nextStrokeId++
 
     // ---- view transform: page units -> view pixels ----
@@ -169,14 +170,20 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         })
         // The resting hand must never scroll the page while the pen writes.
         isMotionEventSplittingEnabled = false
+        contentDescription = "Schreibfläche"
+        ItemPainter.onImageReady = { post { layer.imageReady() } }
     }
 
     // ------------------------------------------------------------------ pages
 
     fun setPages(list: List<CanvasPage>) {
+        clearSelection()
         pages.clear(); pages += list
         history.clear()
-        clearSelection()
+        // A gesture cut off by leaving the last notebook must not swallow the next one.
+        if (mode == Mode.DRAW) { inProgress.cancelUnfinishedStrokes(); pending.clear() }
+        endPen(); endPan()
+        eraseStep.clear()
         layer.dropCaches()
         clampAndApply()
         listener?.onHistoryChanged(false, false)
@@ -198,6 +205,8 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     fun removePage(index: Int): CanvasPage? {
         if (pages.size <= 1 || index !in pages.indices) return null
         val p = pages.removeAt(index)
+        history.forget(p.id)
+        listener?.onHistoryChanged(history.canUndo, history.canRedo)
         structureChanged()
         return p
     }
@@ -219,12 +228,29 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     fun refreshPage(index: Int) { layer.dirty(index); layer.invalidate() }
 
     fun scrollToPage(index: Int) {
+        // Not laid out yet: onSizeChanged would throw this scroll away (scale is not known).
+        if (!laidOut) { scrollAfterLayout = index; return }
         ty = -(pageTop(index.coerceIn(0, max(0, pages.size - 1))) * scale) + 24f * density
         clampAndApply()
     }
 
-    fun undo() { touched(history.undo { id -> pageById(id)?.ink }) }
-    fun redo() { touched(history.redo { id -> pageById(id)?.ink }) }
+    fun undo() {
+        if (anyLocked(history.undoPages())) { listener?.onLockedPageTouched(); return }
+        touched(history.undo { id -> pageById(id)?.ink })
+    }
+
+    fun redo() {
+        if (anyLocked(history.redoPages())) { listener?.onLockedPageTouched(); return }
+        touched(history.redo { id -> pageById(id)?.ink })
+    }
+
+    private fun anyLocked(ids: Set<String>) = ids.any { pageById(it)?.locked == true }
+
+    /** Writes the strokes just lifted off into the pages, so they are saved with everything else. */
+    fun settleStrokes() {
+        if (pending.isEmpty() || mode == Mode.DRAW) return
+        runCatching { inProgress.flush(150, java.util.concurrent.TimeUnit.MILLISECONDS, false) }
+    }
 
     private fun touched(ids: Set<String>) {
         clearSelection()
@@ -237,6 +263,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     fun commit(edits: List<PageEdit>) {
         val real = edits.filterNot { it.isEmpty }
         if (real.isEmpty()) return
+        if (anyLocked(real.mapTo(HashSet()) { it.page })) { listener?.onLockedPageTouched(); return }
         for (e in real) pageById(e.page)?.ink?.apply(e)
         history.push(real)
         for (e in real) { layer.dirty(indexOf(e.page)); listener?.onPageChanged(e.page) }
@@ -268,8 +295,13 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         } else {
             scale = scale.coerceIn(fitScale * 0.5f, fitScale * 6f)
         }
+        // After a turn or a narrower pane the ruler must stay within reach.
+        if (rulerCx >= 0f) { rulerCx = rulerCx.coerceIn(0f, w.toFloat()); rulerCy = rulerCy.coerceIn(0f, h.toFloat()) }
         clampAndApply()
+        scrollAfterLayout?.let { scrollAfterLayout = null; scrollToPage(it) }
     }
+
+    private var scrollAfterLayout: Int? = null
 
     private fun clampAndApply() {
         val w = width.toFloat(); val h = height.toFloat()
@@ -349,6 +381,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     fun deleteSelection() {
         val s = selection ?: return
         val page = pages[s.page]
+        if (page.locked) { listener?.onLockedPageTouched(); return }
         clearSelection()
         commit(listOf(page.ink.removeEdit(page.id, s.strokes, s.items)))
     }
@@ -380,6 +413,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     fun replaceSelection(items: List<PageItem>) {
         val s = selection ?: return
         val page = pages[s.page]
+        if (page.locked) { listener?.onLockedPageTouched(); return }
         clearSelection()
         commit(listOf(page.ink.removeEdit(page.id, s.strokes, s.items), PageEdit(page.id, emptyList(), emptyList(), emptyList(), items)))
         select(s.page, emptySet(), items.mapTo(HashSet()) { it.id })
@@ -454,6 +488,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     fun recolorSelection(color: Int) {
         val s = selection ?: return
         val page = pages[s.page]
+        if (page.locked) { listener?.onLockedPageTouched(); return }
         val strokes = page.ink.strokes.filter { it.id in s.strokes }.associate { it.id to it.recolored(if (it.tool == ToolKind.MARKER) color else color, newId()) }
         val items = page.ink.items.filter { it.id in s.items && it is TextItem }.associate { it.id to (it as TextItem).copy(id = newId(), color = color) }
         commit(listOf(page.ink.replaceEdit(page.id, strokes, items)))
@@ -469,6 +504,11 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         val moved = RectF(s.bounds).also { m.mapRect(it) }
         val target = pageAt(moved.centerY() + pageTop(s.page)).takeIf { it >= 0 && it != s.page && !pages[it].locked }
         if (target != null) m.postTranslate(0f, pageTop(s.page) - pageTop(target))
+        // Dropped beside the sheet (or onto a locked one): it stays reachable on its page.
+        RectF(s.bounds).also { m.mapRect(it) }.let { r ->
+            val (dx, dy) = de.millione.schulranzen.core.notebook.PagePlacement.centreOnPage(r.left, r.top, r.right, r.bottom, WIDTH, HEIGHT)
+            m.postTranslate(dx, dy)
+        }
         val strokes = page.ink.strokes.filter { it.id in s.strokes }.associate { it.id to it.transformed(m, newId()) }
         val items = page.ink.items.filter { it.id in s.items }.associate { it.id to it.transformed(m, newId()) }
         drag.reset()
@@ -502,6 +542,9 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     /** Centre of the visible part of the current page, for new objects. */
     fun visibleCentreOfCurrent(): FloatArray = visibleCentre(currentPage)
 
+    /** Centre of what is visible of [page], for new objects there. */
+    fun visibleCentreOf(page: Int): FloatArray = visibleCentre(page)
+
     // ------------------------------------------------------------------ input
 
     private enum class Mode { NONE, DRAW, ERASE, PAN, LASSO, MOVE_SEL, SCALE_SEL, RULER, TEXT, IGNORE }
@@ -512,6 +555,9 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     private var eraseLast: FloatArray? = null
     private val eraseStep = ArrayList<PageEdit>()
     private var lastPenNear = 0L
+    /** The current gesture was started by a finger ("Mit dem Finger schreiben"). */
+    private var fingerGesture = false
+    private var gestureStart = 0L
 
     // lasso / ruler / text / selection drag, all in page units of [gesturePage]
     private var gesturePage = -1
@@ -552,8 +598,11 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         val action = e.actionMasked
         val index = e.actionIndex
         val down = action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN
+        // The resting hand neither moves nor drops a selection.
+        val handNearPen = !isPen(e, index) && SystemClock.uptimeMillis() - lastPenNear < 400
+        if (down && mode != Mode.NONE && mode != Mode.PAN && fingerGesture && takeOverFingerGesture(e, index)) return true
         // Pen or finger on the selection: move or scale it.
-        if (down && mode == Mode.NONE && selection != null && beginSelectionDrag(e, index)) return true
+        if (down && mode == Mode.NONE && selection != null && !handNearPen && beginSelectionDrag(e, index)) return true
         // A new pen contact takes over from any finger gesture.
         if (down && isPen(e, index) && (mode == Mode.NONE || mode == Mode.PAN)) {
             if (mode == Mode.PAN) endPan()
@@ -561,8 +610,10 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             return true
         }
         if (mode != Mode.NONE && mode != Mode.PAN) { penEvent(e); return true }
-        if (fingerDraws && action == MotionEvent.ACTION_DOWN && !isPen(e, index)) {
+        if (fingerDraws && action == MotionEvent.ACTION_DOWN && !isPen(e, index) && !handNearPen) {
             beginPen(e, index)
+            fingerGesture = true
+            gestureStart = SystemClock.uptimeMillis()
             return true
         }
         // Fingers: ignored while the pen is near (resting hand).
@@ -572,6 +623,24 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         }
         if (tool == ToolKind.RULER && mode != Mode.PAN && rulerFingerEvent(e)) return true
         fingerEvent(e)
+        return true
+    }
+
+    /**
+     * While fingers write, a pen always takes over, and a second finger right
+     * after the first means zoom or scroll: without this the page could not be
+     * moved at all with "Mit dem Finger schreiben" on.
+     */
+    private fun takeOverFingerGesture(e: MotionEvent, index: Int): Boolean {
+        val pen = isPen(e, index)
+        if (!pen && (e.pointerCount != 2 || SystemClock.uptimeMillis() - gestureStart > 400)) return false
+        if (mode == Mode.DRAW) strokeId?.let { inProgress.cancelStroke(it, e); pending.remove(it) }
+        if (mode == Mode.ERASE) finishErase()
+        endPen()
+        if (pen) { beginPen(e, index); return true }
+        panId = e.getPointerId(0)
+        mode = Mode.PAN
+        startPinch(e)
         return true
     }
 
@@ -588,6 +657,12 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             return false
         }
         stylusPointer = e.getPointerId(index)
+        // A locked page can be selected and copied, not changed.
+        if (pages[s.page].locked) {
+            mode = Mode.IGNORE
+            listener?.onLockedPageTouched()
+            return true
+        }
         gesturePage = s.page
         val w = toWorld(x, y)
         selStart = floatArrayOf(w[0], w[1] - pageTop(s.page))
@@ -606,6 +681,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         val eraserEnd = e.getToolType(index) == MotionEvent.TOOL_TYPE_ERASER
         val erase = tool.erases || eraserEnd || (buttonHeld && buttonErases)
         if (erase) {
+            pageAt(toWorld(x, y)[1]).takeIf { it >= 0 && pages[it].locked }?.let { listener?.onLockedPageTouched() }
             mode = Mode.ERASE
             eraseWhole = if (tool.erases) tool == ToolKind.STROKE_ERASER else buttonEraserWhole
             eraseLast = toWorld(x, y)
@@ -742,6 +818,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
 
     private fun endPen() {
         mode = Mode.NONE; strokeId = null; stylusPointer = -1; eraseLast = null
+        fingerGesture = false
         lasso.clear()
         overlay.hide()
     }
@@ -801,7 +878,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         ensureRuler()
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (!onRuler(e.x, e.y)) return false
+                if (!onRuler(e.x, e.y)) { rulerFinger = false; return false }
                 rulerFinger = true
                 rfId = e.getPointerId(0); rfLastX = e.x; rfLastY = e.y
                 rulerRawAngle = rulerAngle
@@ -880,7 +957,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     }
 
     private fun handOff(strokes: Map<InProgressStrokeId, Stroke>) {
-        val step = ArrayList<PageEdit>()
+        var added = false
         for ((id, stroke) in strokes) {
             val p = pending.remove(id) ?: continue
             val page = pageById(p.page) ?: continue
@@ -888,18 +965,16 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             val index = indexOf(p.page)
             val final = (if (p.tool == ToolKind.PEN) runCatching { listener?.transformStroke(index, s) }.getOrNull() else null) ?: listOf(s)
             final.forEach { page.ink.add(it) }
-            step += PageEdit(p.page, emptyList(), final)
-            layer.dirty(index)
+            // Each stroke its own undo step, even when two finish within one frame.
+            history.push(listOf(PageEdit(p.page, emptyList(), final)))
+            listener?.onPageChanged(p.page)
+            added = true
             if (p.tool == ToolKind.PEN) final.forEach { listener?.onStrokeAdded(index, it) }
         }
         layer.invalidate()
         // Same frame as the page layer draws them: no flicker at the handoff.
         inProgress.removeFinishedStrokes(strokes.keys)
-        if (step.isNotEmpty()) {
-            history.push(step)
-            step.mapTo(HashSet()) { it.page }.forEach { listener?.onPageChanged(it) }
-            listener?.onHistoryChanged(history.canUndo, history.canRedo)
-        }
+        if (added) listener?.onHistoryChanged(history.canUndo, history.canRedo)
     }
 
     private fun fingerEvent(e: MotionEvent) {
@@ -942,11 +1017,24 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                 if (e.pointerCount - 1 >= 2) startPinch(e)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                // A finger tap on empty paper drops the selection.
-                if (!panning && selection != null) clearSelection()
+                // A finger tap on empty paper drops the selection or places text. Only a
+                // gesture that began as a tap: a hand lifted after the pen wrote is none.
+                if (e.actionMasked == MotionEvent.ACTION_UP && mode == Mode.PAN && !panning) {
+                    if (selection != null) clearSelection()
+                    else if (tool == ToolKind.TEXT) fingerText(e.x, e.y)
+                }
                 endPan()
             }
         }
+    }
+
+    private fun fingerText(x: Float, y: Float) {
+        val w = toWorld(x, y)
+        val page = pageAt(w[1])
+        if (page < 0) return
+        if (pages[page].locked) { listener?.onLockedPageTouched(); return }
+        val local = floatArrayOf(w[0], w[1] - pageTop(page))
+        listener?.onTextRequest(page, local[0], local[1], pages[page].ink.textAt(local[0], local[1]))
     }
 
     private fun startPinch(e: MotionEvent) {
@@ -1022,13 +1110,20 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1f; color = 0x1F000000 }
         private val ribbon = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFD9542F.toInt() }
         private val lock = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x99000000.toInt(); style = Paint.Style.STROKE; strokeWidth = 2.2f * density; strokeCap = Paint.Cap.ROUND }
-        private val nodes = HashMap<String, Pair<Long, Any>>()   // page id -> (content key, RenderNode)
+        private val nodes = HashMap<String, PageNode>()
         private val dirtyPages = HashSet<Int>()
         private val m = Matrix()
         private val rect = RectF()
 
         fun dirty(page: Int) { if (page >= 0) dirtyPages += page }
-        fun dropCaches() { nodes.clear(); dirtyPages.clear(); invalidate() }
+        fun dropCaches() {
+            if (Build.VERSION.SDK_INT >= 29) nodes.values.forEach { it.discard() }
+            nodes.clear(); dirtyPages.clear(); invalidate()
+        }
+
+        /** A picture finished decoding: pages recorded without it record again on the next draw. */
+        fun imageReady() { imageEpoch++; invalidate() }
+        private var imageEpoch = 0
 
         /** Soft paper shadow: a few widening, fading rings below-right of the sheet. */
         private fun drawShadow(canvas: Canvas, r: RectF) {
@@ -1061,6 +1156,20 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                 if (page.bookmarked) drawRibbon(canvas, rect)
                 if (page.locked) drawLock(canvas, rect)
             }
+            prune(first, last)
+        }
+
+        /**
+         * Display lists hold their pictures alive past the image cache, so only
+         * the pages around the view keep one: a stack of 100 worksheets would
+         * otherwise pile up in memory while scrolling through it.
+         */
+        private fun prune(first: Int, last: Int) {
+            if (Build.VERSION.SDK_INT < 29 || nodes.size <= (last - first + 1) + 4) return
+            val keep = HashSet<String>()
+            for (i in max(0, first - 2)..min(pages.size - 1, last + 2)) keep += pages[i].id
+            val it = nodes.entries.iterator()
+            while (it.hasNext()) { val e = it.next(); if (e.key !in keep) { e.value.discard(); it.remove() } }
         }
 
         /** Bookmark: a signal-orange ribbon hanging over the top edge. */
@@ -1091,20 +1200,60 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             val hideS = sel?.strokes ?: emptySet()
             val hideI = sel?.items ?: emptySet()
             if (Build.VERSION.SDK_INT >= 29 && canvas.isHardwareAccelerated) {
-                val key = page.ink.revision * 31 + page.paper.ordinal * 7 + (sel?.hashCode()?.toLong() ?: 0L)
-                val cached = nodes[page.id]
-                val node = (cached?.second as? RenderNode) ?: RenderNode("page").also { it.setPosition(0, 0, WIDTH.toInt(), HEIGHT.toInt()) }
-                if (cached == null || cached.first != key || i in dirtyPages) {
-                    val rc = node.beginRecording(WIDTH.toInt(), HEIGHT.toInt())
-                    try { PagePainter.paint(rc, page, hideStrokes = hideS, hideItems = hideI) } finally { node.endRecording() }
-                    nodes[page.id] = key to node
+                val ink = page.ink
+                val key = ink.contentRevision * 31 + page.paper.ordinal * 7 + (sel?.hashCode()?.toLong() ?: 0L)
+                val n = nodes.getOrPut(page.id) { PageNode() }
+                val count = ink.strokes.size
+                val fresh = (n.recorded == -1) || n.key != key || i in dirtyPages || count < n.recorded ||
+                    (n.incomplete && n.epoch != imageEpoch)
+                if (fresh || !n.canAppend(page, count)) {
+                    val rc = n.base.beginRecording(WIDTH.toInt(), HEIGHT.toInt())
+                    try { n.incomplete = !PagePainter.paint(rc, page, hideStrokes = hideS, hideItems = hideI, asyncImages = true) } finally { n.base.endRecording() }
+                    n.tail.discardDisplayList()
+                    n.key = key; n.epoch = imageEpoch; n.baseCount = count; n.recorded = count
                     dirtyPages -= i
+                } else if (count > n.recorded) {
+                    // New pen strokes only: a small list on top instead of recording the whole page again.
+                    val rc = n.tail.beginRecording(WIDTH.toInt(), HEIGHT.toInt())
+                    try { PagePainter.paintStrokes(rc, page, n.baseCount, count) } finally { n.tail.endRecording() }
+                    n.recorded = count
                 }
-                canvas.drawRenderNode(node)
+                canvas.drawRenderNode(n.base)
+                if (n.recorded > n.baseCount) canvas.drawRenderNode(n.tail)
             } else {
                 PagePainter.paint(canvas, page, hideStrokes = hideS, hideItems = hideI)
             }
         }
+    }
+
+    /** One page's display lists: everything up to [baseCount] strokes, plus the strokes since. */
+    @android.annotation.TargetApi(29)
+    private class PageNode {
+        val base = RenderNode("page").also { it.setPosition(0, 0, WIDTH.toInt(), HEIGHT.toInt()) }
+        val tail = RenderNode("tail").also { it.setPosition(0, 0, WIDTH.toInt(), HEIGHT.toInt()) }
+        var key = 0L
+        var epoch = 0
+        var baseCount = 0
+        var recorded = -1
+        var incomplete = false
+
+        fun discard() { base.discardDisplayList(); tail.discardDisplayList() }
+
+        /**
+         * New strokes may lie on top only if the order stays right: markers
+         * belong below the ink and text above it. A short list stays cheap;
+         * then the page records once in full and the list starts empty.
+         */
+        fun canAppend(page: CanvasPage, count: Int): Boolean {
+            if (count == recorded) return true
+            if (count - baseCount > MAX_TAIL) return false
+            if (page.ink.items.any { it is TextItem }) return false
+            val strokes = page.ink.strokes
+            for (i in recorded until count) if (strokes[i].tool == ToolKind.MARKER) return false
+            return true
+        }
+
+        private companion object { const val MAX_TAIL = 32 }
     }
 
     /**
