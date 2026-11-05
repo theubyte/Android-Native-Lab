@@ -71,6 +71,11 @@ internal fun planPhaseLabel(p: PlanPhase): String = when (p) {
 internal fun deckFor(exam: Exam, decks: List<DeckCounts>): DeckCounts? =
     decks.firstOrNull { exam.subjectId != null && it.subjectId == exam.subjectId }
         ?: decks.firstOrNull { it.name.equals(exam.subject, ignoreCase = true) }
+        ?: decks.firstOrNull { it.fach.equals(exam.subject, ignoreCase = true) }
+
+/** Everything that counts for an exam: its deck and all decks of a pack with that subject. */
+internal fun decksFor(exam: Exam, decks: List<DeckCounts>): List<DeckCounts> =
+    (listOfNotNull(deckFor(exam, decks)) + decks.filter { it.fach.equals(exam.subject, ignoreCase = true) }).distinctBy { it.id }
 
 /**
  * A torn-off calendar leaf: month above, day number below. Used to mark

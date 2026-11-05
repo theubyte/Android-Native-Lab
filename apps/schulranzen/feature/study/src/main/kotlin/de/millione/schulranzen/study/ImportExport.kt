@@ -34,10 +34,10 @@ import java.io.IOException
 /** A deck larger than this is no card file. */
 private const val MAX_IMPORT_BYTES = 20L * 1024 * 1024
 
-private suspend fun readText(context: Context, uri: Uri): String = withContext(Dispatchers.IO) {
+internal suspend fun readText(context: Context, uri: Uri, limit: Long = MAX_IMPORT_BYTES): String = withContext(Dispatchers.IO) {
     context.contentResolver.openInputStream(uri)?.use { input ->
-        val bytes = input.readNBytesCompat(MAX_IMPORT_BYTES + 1)
-        if (bytes.size > MAX_IMPORT_BYTES) throw IOException("zu groß")
+        val bytes = input.readNBytesCompat(limit + 1)
+        if (bytes.size > limit) throw IOException("zu groß")
         decode(bytes)
     } ?: throw IOException("nicht lesbar")
 }

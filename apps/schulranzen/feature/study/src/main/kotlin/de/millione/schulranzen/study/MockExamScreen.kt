@@ -229,7 +229,8 @@ internal fun MockExamPage(
         val drafts = marked.map { m ->
             MockAnswerDraft(
                 m.card.id,
-                TopicMatcher.topicOf("${m.card.front} ${m.card.back}", topics, deckNames[m.card.deckId] ?: exam.subject),
+                m.card.topic?.takeIf { it.isNotBlank() }
+                    ?: TopicMatcher.topicOf("${m.card.front} ${m.card.back}", topics, deckNames[m.card.deckId] ?: exam.subject),
                 m.item.type.name,
                 if (m.item.type == QuestionType.CLOZE) m.item.text else m.card.front.ifBlank { "Bildkarte" },
                 m.solution, m.given, m.grade ?: SelfGrade.SKIPPED,
@@ -289,8 +290,7 @@ private fun MockSetup(
     val c = Ranzen.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val own = deckFor(exam, decks)
-    val chosen = remember { mutableStateListOf<Long>().apply { own?.let { add(it.id) } } }
+    val chosen = remember { mutableStateListOf<Long>().apply { addAll(decksFor(exam, decks).map { it.id }) } }
     var count by remember { mutableIntStateOf(10) }
     var minutes by remember { mutableStateOf<Int?>(MockExam.suggestedMinutes(10)) }
     var minutesTouched by remember { mutableStateOf(false) }

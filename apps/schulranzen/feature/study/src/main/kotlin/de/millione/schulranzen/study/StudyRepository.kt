@@ -115,6 +115,9 @@ data class MockAnswerDraft(
 
 data class ImportResult(val added: Int, val duplicates: Int)
 
+/** What is stored of one content pack, for planning an import. */
+data class StoredPack(val decks: List<de.millione.schulranzen.core.study.StoredPackDeck>, val cards: List<de.millione.schulranzen.core.study.StoredPackCard>)
+
 /** What a reminder needs to know at the moment it fires. */
 data class ReminderData(
     val dueReviews: Int,
@@ -444,20 +447,23 @@ class StudyRepository(context: Context) {
         val decksNow = dao.deckCountsNow(d)
         val cards = dao.allCards().first()
         val errorIds = ErrorBook.build(attempts.first()).map { it.cardId }.toSet()
-        fun plan(c: Card) = PlanCard(c.id, c.schedule, c.id in errorIds || c.lapses >= 2)
+        val firstAnswer = HashMap<Long, Long>()
+        // Only learning introduces a card: a mock exam leaves it new, so it must not use up the share.
+        for (r in dao.reviewLog().first()) firstAnswer.merge(r.cardId, r.epochDay, ::minOf)
+        fun plan(c: Card) = PlanCard(c.id, c.schedule, c.id in errorIds || c.lapses >= 2, firstAnswer[c.id] == d)
         val byDeck = cards.groupBy { it.deckId }
         val exams = dao.examsFromNow(d)
         val usedDecks = HashSet<Long>()
         val links = HashMap<Long, StudyLink>()
         val planExams = exams.map { e ->
-            val deck = deckFor(e, decksNow)
-            deck?.let { usedDecks += it.id }
+            val examDecks = decksFor(e, decksNow).map { it.id }
+            usedDecks += examDecks
             val open = dao.linksNow(e.id).filter { it.doneAt == null }
             open.forEach { links[it.id] = it }
             val lastMock = dao.mockRunsNow(e.id).firstOrNull()
             PlanExam(
                 id = e.id, date = LocalDate.ofEpochDay(e.dateEpochDay), weight = TodayPlanner.weightOf(e.kind),
-                cards = deck?.let { byDeck[it.id] }.orEmpty().map(::plan),
+                cards = examDecks.flatMap { byDeck[it].orEmpty() }.map(::plan),
                 openLinkIds = open.map { it.id },
                 daysSinceMock = lastMock?.let { ChronoUnit.DAYS.between(LocalDate.ofEpochDay(dayOf(it.at)), day) },
             )
@@ -469,13 +475,16 @@ class StudyRepository(context: Context) {
 
     // ---- Readiness ---------------------------------------------------------------
 
-    private fun readinessOf(exam: Exam, deckId: Long?, allCards: List<Card>, links: List<StudyLink>, runs: List<MockRun>, day: LocalDate): Readiness {
-        val cards = allCards.filter { it.deckId == deckId }
+    private fun readinessOf(exam: Exam, deckIds: List<Long>, allCards: List<Card>, links: List<StudyLink>, runs: List<MockRun>, day: LocalDate): Readiness {
+        val cards = allCards.filter { it.deckId in deckIds }
         val topics = exam.topics.lines().map { it.trim() }.filter { it.isNotEmpty() }
         return ReadinessForecast.estimate(
             ReadinessInput(
                 cards = cards.map { it.schedule },
-                cardTopics = if (topics.isEmpty()) emptyList() else cards.map { TopicMatcher.topicOf("${it.front} ${it.back}", topics, "") },
+                cardTopics = if (topics.isEmpty()) emptyList() else cards.map { c ->
+                    // A topic named by a pack is more reliable than matching words.
+                    topics.firstOrNull { it.equals(c.topic, ignoreCase = true) } ?: TopicMatcher.topicOf("${c.topic.orEmpty()} ${c.front} ${c.back}", topics, "")
+                },
                 topics = topics,
                 mocks = runs.map { MockPoint(it.percent, ChronoUnit.DAYS.between(LocalDate.ofEpochDay(dayOf(it.at)), day).coerceAtLeast(0), it.asked) },
                 linksTotal = links.size,
@@ -490,7 +499,7 @@ class StudyRepository(context: Context) {
     /** Forecast for one exam, kept up to date with cards, links and mock exams. */
     fun readiness(exam: Exam): Flow<Readiness> = today.flatMapLatest { day ->
         combine(dao.allCards(), dao.deckCounts(day.toEpochDay()), dao.links(exam.id), dao.mockRuns(exam.id)) { cards, ds, links, runs ->
-            readinessOf(exam, deckFor(exam, ds)?.id, cards, links, runs, day)
+            readinessOf(exam, decksFor(exam, ds).map { it.id }, cards, links, runs, day)
         }
     }
 
@@ -533,6 +542,102 @@ class StudyRepository(context: Context) {
         ImportResult(added, dupes)
     }
 
+    // ---- Content packs -----------------------------------------------------------------
+
+    val contentPacks: Flow<List<de.millione.schulranzen.study.data.ContentPackRow>> = dao.contentPacks()
+
+    suspend fun storedPack(packId: String): StoredPack = StoredPack(
+        dao.decksOfPack(packId).map { de.millione.schulranzen.core.study.StoredPackDeck(it.id, it.packDeckKey.orEmpty(), it.fach.orEmpty()) },
+        dao.cardsOfPack(packId).map {
+            de.millione.schulranzen.core.study.StoredPackCard(
+                it.id, it.packCardKey.orEmpty(), it.front, it.back, it.packFront.orEmpty(), it.packBack.orEmpty(),
+                it.verified, it.topic.orEmpty(), it.source, it.lastReviewEpochDay != null,
+            )
+        },
+    )
+
+    /**
+     * Carries out a plan in one transaction: all of it or nothing. Pictures are written first
+     * and removed again if it fails. Known cards are read fresh and only their text and
+     * metadata change; schedule fields are not touched.
+     */
+    suspend fun applyPack(context: Context, pack: de.millione.schulranzen.core.study.ContentPack, plan: de.millione.schulranzen.core.study.PackImportPlan) {
+        val written = mutableListOf<String>()
+        suspend fun image(dataUrl: String?): String? {
+            val (ext, bytes) = dataUrl?.let { de.millione.schulranzen.core.study.ContentPacks.decodeImage(it) } ?: return null
+            val tmp = java.io.File.createTempFile("pack", ".$ext", context.cacheDir)
+            try {
+                tmp.writeBytes(bytes)
+                return StudyImages.import(context, tmp).also { written += it }
+            } finally { tmp.delete() }
+        }
+        val now = System.currentTimeMillis()
+        try {
+            val images = plan.newCards.associate { n -> n.key to (image(n.card.vorneBild) to image(n.card.hintenBild)) }
+            val dropped = mutableListOf<String?>()
+            db.withTransaction {
+                val today = LocalDate.now().toEpochDay()
+                var color = dao.deckCount()
+                val deckIds = HashMap<String, Long>()
+                for (put in plan.decks) {
+                    val id = put.existingId
+                    if (id != null) {
+                        dao.deck(id)?.let { dao.upsertDeck(it.copy(name = put.deck.name, fach = put.fach.ifEmpty { null })) }
+                        deckIds[put.deck.id] = id
+                    } else {
+                        deckIds[put.deck.id] = dao.upsertDeck(
+                            Deck(name = put.deck.name, colorIndex = color++, packId = pack.id, packDeckKey = put.deck.id, fach = put.fach.ifEmpty { null }, createdAt = now),
+                        )
+                    }
+                }
+                plan.newCards.forEachIndexed { i, n ->
+                    val k = n.card
+                    val (front, back) = images[n.key] ?: (null to null)
+                    dao.insertCard(
+                        Card(
+                            deckId = deckIds.getValue(n.deckKey), front = k.vorne, back = k.hinten, frontImage = front, backImage = back,
+                            dueEpochDay = today, createdAt = now + i,
+                            topic = k.thema.ifEmpty { null }, sourceBook = k.quelle.buch.ifEmpty { null }, sourcePage = k.quelle.seite.ifEmpty { null },
+                            verified = k.geprueft, packId = pack.id, packCardKey = n.key, packFront = k.vorne, packBack = k.hinten,
+                        ),
+                    )
+                }
+                for (u in plan.updates) {
+                    val c = dao.card(u.id) ?: continue
+                    dao.updateCard(
+                        c.copy(
+                            front = u.front, back = u.back, verified = u.verified,
+                            topic = u.topic.ifEmpty { null }, sourceBook = u.source.buch.ifEmpty { null }, sourcePage = u.source.seite.ifEmpty { null },
+                            packFront = u.packFront, packBack = u.packBack,
+                        ),
+                    )
+                }
+                for (id in plan.detach) {
+                    val c = dao.card(id) ?: continue
+                    dao.updateCard(c.copy(packId = null, packCardKey = null, packFront = null, packBack = null))
+                }
+                for (id in plan.deletes) {
+                    val c = dao.card(id) ?: continue
+                    dao.deleteCard(c)
+                    dropped += c.frontImage
+                    dropped += c.backImage
+                }
+                dao.upsertContentPack(
+                    de.millione.schulranzen.study.data.ContentPackRow(pack.id, pack.titel, pack.version, pack.stand, pack.autor, pack.beispiel, now),
+                )
+            }
+            StudyImages.delete(app, dropped)
+        } catch (e: Exception) {
+            StudyImages.delete(app, written)
+            throw e
+        }
+    }
+
+    /** The learner's own check of a card from a pack; a later import can only add to it. */
+    suspend fun setVerified(card: Card, verified: Boolean) {
+        dao.updateCard((dao.card(card.id) ?: card).copy(verified = verified))
+    }
+
     // ---- Reminders --------------------------------------------------------------------
 
     suspend fun reminderData(): ReminderData {
@@ -541,7 +646,7 @@ class StudyRepository(context: Context) {
         val decksNow = dao.deckCountsNow(day)
         val cards = dao.allCards().first()
         val exams = dao.examsFromNow(day).map { e ->
-            e to readinessOf(e, deckFor(e, decksNow)?.id, cards, dao.linksNow(e.id), dao.mockRunsNow(e.id), d).percent
+            e to readinessOf(e, decksFor(e, decksNow).map { it.id }, cards, dao.linksNow(e.id), dao.mockRunsNow(e.id), d).percent
         }
         return ReminderData(dao.dueReviewsNow(day), dao.freshNow(), dao.reviewsOnNow(day), exams)
     }
@@ -566,7 +671,7 @@ class StudyRepository(context: Context) {
 
     /** The exam that should cap the intervals of a deck: the next one in the same subject. */
     suspend fun examForDeck(deck: Deck): Exam? =
-        dao.nextExamFor(deck.name, deck.subjectId, LocalDate.now().toEpochDay())
+        dao.nextExamFor(deck.name, deck.fach, deck.subjectId, LocalDate.now().toEpochDay())
 
     /** Interval preview for the rating buttons, in days. */
     suspend fun preview(card: Card): Map<Rating, Int> {

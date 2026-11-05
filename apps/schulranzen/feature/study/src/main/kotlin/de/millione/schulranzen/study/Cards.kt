@@ -166,7 +166,7 @@ private fun CardTile(card: Card, accent: Color, today: LocalDate, onClick: () ->
     val shape = RoundedCornerShape(8.dp)
     val due = LocalDate.ofEpochDay(card.dueEpochDay)
     Box(
-        Modifier.fillMaxWidth().aspectRatio(1.6f)
+        Modifier.fillMaxWidth().aspectRatio(if (card.packId != null) 1.35f else 1.6f)
             .softRaise(8.dp, 0.6f, c.bevelLight, c.bevelShadow)
             .clip(shape).background(c.raised)
             .indexCard(accent, c.line.copy(alpha = 0.6f))
@@ -184,6 +184,7 @@ private fun CardTile(card: Card, accent: Color, today: LocalDate, onClick: () ->
                 }
                 Text(card.back, style = Ranzen.type.body, color = c.inkMuted, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             }
+            CardProvenance(card)
             Text(
                 when {
                     card.lastReviewEpochDay == null -> "NEU"
@@ -241,6 +242,16 @@ internal fun CardSheet(
     FieldLabel("Rückseite · Antwort")
     LineField(back, { back = it }, "z. B. 60 °C (Legionellenschutz)", singleLine = false, minLines = 3)
     ImageSlot(backImage, onPicked = { imported += it; backImage = it }, onRemove = { backImage = null })
+    if (card?.packId != null) {
+        Spacer(Modifier.height(10.dp))
+        val repo = remember { StudyRepository(context.applicationContext) }
+        var checked by remember { mutableStateOf(card.verified) }
+        card.source.line?.let { Text("Quelle: $it", style = Ranzen.type.caption, color = c.inkMuted) }
+        de.millione.schulranzen.study.ui.RetroSwitch("Mit der Quelle verglichen", checked, { on ->
+            checked = on
+            scope.launch { repo.setVerified(card, on) }
+        }, hint = if (checked) "Geprüft" else "Ungeprüft")
+    }
     SheetActions(
         primary = if (card == null) "Speichern, nächste" else "Speichern",
         onPrimary = {
@@ -388,7 +399,10 @@ internal fun FlipCard(card: Card, flipped: Boolean, onFlip: () -> Unit, onZoom: 
                             }
                         }
                     }
-                    if (!showBack) Text("Antippen zum Umdrehen", style = Ranzen.type.caption, color = c.inkFaint, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                    if (!showBack) {
+                        CardProvenance(card, showSource = false)
+                        Text("Antippen zum Umdrehen", style = Ranzen.type.caption, color = c.inkFaint, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                    } else CardProvenance(card)
                 }
             }
         }
