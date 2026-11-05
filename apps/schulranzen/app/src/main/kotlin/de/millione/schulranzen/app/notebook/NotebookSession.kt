@@ -8,7 +8,16 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import de.millione.schulranzen.app.data.Library
+import de.millione.schulranzen.app.data.Notebook
 import de.millione.schulranzen.app.data.Settings
+import de.millione.schulranzen.core.notebook.PagePlacement
+import de.millione.schulranzen.core.notebook.PenPreset
+import de.millione.schulranzen.core.notebook.PenPresets
+import de.millione.schulranzen.core.notebook.UserMessages
+import de.millione.schulranzen.ink.PageInk
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import de.millione.schulranzen.design.InkPalette
 import de.millione.schulranzen.ink.CanvasPage
 import de.millione.schulranzen.ink.Clip
@@ -78,7 +87,7 @@ class NotebookSession(
     var ring by mutableStateOf<RingState?>(null); private set
     /** Selection frame in view pixels (for the action bar), or null. */
     var selection by mutableStateOf<RectF?>(null); private set
-    var clip by mutableStateOf<Clip?>(null); private set
+    var clip by mutableStateOf(sharedClip); private set
     var textDraft by mutableStateOf<TextDraft?>(null); private set
     /** Short message at the bottom ("Seite ist gesperrt"). */
     var toast by mutableStateOf<String?>(null); private set
@@ -103,7 +112,22 @@ class NotebookSession(
     /** Tool before the side button toggled the eraser, to switch back. */
     private var beforeEraser = ToolKind.PEN
 
-    private val saves = HashMap<String, Job>()
+    /** The notebook does not exist (any more), e.g. a link to a deleted one: the screen leaves. */
+    var missing by mutableStateOf(false); private set
+    /** Colours last used, newest first; favourites. */
+    var recentPen by mutableStateOf(PenPresets.decodeColors(settings.recentPenColors)); private set
+    var recentMarker by mutableStateOf(PenPresets.decodeColors(settings.recentMarkerColors)); private set
+    var presets by mutableStateOf(PenPresets.decode(settings.penPresets)); private set
+    /** Other notebooks a page can move to. */
+    val otherNotebooks: Flow<List<Notebook>> get() = library.notebooks.map { all -> all.filter { it.id != notebookId } }
+
+    /** A page waiting for its save; holds the page itself, so the save survives a change of notebook. */
+    private class PendingSave(val page: CanvasPage, val job: Job)
+    private val saves = HashMap<String, PendingSave>()
+    private var failedSaves = 0
+    private var loadJob: Job? = null
+    /** Ruling of new pages after a worksheet (a worksheet's own paper is plain). */
+    private var defaultPaper = PaperStyle.LINED
 
     fun open() {
         canvas.listener = this
@@ -111,30 +135,78 @@ class NotebookSession(
         canvas.fingerDraws = settings.fingerDraws
         canvas.setPages(emptyList())
         applyTool()
-        scope.launch {
-            val nb = library.notebook(notebookId) ?: return@launch
-            title = nb.title
-            val pages = library.loadPages(notebookId)
-            canvas.setPages(pages)
-            pageCount = pages.size
-            val target = startPage ?: nb.lastPage
-            if (target > 0) canvas.scrollToPage(target.coerceAtMost(pages.size - 1))
-            if (startFlash != null) canvas.flash(target.coerceIn(0, pages.size - 1), startFlash)
-            loaded = true
+        loadJob = scope.launch {
+            try {
+                val nb = library.notebook(notebookId) ?: run { missing = true; return@launch }
+                title = nb.title
+                defaultPaper = PaperStyle.of(nb.paper)
+                // Only a big notebook takes long enough to need a word.
+                val hint = launch { delay(300); busy = "Heft wird geöffnet …" }
+                val result = try { library.loadPagesChecked(notebookId) } finally { hint.cancel(); busy = null }
+                val pages = result.pages.ifEmpty { listOf(library.addPage(notebookId, 0, defaultPaper)) }
+                canvas.setPages(pages)
+                pageCount = pages.size
+                val target = (startPage ?: nb.lastPage).coerceIn(0, pages.size - 1)
+                if (target > 0) canvas.scrollToPage(target)
+                if (startFlash != null) canvas.flash(target, startFlash)
+                loaded = true
+                reportLoad(result)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                busy = null
+                say(UserMessages.of(t, "Heft öffnen"))
+                missing = true
+            }
+        }
+    }
+
+    private fun reportLoad(result: Library.LoadedPages) {
+        fun list(p: List<Int>) = p.joinToString(", ") { "${it + 1}" }
+        when {
+            result.unreadable.isNotEmpty() ->
+                say("Seite ${list(result.unreadable)} konnte nicht gelesen werden und bleibt gesperrt. Die Datei ist aufbewahrt.")
+            result.damaged.isNotEmpty() ->
+                say("Seite ${list(result.damaged)} war beschädigt: geladen, was lesbar war. Eine Kopie ist aufbewahrt.")
         }
     }
 
     /** Leaving the notebook: write every pending page now. */
     fun close() {
-        for (id in saves.keys.toList()) { saves.remove(id)?.cancel(); saveNow(id) }
-        scope.launch { library.setLastPage(notebookId, page) }
+        loadJob?.cancel()
+        canvas.settleStrokes()
+        flushAll()
+        val last = page
+        if (loaded) scope.launch { library.setLastPage(notebookId, last) }
         mathInk?.close(); mathInk = null
-        canvas.listener = null
+        // The next notebook may already have opened on the canvas (screen fading out).
+        if (canvas.listener === this) canvas.listener = null
+    }
+
+    /** The app goes to the background and may be killed there: nothing waits for the timer. */
+    fun onPause() {
+        if (canvas.listener !== this) return
+        canvas.settleStrokes()
+        flushAll()
+        if (loaded) { val last = page; launchSafe("Speichern") { library.setLastPage(notebookId, last) } }
+    }
+
+    /** Runs [block] and turns any failure into a message, instead of taking the app down. */
+    private fun launchSafe(what: String, block: suspend () -> Unit): Job = scope.launch {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            busy = null
+            say(UserMessages.of(t, what))
+        }
     }
 
     fun select(t: ToolKind) { tool = t; applyTool() }
 
     fun setPen(color: Int, size: Float = penSize) {
+        if (color != penColor) rememberColor(color, marker = false)
         penColor = color; penSize = size
         settings.penColor = color; settings.penSize = size
         if (!tool.writes && tool != ToolKind.RULER) tool = ToolKind.PEN
@@ -142,10 +214,42 @@ class NotebookSession(
     }
 
     fun setMarker(color: Int, size: Float = markerSize) {
+        if (color != markerColor) rememberColor(color, marker = true)
         markerColor = color; markerSize = size
         settings.markerColor = color; settings.markerSize = size
         tool = ToolKind.MARKER
         applyTool()
+    }
+
+    private fun rememberColor(color: Int, marker: Boolean) {
+        if (marker) {
+            recentMarker = PenPresets.pushColor(recentMarker, color)
+            settings.recentMarkerColors = PenPresets.encodeColors(recentMarker)
+        } else {
+            recentPen = PenPresets.pushColor(recentPen, color)
+            settings.recentPenColors = PenPresets.encodeColors(recentPen)
+        }
+    }
+
+    // ---- favourite pens ----
+
+    /** The current pen or marker becomes a favourite. */
+    fun addPreset() {
+        val marker = tool == ToolKind.MARKER
+        val p = PenPreset((if (marker) ToolKind.MARKER else ToolKind.PEN).code, if (marker) markerColor else penColor, if (marker) markerSize else penSize)
+        savePresets(PenPresets.add(presets, p))
+    }
+
+    fun removePreset(p: PenPreset) = savePresets(presets - p)
+
+    private fun savePresets(list: List<PenPreset>) {
+        presets = list
+        settings.penPresets = PenPresets.encode(list)
+    }
+
+    fun usePreset(p: PenPreset) {
+        if (ToolKind.of(p.tool) == ToolKind.MARKER) setMarker(p.color, p.size)
+        else { tool = ToolKind.PEN; setPen(p.color, p.size) }
     }
 
     private fun applyTool() {
@@ -159,13 +263,20 @@ class NotebookSession(
 
     fun say(text: String) {
         toast = text
-        scope.launch { delay(2200); if (toast == text) toast = null }
+        scope.launch { delay((text.length * 60L).coerceIn(2200L, 7000L)); if (toast == text) toast = null }
     }
 
     // ---- selection ----
 
-    fun cut() { clip = canvas.cutSelection() }
-    fun copy() { clip = canvas.copySelection(); say("Kopiert") }
+    private fun keep(c: Clip?) { sharedClip = c; clip = c }
+
+    fun cut() {
+        // A locked page keeps its content, so nothing was cut.
+        val locked = canvas.selectionInfo()?.let { canvas.page(it.first)?.locked } == true
+        if (locked) { say("Seite ist gesperrt"); return }
+        keep(canvas.cutSelection())
+    }
+    fun copy() { keep(canvas.copySelection()); say("Kopiert") }
     fun duplicate() = canvas.duplicateSelection()
     fun delete() = canvas.deleteSelection()
     fun recolor(color: Int) = canvas.recolorSelection(color)
@@ -213,7 +324,7 @@ class NotebookSession(
     fun cardFromSelection() {
         val bmp = canvas.renderSelection() ?: run { say("Erst mit dem Lasso etwas auswählen"); return }
         val link = linkDraft()
-        scope.launch {
+        launchSafe("Bildkarte") {
             val file = withContext(Dispatchers.IO) {
                 val f = java.io.File(canvas.context.cacheDir, "karte-${System.currentTimeMillis()}.png")
                 f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
@@ -241,7 +352,7 @@ class NotebookSession(
     /** Replaces the selected handwriting by typed [text] (one undo step). */
     fun insertConverted(text: String) {
         convert = null
-        val (_, bounds) = canvas.selectionInfo() ?: return
+        val (_, bounds) = canvas.selectionInfo() ?: run { say("Die Auswahl ist nicht mehr da"); return }
         val item = InkInput.textItem(canvas.newId(), text.trim(), bounds, text.trim().lines().size, penColor)
         canvas.replaceSelection(listOf(item))
     }
@@ -261,6 +372,8 @@ class NotebookSession(
 
     override fun onStrokeAdded(page: Int, stroke: PageStroke) {
         if (!settings.circleSolve || MathInk.modelStatus.value != InkModelStatus.Ready) return
+        // Runs after every stroke: ordinary handwriting is too small to be a loop, so it costs nothing.
+        if (maxOf(stroke.maxX - stroke.minX, stroke.maxY - stroke.minY) < 30f) return
         val p = canvas.page(page) ?: return
         val others = p.ink.strokes.filter { it.id != stroke.id && it.tool == ToolKind.PEN }
         if (others.isEmpty()) return
@@ -282,9 +395,13 @@ class NotebookSession(
     fun commitText(text: String, size: Float, color: Int) {
         val d = textDraft ?: return
         textDraft = null
-        val width = d.old?.width ?: (PageGeometry.WIDTH - d.x - 40f).coerceAtLeast(160f)
-        val item = TextItem(canvas.newId(), d.old?.x ?: d.x, d.old?.y ?: d.y, width, text.trimEnd(), size, color)
-        canvas.putText(d.page, item, d.old)
+        val old = d.old
+        val item = if (old != null) TextItem(canvas.newId(), old.x, old.y, old.width, text.trimEnd(), size, color) else {
+            // Near the edge it moves inwards: the sheet clips what sticks out.
+            val box = PagePlacement.textBox(d.x, d.y, size, PageGeometry.WIDTH, PageGeometry.HEIGHT)
+            TextItem(canvas.newId(), box[0], box[1], box[2], text.trimEnd(), size, color)
+        }
+        canvas.putText(d.page, item, old)
     }
 
     fun deleteText() {
@@ -300,13 +417,9 @@ class NotebookSession(
     fun insertImage(uri: Uri) {
         val target = canvas.currentPage
         if (canvas.page(target)?.locked == true) { say("Seite ist gesperrt"); return }
-        scope.launch {
-            val (file, aspect) = library.importImage(uri) ?: run { say("Bild konnte nicht geladen werden"); return@launch }
-            val w = PageGeometry.WIDTH * 0.6f
-            val h = w * aspect
-            val c = canvas.visibleCentreOfCurrent()
-            tool = ToolKind.LASSO; applyTool()
-            canvas.addItem(target, ImageItem(canvas.newId(), c[0] - w / 2, c[1] - h / 2, w, h, file))
+        launchSafe("Bild einfügen") {
+            val (file, aspect) = library.importImage(uri) ?: run { say("Das Bild konnte nicht gelesen werden"); return@launchSafe }
+            placeImage(target, file, aspect)
             say("Bild eingefügt – mit dem Rahmen verschieben und skalieren")
         }
     }
@@ -321,12 +434,16 @@ class NotebookSession(
         val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         android.graphics.BitmapFactory.decodeFile(file.path, opts)
         val aspect = if (opts.outWidth > 0) opts.outHeight.toFloat() / opts.outWidth else 0.75f
-        val w = minOf(PageGeometry.WIDTH * 0.6f, PageGeometry.HEIGHT * 0.8f / aspect)
-        val h = w * aspect
-        val c = canvas.visibleCentreOfCurrent()
-        tool = ToolKind.LASSO; applyTool()
-        canvas.addItem(target, ImageItem(canvas.newId(), c[0] - w / 2, c[1] - h / 2, w, h, file.name))
+        placeImage(target, file.name, aspect)
         say("Ausschnitt eingefügt – mit dem Rahmen verschieben und skalieren")
+    }
+
+    /** On the visible part of page [target], whole and within the sheet, even for a tall photo. */
+    private fun placeImage(target: Int, file: String, aspect: Float) {
+        val c = canvas.visibleCentreOf(target)
+        val b = PagePlacement.imageBox(aspect, c[0], c[1], PageGeometry.WIDTH, PageGeometry.HEIGHT)
+        tool = ToolKind.LASSO; applyTool()
+        canvas.addItem(target, ImageItem(canvas.newId(), b[0], b[1], b[2], b[3], file))
     }
 
     // ---- worksheets as pages ----
@@ -334,13 +451,16 @@ class NotebookSession(
     /** Photos (gallery or camera) become new pages after the current one. */
     fun addWorksheetImages(uris: List<Uri>) {
         if (uris.isEmpty()) return
-        scope.launch {
+        launchSafe("Arbeitsblatt einfügen") {
             busy = "Arbeitsblatt wird eingefügt …"
             val files = uris.mapIndexedNotNull { i, u ->
                 busy = "Bild ${i + 1} von ${uris.size} …"
                 library.importImage(u)?.first
             }
             insertWorksheets(files)
+            val failed = uris.size - files.size
+            if (failed > 0 && files.isNotEmpty()) say("$failed von ${uris.size} Bildern konnten nicht gelesen werden")
+            else if (files.isEmpty()) say("Die Bilder konnten nicht gelesen werden")
         }
     }
 
@@ -348,9 +468,20 @@ class NotebookSession(
     fun addWorksheetPdf(uri: Uri) {
         scope.launch {
             busy = "PDF wird gelesen …"
-            val files = runCatching { library.importPdfPages(uri) { done, total -> busy = "PDF-Seite $done von $total …" } }
-                .getOrElse { busy = null; say("PDF konnte nicht gelesen werden: ${it.message}"); return@launch }
-            insertWorksheets(files)
+            val files = try {
+                library.importPdfPages(uri) { done, total -> busy = "PDF-Seite $done von $total …" }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                busy = null; say(UserMessages.ofPdf(t)); return@launch
+            }
+            try {
+                insertWorksheets(files)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                busy = null; say(UserMessages.of(t, "PDF einfügen"))
+            }
         }
     }
 
@@ -369,12 +500,29 @@ class NotebookSession(
 
     private fun flushAll() { for (id in saves.keys.toList()) flush(id) }
 
+    /** The pages as they are now: the export reads them off the main thread while writing may go on. */
+    private fun snapshot(): List<CanvasPage> = canvas.allPages.map {
+        CanvasPage(it.id, it.paper, PageInk(it.ink.strokes.toList(), it.ink.items.toList()), it.bookmarked, it.locked, it.background)
+    }
+
     fun exportPdf(uri: Uri, ruling: Boolean) {
-        val pages = canvas.allPages.toList()
-        scope.launch {
-            runCatching { library.exportPdf(pages, uri, ruling) }
-                .onSuccess { say("PDF gespeichert (${pages.size} Seiten)") }
-                .onFailure { say("PDF-Export fehlgeschlagen: ${it.message}") }
+        val pages = snapshot()
+        launchSafe("PDF-Export") {
+            busy = "PDF wird erstellt …"
+            library.exportPdf(pages, uri, ruling)
+            busy = null
+            say("PDF gespeichert (${pages.size} Seiten)")
+        }
+    }
+
+    /** The notebook as PDF, handed to another app (mail, messenger, drive). */
+    fun sharePdf() {
+        val pages = snapshot()
+        launchSafe("PDF teilen") {
+            busy = "PDF wird erstellt …"
+            val file = library.pdfForSharing(pages, title)
+            busy = null
+            if (!PdfShare.open(canvas.context, file)) say("Keine App zum Teilen gefunden")
         }
     }
 
@@ -384,8 +532,9 @@ class NotebookSession(
 
     fun addPage() {
         val at = page + 1
-        val paper = canvas.page(page)?.paper ?: PaperStyle.LINED
-        scope.launch {
+        val current = canvas.page(page)
+        val paper = if (current == null || current.background != null) defaultPaper else current.paper
+        launchSafe("Neue Seite") {
             val p = library.addPage(notebookId, at, paper)
             canvas.addPage(p, at)
             pageCount = canvas.pageCount
@@ -397,7 +546,7 @@ class NotebookSession(
     fun duplicatePage(index: Int) {
         val src = canvas.page(index) ?: return
         flush(src.id)
-        scope.launch {
+        launchSafe("Seite kopieren") {
             val copy = library.duplicatePage(notebookId, index + 1, src, canvas::newId)
             canvas.addPage(copy, index + 1)
             pageCount = canvas.pageCount
@@ -408,20 +557,43 @@ class NotebookSession(
 
     fun deletePage(index: Int) {
         if (canvas.pageCount <= 1) { say("Ein Heft braucht mindestens eine Seite"); return }
+        if (canvas.page(index)?.locked == true) { say("Seite ist gesperrt – erst entsperren"); return }
+        // Saved first: the picture clean-up looks at what the other pages have on disk.
+        flushAll()
         val removed = canvas.removePage(index) ?: return
-        saves.remove(removed.id)?.cancel()
-        handwriting?.let { h -> scope.launch { h.remove(removed.id) } }
+        saves.remove(removed.id)?.job?.cancel()
+        handwriting?.let { h -> scope.launch { runCatching { h.remove(removed.id) } } }
         pageCount = canvas.pageCount
         pagesVersion++
-        scope.launch { library.removePage(notebookId, removed.id, canvas.allPages.map { it.id }) }
+        val order = canvas.allPages.map { it.id }
+        launchSafe("Seite löschen") { library.removePage(notebookId, removed.id, order) }
         say("Seite ${index + 1} gelöscht")
+    }
+
+    /** Page [index] goes to the end of another notebook, with everything on it. */
+    fun movePageTo(index: Int, target: Notebook) {
+        if (canvas.pageCount <= 1) { say("Ein Heft braucht mindestens eine Seite"); return }
+        val p = canvas.page(index) ?: return
+        if (p.locked) { say("Seite ist gesperrt – erst entsperren"); return }
+        flush(p.id)
+        val removed = canvas.removePage(index) ?: return
+        pageCount = canvas.pageCount
+        pagesVersion++
+        val order = canvas.allPages.map { it.id }
+        launchSafe("Seite verschieben") {
+            library.movePage(removed.id, notebookId, target.id, order)
+            // The search must lead to the page's new home.
+            handwriting?.schedule(target.id, removed.id, removed.ink.strokes.toList())
+            say("Seite ${index + 1} ist jetzt in „${target.title}“")
+        }
     }
 
     fun movePage(from: Int, to: Int) {
         if (to !in 0 until canvas.pageCount) return
         canvas.movePage(from, to)
         pagesVersion++
-        scope.launch { library.reorder(notebookId, canvas.allPages.map { it.id }) }
+        val order = canvas.allPages.map { it.id }
+        launchSafe("Seite verschieben") { library.reorder(notebookId, order) }
     }
 
     fun goTo(index: Int) = canvas.scrollToPage(index)
@@ -431,7 +603,7 @@ class NotebookSession(
         p.bookmarked = !p.bookmarked
         canvas.refreshPage(index)
         pagesVersion++
-        scope.launch { library.setBookmarked(p.id, p.bookmarked) }
+        launchSafe("Lesezeichen") { library.setBookmarked(p.id, p.bookmarked) }
         say(if (p.bookmarked) "Lesezeichen gesetzt" else "Lesezeichen entfernt")
     }
 
@@ -440,16 +612,30 @@ class NotebookSession(
         p.locked = !p.locked
         canvas.refreshPage(index)
         pagesVersion++
-        scope.launch { library.setLocked(p.id, p.locked) }
+        launchSafe("Seite sperren") { library.setLocked(p.id, p.locked) }
         say(if (p.locked) "Seite gesperrt – Schreiben und Radieren aus" else "Seite entsperrt")
     }
 
     fun setPaper(style: PaperStyle) {
         val p = canvas.page(page) ?: return
+        if (p.background != null) { say("Ein Arbeitsblatt hat kein Papiermuster"); return }
+        if (p.locked) { say("Seite ist gesperrt"); return }
         p.paper = style
         canvas.refreshPage(page)
         pagesVersion++
-        scope.launch { library.setPaper(p.id, style) }
+        launchSafe("Papier ändern") { library.setPaper(p.id, style) }
+    }
+
+    /** The current page's paper for all pages (not worksheets, not locked ones) and for new ones. */
+    fun setPaperForAll() {
+        val style = currentPaper()
+        canvas.allPages.forEachIndexed { i, p ->
+            if (p.background == null && !p.locked && p.paper != style) { p.paper = style; canvas.refreshPage(i) }
+        }
+        defaultPaper = style
+        pagesVersion++
+        launchSafe("Papier ändern") { library.setPaperForAll(notebookId, style) }
+        say("Alle Seiten: ${style.label}")
     }
 
     fun currentPaper(): PaperStyle = canvas.page(page)?.paper ?: PaperStyle.LINED
@@ -458,22 +644,38 @@ class NotebookSession(
     // ---- canvas callbacks ----
 
     override fun onPageChanged(pageId: String) {
-        saves.remove(pageId)?.cancel()
-        saves[pageId] = scope.launch {
-            delay(700)
-            saves.remove(pageId)
-            saveNow(pageId)
-        }
+        val p = canvas.pageById(pageId) ?: return
+        scheduleSave(p, 700)
         pagesVersion++
     }
 
-    private fun flush(pageId: String) { if (saves.remove(pageId)?.also { it.cancel() } != null) saveNow(pageId) }
+    private fun scheduleSave(p: CanvasPage, delayMs: Long) {
+        saves.remove(p.id)?.job?.cancel()
+        saves[p.id] = PendingSave(p, scope.launch {
+            delay(delayMs)
+            saves.remove(p.id)
+            saveNow(p)
+        })
+    }
 
-    private fun saveNow(pageId: String) {
-        val p = canvas.pageById(pageId) ?: return
+    private fun flush(pageId: String) { saves.remove(pageId)?.let { it.job.cancel(); saveNow(it.page) } }
+
+    private fun saveNow(p: CanvasPage) {
         val strokes = p.ink.strokes.toList()
         val items = p.ink.items.toList()
-        scope.launch { library.savePage(notebookId, p.id, strokes, items) }
+        scope.launch {
+            try {
+                library.savePage(notebookId, p.id, strokes, items)
+                if (failedSaves > 0) { failedSaves = 0; say("Wieder gespeichert") }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                // The page stays in memory: tell the user and keep trying, never lose it quietly.
+                failedSaves++
+                say(UserMessages.of(t, "Speichern"))
+                if (saves[p.id] == null) scheduleSave(p, (5_000L * failedSaves).coerceAtMost(60_000L))
+            }
+        }
         handwriting?.schedule(notebookId, p.id, strokes)
     }
 
@@ -502,7 +704,8 @@ class NotebookSession(
     override fun onRing(event: RingEvent) {
         when (event) {
             is RingEvent.Open -> {
-                ToolRingGeometry.swatches = if (tool == ToolKind.MARKER) InkPalette.marker else InkPalette.pen
+                ToolRingGeometry.swatches = if (tool == ToolKind.MARKER) PenPresets.fill(recentMarker, InkPalette.marker, 5)
+                    else PenPresets.fill(recentPen, InkPalette.pen, 6)
                 ring = RingState(event.x, event.y, event.x, event.y, armed = true)
             }
             is RingEvent.Move -> ring = ring?.copy(hoverX = event.x, hoverY = event.y)
@@ -525,4 +728,9 @@ class NotebookSession(
     }
 
     fun closeRing() { ring = null; canvas.ringClosed() }
+
+    private companion object {
+        /** What was copied stays available in the next notebook. */
+        var sharedClip: Clip? = null
+    }
 }
