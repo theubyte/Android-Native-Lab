@@ -30,6 +30,8 @@ import de.millione.schulranzen.ink.PaperStyle
 import de.millione.schulranzen.ink.RingEvent
 import de.millione.schulranzen.ink.TextItem
 import de.millione.schulranzen.ink.ToolKind
+import de.millione.schulranzen.ink.Brushes
+import kotlin.math.hypot
 import de.millione.schulranzen.core.math.MathResult
 import de.millione.schulranzen.rechnen.MathInk
 import de.millione.schulranzen.rechnen.InkSolve
@@ -50,7 +52,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** The tool ring as the overlay draws it. */
-data class RingState(val x: Float, val y: Float, val hoverX: Float, val hoverY: Float, val armed: Boolean)
+/**
+ * The open tool ring: its centre ([x], [y], moved in from the screen edges), where the pen hovers,
+ * whether the button is still held ([armed]), its level, and where the pen was when it opened.
+ */
+data class RingState(
+    val x: Float, val y: Float, val hoverX: Float, val hoverY: Float, val armed: Boolean,
+    val level: RingLevel = RingLevel.MAIN,
+    val styleTool: ToolKind = ToolKind.PEN,
+    val penX: Float = x, val penY: Float = y,
+)
 
 /** Text being written: where, and the item it replaces (null = new). */
 data class TextDraft(val page: Int, val x: Float, val y: Float, val old: TextItem?)
@@ -722,15 +733,18 @@ class NotebookSession(
     override fun onRing(event: RingEvent) {
         when (event) {
             is RingEvent.Open -> {
-                ToolRingGeometry.swatches = if (tool == ToolKind.MARKER) PenPresets.fill(recentMarker, InkPalette.marker, 5)
-                    else PenPresets.fill(recentPen, InkPalette.pen, 6)
-                ring = RingState(event.x, event.y, event.x, event.y, armed = true)
+                val (x, y) = ToolRingGeometry.centre(event.x, event.y, canvas.width.toFloat(), canvas.height.toFloat(), density)
+                ring = RingState(x, y, event.x, event.y, armed = true, penX = event.x, penY = event.y)
+                canvas.ringOpened()
             }
             is RingEvent.Move -> ring = ring?.copy(hoverX = event.x, hoverY = event.y)
             is RingEvent.Release -> {
                 val r = ring ?: return
-                val hit = ToolRingGeometry.hit(r.x, r.y, event.x, event.y, density)
-                if (hit != null) { pick(hit); closeRing() } else ring = r.copy(armed = false)
+                // Only a pen moved onto an entry picks it; let go where it opened, the ring waits for a tap.
+                val moved = hypot(event.x - r.penX, event.y - r.penY) > ToolRingGeometry.HOLE * density
+                val layout = ringLayout(r)
+                val hit = ToolRingGeometry.hit(layout, r.x, r.y, event.x, event.y, density)?.takeIf { moved && it != layout.centre }
+                if (hit != null) pickRing(hit) else ring = r.copy(armed = false)
             }
             RingEvent.Cancel -> closeRing()
         }
@@ -738,10 +752,64 @@ class NotebookSession(
 
     var density = 1f
 
-    fun pick(item: RingItem) {
+    /** What the ring shows on its current level. */
+    fun ringLayout(r: RingState): RingLayout {
+        val marker = r.styleTool == ToolKind.MARKER
+        val base = when (r.level) {
+            RingLevel.MAIN -> RingMenus.main(
+                if (tool == ToolKind.MARKER) PenPresets.fill(recentMarker, InkPalette.marker, 5) else PenPresets.fill(recentPen, InkPalette.pen, 6),
+            )
+            RingLevel.STYLE -> if (marker) RingMenus.style(Brushes.markerSizes, PenPresets.fill(InkPalette.marker + ExtraColors.marker, recentMarker, 8), markerColor, true)
+                else RingMenus.style(Brushes.penSizes, PenPresets.fill(InkPalette.pen + ExtraColors.pen, recentPen, 12), penColor, false)
+            RingLevel.MORE -> RingMenus.more(presets, clip != null)
+        }
+        val writing = if (tool == ToolKind.MARKER || (r.level == RingLevel.STYLE && marker)) markerColor else penColor
+        val size = if (marker) markerSize else penSize
+        val selected = buildSet<RingItem> {
+            add(RingItem.Tool(tool))
+            add(RingItem.Swatch(if (r.level == RingLevel.STYLE) (if (marker) markerColor else penColor) else writing))
+            if (r.level == RingLevel.STYLE) add(RingItem.Size(size))
+            if (currentPage()?.bookmarked == true) add(RingItem.Action(RingAction.BOOKMARK))
+        }
+        return base.copy(selected = selected)
+    }
+
+    /**
+     * An entry was chosen. Pen and marker lead on to their style and the ring
+     * stays for more choices there; a tool, colour or favourite on the first
+     * level is picked and the ring closes.
+     */
+    fun pickRing(item: RingItem) {
+        val r = (ring ?: return).copy(armed = false)
+        val styleMarker = r.styleTool == ToolKind.MARKER
         when (item) {
-            is RingItem.Tool -> select(item.kind)
-            is RingItem.Swatch -> if (tool == ToolKind.MARKER) setMarker(item.color) else setPen(item.color)
+            is RingItem.Tool -> {
+                select(item.kind)
+                if (item.kind.writes) ring = r.copy(level = RingLevel.STYLE, styleTool = item.kind) else closeRing()
+            }
+            is RingItem.Swatch -> if (r.level == RingLevel.STYLE) {
+                if (styleMarker) setMarker(item.color) else setPen(item.color)
+                ring = r
+            } else {
+                if (tool == ToolKind.MARKER) setMarker(item.color) else setPen(item.color)
+                closeRing()
+            }
+            is RingItem.Size -> {
+                if (styleMarker) setMarker(markerColor, item.size) else setPen(penColor, item.size)
+                ring = r
+            }
+            is RingItem.Favourite -> { usePreset(item.preset); closeRing() }
+            is RingItem.Action -> when (item.action) {
+                RingAction.UNDO -> { undo(); ring = r }
+                RingAction.REDO -> { redo(); ring = r }
+                RingAction.BOOKMARK -> { toggleBookmark(); ring = r }
+                RingAction.SAVE_FAVOURITE -> { addPreset(); say("Als Favorit gespeichert"); ring = r }
+                RingAction.NEW_PAGE -> { closeRing(); addPage() }
+                RingAction.PASTE -> { closeRing(); paste() }
+            }
+            RingItem.More -> ring = r.copy(level = RingLevel.MORE)
+            RingItem.Back -> ring = r.copy(level = RingLevel.MAIN)
+            RingItem.Close -> closeRing()
         }
     }
 

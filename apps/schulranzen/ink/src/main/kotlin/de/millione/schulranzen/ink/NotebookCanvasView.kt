@@ -55,9 +55,9 @@ sealed interface RingEvent {
     data class Open(val x: Float, val y: Float) : RingEvent
     /** Pen moved while the ring is open. */
     data class Move(val x: Float, val y: Float) : RingEvent
-    /** Button let go: pick what is under the pen, or keep the ring for a tap. */
+    /** Button let go: pick what the pen was moved onto, otherwise the ring stays open for a tap. */
     data class Release(val x: Float, val y: Float) : RingEvent
-    /** Pen left the screen. */
+    /** Closed: pen or finger on the paper beside the ring, or a short click of the button. */
     data object Cancel : RingEvent
 }
 
@@ -634,6 +634,8 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         val down = action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN
         // The resting hand neither moves nor drops a selection.
         val handNearPen = !isPen(e, index) && SystemClock.uptimeMillis() - lastPenNear < 400
+        // Writing or touching the paper beside the open ring closes it; the touch goes on as usual.
+        if (action == MotionEvent.ACTION_DOWN && ringOpen && !handNearPen) { ringOpen = false; listener?.onRing(RingEvent.Cancel) }
         if (down && mode != Mode.NONE && mode != Mode.PAN && fingerGesture && takeOverFingerGesture(e, index)) return true
         // Pen or finger on the selection: move or scale it.
         if (down && mode == Mode.NONE && selection != null && !handNearPen && beginSelectionDrag(e, index)) return true
@@ -1149,10 +1151,13 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     private var buttonDown = false
     private var buttonDownAt = 0L
     private var ringOpen = false
+    /** The ring came up during the current button press (its release may pick). */
+    private var ringThisPress = false
     private var hoverX = 0f; private var hoverY = 0f
+    /** Held long enough: the ring comes up at the pen, also anew when it is already open elsewhere. */
     private val openRing = Runnable {
-        if (buttonDown && !ringOpen) {
-            ringOpen = true
+        if (buttonDown) {
+            ringOpen = true; ringThisPress = true
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             listener?.onRing(RingEvent.Open(hoverX, hoverY))
         }
@@ -1178,21 +1183,28 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.ACTION_BUTTON_RELEASE -> {
                 if (pressed && !buttonDown) {
-                    buttonDown = true; buttonDownAt = SystemClock.uptimeMillis()
+                    buttonDown = true; buttonDownAt = SystemClock.uptimeMillis(); ringThisPress = false
                     postDelayed(openRing, RING_HOLD_MS)
                 } else if (!pressed && buttonDown) {
                     buttonDown = false
                     removeCallbacks(openRing)
-                    if (ringOpen) listener?.onRing(RingEvent.Release(e.x, e.y))
-                    else if (SystemClock.uptimeMillis() - buttonDownAt < RING_HOLD_MS) listener?.onSideButtonClick()
+                    val short = SystemClock.uptimeMillis() - buttonDownAt < RING_HOLD_MS
+                    when {
+                        ringThisPress -> listener?.onRing(RingEvent.Release(e.x, e.y))
+                        // A short click while the ring is open closes it.
+                        ringOpen && short -> { ringOpen = false; listener?.onRing(RingEvent.Cancel) }
+                        short -> listener?.onSideButtonClick()
+                    }
+                    ringThisPress = false
                 }
                 if (ringOpen && e.actionMasked == MotionEvent.ACTION_HOVER_MOVE) listener?.onRing(RingEvent.Move(e.x, e.y))
                 if (!ringOpen) overlay.hoverAt(e.x, e.y) else overlay.hide()
             }
             MotionEvent.ACTION_HOVER_EXIT -> {
+                // The ring stays: the pen leaves hover exactly when it comes down to tap an entry.
+                // A press ended out of range picks nothing.
                 removeCallbacks(openRing)
-                buttonDown = false
-                if (ringOpen) { ringOpen = false; listener?.onRing(RingEvent.Cancel) }
+                buttonDown = false; ringThisPress = false
                 overlay.hide()
             }
         }
@@ -1200,7 +1212,10 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     }
 
     /** The host closed the ring (selection made or tapped away). */
-    fun ringClosed() { ringOpen = false }
+    fun ringClosed() { ringOpen = false; ringThisPress = false }
+
+    /** The host opened the ring itself (debug hook): touching the paper closes it like one opened by the button. */
+    fun ringOpened() { ringOpen = true }
 
     // ------------------------------------------------------------- rendering
 
@@ -1558,6 +1573,6 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     }
 
     companion object {
-        const val RING_HOLD_MS = 300L
+        const val RING_HOLD_MS = 250L
     }
 }

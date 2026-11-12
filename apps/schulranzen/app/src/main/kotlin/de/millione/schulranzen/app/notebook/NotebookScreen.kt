@@ -299,10 +299,7 @@ fun NotebookScreen(
 
         // Tool ring around the pen tip
         session.ring?.let { r ->
-            val color = if (session.tool == ToolKind.MARKER) session.markerColor else session.penColor
-            ToolRingOverlay(r, session.tool, color,
-                onPick = { session.pick(it); session.closeRing() },
-                onDismiss = session::closeRing)
+            ToolRingOverlay(r, session.ringLayout(r), onPick = session::pickRing, onDismiss = session::closeRing)
         }
 
         // Longer work (PDF pages, photos)

@@ -6,7 +6,7 @@ Plan und Design im Detail: [PLAN.md](PLAN.md). Regeln für parallele Agenten: [A
 
 Legende: `[x]` erledigt · `[ ]` offen · `[~]` teilweise · **(T)** nur auf dem echten Tablet prüfbar
 
-Letzte Aktualisierung: 12.11.2026, Version **0.5.3**
+Letzte Aktualisierung: 12.11.2026, Version **0.5.4**
 
 
 ---
@@ -120,6 +120,13 @@ Letzte Aktualisierung: 12.11.2026, Version **0.5.3**
 ---
 
 ## Erledigt
+
+### 0.5.4 – Werkzeugrad bleibt offen, drei Ebenen (12.11.2026)
+- **Knopf nur kurz halten:** Den Stiftknopf 0,25 s halten, dann geht das Rad auf und bleibt nach dem Loslassen offen. Vorher schloss es, sobald der Stift das Display berührte, weil Android dabei „Schweben verlassen“ meldet; bedienen ging nur mit gehaltenem Knopf. Ziehen und Loslassen auf einem Eintrag wählt weiterhin direkt.
+- **Schließen:** aufs Blatt schreiben oder tippen (der Strich wird normal gezeichnet), Mitte „×“, kurzer Knopfdruck oder Zurück. Knopf erneut halten öffnet das Rad an der neuen Stelle. Das Rad rückt vom Bildschirmrand ab, damit es ganz sichtbar ist.
+- **Drei Ebenen:** Hauptrad mit Werkzeugen innen und den Farben des aktuellen Stifts außen. Stift oder Marker antippen öffnet ihren Stil: Dicken innen (mit mm-Angabe), alle 12 bzw. 6 Farben außen, die Auswahl wirkt sofort. „Mehr“ öffnet Rückgängig, Wiederholen, Neue Seite, Lesezeichen, „Stift als Favorit“ und Einfügen, außen die Favoriten. Die Mitte führt zurück.
+- Im Emulator über den Debug-Haken geprüft: Öffnen, Ebenen, Favorit, Schließen durch Tippen aufs Blatt. Neu: `ToolRingTest`.
+- Nicht geprüft: echter S Pen mit Knopf (Schweben, Halten, Loslassen auf Eintrag) auf dem Tablet.
 
 ### 0.5.3 – Herauszoomen ohne Ruckeln (12.11.2026)
 - **Ruckeln beim Herauszoomen behoben, Schrift gleich scharf:** Seit 0.5.2 wird jede Seite passend zum Zoom aufgezeichnet. Bei jeder Zoomstufe (× 1,2) wurden alle sichtbaren Seiten im selben Bild neu aufgezeichnet; herausgezoomt sind das viele ganze Seiten. Jetzt behält eine Seite beim Herauszoomen mit zwei Fingern ihre schärfere Aufzeichnung, bis die Finger loslassen. Andere Neuaufzeichnungen laufen mit höchstens etwa 4 ms pro Bild, die übrigen Seiten folgen in den nächsten Bildern. In Ruhe ist jede Seite wieder genau für ihren Zoom aufgezeichnet. Gilt für Heft und Buch (auch Doppeltipp-Zoom). Neu: `ink/InkZoom.kt` mit Tests.
