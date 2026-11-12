@@ -618,6 +618,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
     private var startX = 0f; private var startY = 0f
     private var panning = false
     private var pinchDist = 0f
+    private val zooming get() = pinchDist > 0f
     private var pinchMidX = 0f; private var pinchMidY = 0f
 
     private fun isPen(e: MotionEvent, i: Int): Boolean {
@@ -1047,7 +1048,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                 panId = e.getPointerId(keep)
                 lastX = e.getX(keep); lastY = e.getY(keep)
                 pinchDist = 0f
-                if (e.pointerCount - 1 >= 2) startPinch(e)
+                if (e.pointerCount - 1 >= 2) startPinch(e) else layer.zoomRested()
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 // A finger tap on empty paper drops the selection or places text. Only a
@@ -1076,7 +1077,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         panning = true
     }
 
-    private fun endPan() { mode = Mode.NONE; panId = -1; panning = false; pinchDist = 0f }
+    private fun endPan() { mode = Mode.NONE; panId = -1; panning = false; pinchDist = 0f; layer.zoomRested() }
 
     // ---- reading only: glide after a swipe, double tap zooms ----
 
@@ -1261,8 +1262,15 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             }
         }
 
+        private val budget = FrameBudget()
+        private var waitingForRest = false
+
+        /** The fingers stopped zooming: pages kept from a closer zoom are recorded for this one now. */
+        fun zoomRested() { if (waitingForRest) { waitingForRest = false; invalidate() } }
+
         override fun onDraw(canvas: Canvas) {
             if (pages.isEmpty()) return
+            budget.begin()
             val viewTop = floatArrayOf(0f, 0f).also { inverse.mapPoints(it) }[1]
             val viewBottom = floatArrayOf(0f, height.toFloat()).also { inverse.mapPoints(it) }[1]
             val first = max(0, (viewTop / (HEIGHT + GAP)).toInt())
@@ -1282,6 +1290,8 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                 if (page.bookmarked) drawRibbon(canvas, rect)
                 if (page.locked) drawLock(canvas, rect)
             }
+            if (budget.later) postInvalidateOnAnimation()
+            if (budget.afterZoom) waitingForRest = true
             prune(first, last)
         }
 
@@ -1327,10 +1337,10 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
             val hideI = sel?.items ?: emptySet()
             if (Build.VERSION.SDK_INT >= 29 && canvas.isHardwareAccelerated) {
                 val ink = page.ink
-                // Recorded for the zoom it is seen at, in steps so a pinch does not record every frame.
-                val step = kotlin.math.round(kotlin.math.ln(scale) / ZOOM_STEP_LN)
-                val sharp = kotlin.math.exp(step * ZOOM_STEP_LN)
-                val key = ink.contentRevision * 31 + page.paper.ordinal * 7 + (sel?.hashCode()?.toLong() ?: 0L) + step.toLong() * 1_000_003L
+                // Recorded for the zoom it is seen at, in steps so a pinch does not record every frame (see InkZoom).
+                val step = InkZoom.step(scale)
+                val sharp = InkZoom.scaleOf(step)
+                val key = ink.contentRevision * 31 + page.paper.ordinal * 7 + (sel?.hashCode()?.toLong() ?: 0L)
                 val n = nodes.getOrPut(page.id) { PageNode() }
                 val count = ink.strokes.size
                 // The system throws display lists away (app in the background, low memory, off screen)
@@ -1338,11 +1348,12 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
                 val fresh = (n.recorded == -1) || n.key != key || i in dirtyPages || count < n.recorded ||
                     (n.incomplete && n.epoch != imageEpoch) ||
                     !n.base.hasDisplayList() || (n.recorded > n.baseCount && !n.tail.hasDisplayList())
-                if (fresh || !n.canAppend(page, count)) {
+                val rezoom = !fresh && budget.refresh(n.step, step, zooming)
+                if (fresh || rezoom || !n.canAppend(page, count)) {
                     val rc = n.base.beginRecording(WIDTH.toInt(), HEIGHT.toInt())
                     try { n.incomplete = !PagePainter.paint(rc, page, hideStrokes = hideS, hideItems = hideI, asyncImages = true, screenScale = sharp) } finally { n.base.endRecording() }
                     n.tail.discardDisplayList()
-                    n.key = key; n.epoch = imageEpoch; n.baseCount = count; n.recorded = count
+                    n.key = key; n.step = step; n.epoch = imageEpoch; n.baseCount = count; n.recorded = count
                     dirtyPages -= i
                 } else if (count > n.recorded) {
                     // New pen strokes only: a small list on top instead of recording the whole page again.
@@ -1364,6 +1375,7 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         val base = RenderNode("page").also { it.setPosition(0, 0, WIDTH.toInt(), HEIGHT.toInt()) }
         val tail = RenderNode("tail").also { it.setPosition(0, 0, WIDTH.toInt(), HEIGHT.toInt()) }
         var key = 0L
+        var step = 0
         var epoch = 0
         var baseCount = 0
         var recorded = -1
@@ -1549,5 +1561,3 @@ class NotebookCanvasView(context: Context) : FrameLayout(context) {
         const val RING_HOLD_MS = 300L
     }
 }
-
-private val ZOOM_STEP_LN = kotlin.math.ln(1.2f)

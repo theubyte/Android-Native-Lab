@@ -39,6 +39,8 @@ import de.millione.schulranzen.core.books.PageRotation
 import de.millione.schulranzen.core.books.ReadingPosition
 import de.millione.schulranzen.core.books.RenderMath
 import de.millione.schulranzen.ink.Brushes
+import de.millione.schulranzen.ink.FrameBudget
+import de.millione.schulranzen.ink.InkZoom
 import de.millione.schulranzen.ink.ItemPainter
 import de.millione.schulranzen.ink.PageEdit
 import de.millione.schulranzen.ink.PageInk
@@ -865,6 +867,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
     private var startX = 0f; private var startY = 0f
     private var panning = false
     private var pinchDist = 0f
+    private val zooming get() = pinchDist > 0f || zoomAnim?.isRunning == true
     private var pinchMidX = 0f; private var pinchMidY = 0f
     private var velocity: VelocityTracker? = null
     private var lastTapAt = 0L
@@ -1275,7 +1278,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 panId = e.getPointerId(keep)
                 lastX = e.getX(keep); lastY = e.getY(keep)
                 pinchDist = 0f
-                if (e.pointerCount - 1 >= 2) startPinch(e)
+                if (e.pointerCount - 1 >= 2) startPinch(e) else layer.zoomRested()
                 scheduleDetail()
             }
             MotionEvent.ACTION_UP -> {
@@ -1324,6 +1327,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         if (panning) scheduleDetail()
         mode = Mode.NONE; panId = -1; panning = false; pinchDist = 0f
         velocity?.recycle(); velocity = null
+        layer.zoomRested()
     }
 
     // ------------------------------------------------------ fling and zoom
@@ -1375,7 +1379,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 clampAndApply()
             }
             addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: android.animation.Animator) = scheduleDetail()
+                override fun onAnimationEnd(animation: android.animation.Animator) { scheduleDetail(); layer.zoomRested() }
             })
             start()
         }
@@ -1432,7 +1436,11 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
 
         private val renderer by lazy { CanvasStrokeRenderer.create() }
         private val identity = Matrix()
-        private var inkScale = 1f
+        private val budget = FrameBudget()
+        private var waitingForRest = false
+
+        /** Zoom stopped: pages kept from a closer zoom are recorded for this one now. */
+        fun zoomRested() { if (waitingForRest) { waitingForRest = false; invalidate() } }
         private val paper = Paint().apply { color = Color.WHITE }
         private val shadow = Paint(Paint.ANTI_ALIAS_FLAG)
         private val shadowRect = RectF()
@@ -1442,7 +1450,9 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
         private val areaLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
         private val ribbon = Paint(Paint.ANTI_ALIAS_FLAG)
         private val number = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x55000000; textAlign = Paint.Align.CENTER; textSize = 22f * density }
-        private val nodes = HashMap<Int, Pair<Long, Any>>()
+        /** [node] is a RenderNode, typed loosely so devices below API 29 never load that class. */
+        private inner class InkNode(val key: Long, val step: Int, val node: Any)
+        private val nodes = HashMap<Int, InkNode>()
         private val nightFilter = ColorMatrixColorFilter(NightColors.MATRIX)
         private val nightLayer = Paint().apply { colorFilter = nightFilter }
 
@@ -1457,6 +1467,7 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
             val visible = visiblePages()
             if (visible.isEmpty()) return
             nodes.keys.retainAll(visible.toSet())
+            budget.begin()
             for (i in visible) {
                 val r = pageViewRect(i)
                 drawShadow(canvas, r)
@@ -1489,6 +1500,8 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
                 canvas.drawRect(r, edge)
                 if (i in marks.bookmarks) drawRibbon(canvas, r)
             }
+            if (budget.later) postInvalidateOnAnimation()
+            if (budget.afterZoom) waitingForRest = true
             // Next pages ready before they scroll in.
             for (k in 1..2) { requestBase(visible.last + k); requestBase(visible.first - k) }
         }
@@ -1514,27 +1527,29 @@ internal class BookCanvasView(context: Context) : FrameLayout(context) {
             val hideS = sel?.strokes ?: emptySet()
             val hideI = sel?.items ?: emptySet()
             if (Build.VERSION.SDK_INT >= 29 && canvas.isHardwareAccelerated) {
-                // Recorded for the zoom it is seen at (edge smoothing), in steps so a pinch does not record every frame.
-                val step = kotlin.math.round(kotlin.math.ln(scale) / kotlin.math.ln(1.2f))
-                inkScale = kotlin.math.exp(step * kotlin.math.ln(1.2f))
-                val key = ink.revision * 31 + rot[page] * 7 + (sel?.hashCode()?.toLong() ?: 0L) + step.toLong() * 1_000_003L
+                // Recorded for the zoom it is seen at (edge smoothing), in steps so a pinch does not record every frame (see InkZoom).
+                val step = InkZoom.step(scale)
+                val key = ink.revision * 31 + rot[page] * 7 + (sel?.hashCode()?.toLong() ?: 0L)
                 val cached = nodes[page]
-                val node = (cached?.second as? RenderNode) ?: RenderNode("book-ink").also {
+                val node = (cached?.node as? RenderNode) ?: RenderNode("book-ink").also {
                     it.setPosition(0, 0, BookUnits.WIDTH.toInt(), unitH[page].roundToInt().coerceAtLeast(1))
                     it.clipToBounds = false
                 }
                 // The system may have thrown the list away (background, low memory); it would draw nothing.
-                if (cached == null || cached.first != key || !node.hasDisplayList()) {
+                if (cached == null || cached.key != key || !node.hasDisplayList() || budget.refresh(cached.step, step, zooming)) {
                     val rc = node.beginRecording()
-                    try { paintInk(rc, page, ink, hideS, hideI) } finally { node.endRecording() }
-                    nodes[page] = key to node
+                    try { paintInk(rc, page, ink, hideS, hideI, inkScale = InkZoom.scaleOf(step)) } finally { node.endRecording() }
+                    nodes[page] = InkNode(key, step, node)
                 }
                 canvas.drawRenderNode(node)
-            } else { inkScale = scale; paintInk(canvas, page, ink, hideS, hideI) }
+            } else paintInk(canvas, page, ink, hideS, hideI, inkScale = scale)
         }
 
         /** Markers below ink, typed text on top, like in the notebook. [only] paints just the given ids. */
-        fun paintInk(canvas: Canvas, page: Int, ink: PageInk, ids: Set<Long>, itemIds: Set<Long>, only: Boolean = false) {
+        fun paintInk(
+            canvas: Canvas, page: Int, ink: PageInk, ids: Set<Long>, itemIds: Set<Long>, only: Boolean = false,
+            inkScale: Float = InkZoom.scaleOf(InkZoom.step(scale)),
+        ) {
             fun shown(id: Long, set: Set<Long>) = if (only) id in set else id !in set
             val identity = this.identity.apply { setScale(inkScale, inkScale) }
             for (s in ink.strokes) if (s.tool == ToolKind.MARKER && shown(s.id, ids)) renderer.draw(canvas, s.stroke, identity)

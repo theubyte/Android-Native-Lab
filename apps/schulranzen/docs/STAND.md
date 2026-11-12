@@ -6,7 +6,7 @@ Plan und Design im Detail: [PLAN.md](PLAN.md). Regeln für parallele Agenten: [A
 
 Legende: `[x]` erledigt · `[ ]` offen · `[~]` teilweise · **(T)** nur auf dem echten Tablet prüfbar
 
-Letzte Aktualisierung: 05.11.2026, Version **0.5.2**
+Letzte Aktualisierung: 12.11.2026, Version **0.5.3**
 
 
 ---
@@ -120,6 +120,10 @@ Letzte Aktualisierung: 05.11.2026, Version **0.5.2**
 ---
 
 ## Erledigt
+
+### 0.5.3 – Herauszoomen ohne Ruckeln (12.11.2026)
+- **Ruckeln beim Herauszoomen behoben, Schrift gleich scharf:** Seit 0.5.2 wird jede Seite passend zum Zoom aufgezeichnet. Bei jeder Zoomstufe (× 1,2) wurden alle sichtbaren Seiten im selben Bild neu aufgezeichnet; herausgezoomt sind das viele ganze Seiten. Jetzt behält eine Seite beim Herauszoomen mit zwei Fingern ihre schärfere Aufzeichnung, bis die Finger loslassen. Andere Neuaufzeichnungen laufen mit höchstens etwa 4 ms pro Bild, die übrigen Seiten folgen in den nächsten Bildern. In Ruhe ist jede Seite wieder genau für ihren Zoom aufgezeichnet. Gilt für Heft und Buch (auch Doppeltipp-Zoom). Neu: `ink/InkZoom.kt` mit Tests.
+- Nicht geprüft: das Ruckeln selbst auf dem echten Tablet. Gebaut und Unit-Tests grün, aber nicht auf einem Gerät oder Emulator gezoomt.
 
 ### 0.5.2 – Schärfer und dünner (05.11.2026)
 - **Striche scharf beim Zoomen:** Die Kantenglättung rechnete immer mit der Grundgröße, vergrößert wurden Striche weich und bekamen dunkle Flecken. Seiten werden jetzt passend zum Zoom aufgezeichnet (Heft, Buch, Auswahl). Auf dem Emulator im Zoom geprüft.
